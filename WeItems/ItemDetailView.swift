@@ -134,23 +134,41 @@ struct ItemDetailView: View {
                     
                     // 实现心愿按钮（仅在心愿清单中显示）
                     if item.listType == .wishlist {
-                        Button {
-                            withAnimation(.spring(duration: 0.3)) {
-                                store.moveToList(itemId: item.id, listType: .items)
-                                dismiss()
+                        VStack(spacing: 12) {
+                            Button {
+                                withAnimation(.spring(duration: 0.3)) {
+                                    store.moveToList(itemId: item.id, listType: .items)
+                                    dismiss()
+                                }
+                            } label: {
+                                HStack {
+                                    Image(systemName: "checkmark.circle.fill")
+                                    Text("实现心愿")
+                                        .fontWeight(.semibold)
+                                    Spacer()
+                                    Image(systemName: "arrow.right.circle.fill")
+                                }
+                                .padding()
+                                .background(Color.green.opacity(0.1))
+                                .foregroundStyle(.green)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
                             }
-                        } label: {
-                            HStack {
-                                Image(systemName: "checkmark.circle.fill")
-                                Text("实现心愿")
-                                    .fontWeight(.semibold)
-                                Spacer()
-                                Image(systemName: "arrow.right.circle.fill")
+                            
+                            Button {
+                                shareWishToFriends()
+                            } label: {
+                                HStack {
+                                    Image(systemName: "person.2.fill")
+                                    Text("让好朋友们帮我实现")
+                                        .fontWeight(.semibold)
+                                    Spacer()
+                                    Image(systemName: "doc.on.doc.fill")
+                                }
+                                .padding()
+                                .background(Color.orange.opacity(0.1))
+                                .foregroundStyle(.orange)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
                             }
-                            .padding()
-                            .background(Color.green.opacity(0.1))
-                            .foregroundStyle(.green)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
                         }
                     }
                     
@@ -185,6 +203,36 @@ struct ItemDetailView: View {
     
     private var daysSinceCreation: Int {
         item.daysSinceCreated
+    }
+    
+    private func shareWishToFriends() {
+        // 创建要导出的数据结构
+        let wishData: [String: Any] = [
+            "name": item.name,
+            "price": item.price,
+            "type": item.type,
+            "details": item.details,
+            "purchaseLink": item.purchaseLink,
+            "displayType": item.displayType ?? item.type,
+            "targetType": item.targetType ?? item.type,
+            "createdAt": formattedDate,
+            "daysSinceCreated": item.daysSinceCreated
+        ]
+        
+        // 转换为 JSON 字符串
+        do {
+            let jsonData = try JSONSerialization.data(withJSONObject: wishData, options: .prettyPrinted)
+            if let jsonString = String(data: jsonData, encoding: .utf8) {
+                // 复制到剪切板
+                UIPasteboard.general.string = jsonString
+                
+                // 显示提示
+                let generator = UINotificationFeedbackGenerator()
+                generator.notificationOccurred(.success)
+            }
+        } catch {
+            print("导出失败: \(error)")
+        }
     }
 }
 

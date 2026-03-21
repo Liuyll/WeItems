@@ -11,6 +11,8 @@ struct ItemDetailView: View {
     @State var item: Item
     let group: ItemGroup?
     
+    @State private var showingArchiveConfirm = false
+    
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -127,6 +129,18 @@ struct ItemDetailView: View {
                                 .foregroundStyle(.secondary)
                         }
                         
+                        if item.listType == .items {
+                            HStack(spacing: 4) {
+                                Text("平均每天支付：")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                Text("¥\(String(format: "%.2f", averageDailyCost))")
+                                    .font(.subheadline)
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(.blue)
+                            }
+                        }
+                        
                         Text("添加于 \(formattedDate)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -172,6 +186,34 @@ struct ItemDetailView: View {
                         }
                     }
                     
+                    // 归档/取消归档按钮（仅在我的物品中显示）
+                    if item.listType == .items {
+                        Button {
+                            if item.isArchived {
+                                // 取消归档直接执行
+                                withAnimation(.spring(duration: 0.3)) {
+                                    store.toggleArchiveItem(itemId: item.id)
+                                    dismiss()
+                                }
+                            } else {
+                                // 归档需要确认
+                                showingArchiveConfirm = true
+                            }
+                        } label: {
+                            HStack {
+                                Image(systemName: item.isArchived ? "archivebox.fill" : "archivebox")
+                                Text(item.isArchived ? "取消归档" : "归档")
+                                    .fontWeight(.semibold)
+                                Spacer()
+                                Image(systemName: item.isArchived ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
+                            }
+                            .padding()
+                            .background(item.isArchived ? Color.purple.opacity(0.1) : Color.gray.opacity(0.1))
+                            .foregroundStyle(item.isArchived ? .purple : .gray)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                        }
+                    }
+                    
                     Spacer()
                 }
                 .padding()
@@ -184,6 +226,17 @@ struct ItemDetailView: View {
                         dismiss()
                     }
                 }
+            }
+            .alert("确认归档", isPresented: $showingArchiveConfirm) {
+                Button("取消", role: .cancel) { }
+                Button("确认归档", role: .none) {
+                    withAnimation(.spring(duration: 0.3)) {
+                        store.toggleArchiveItem(itemId: item.id)
+                        dismiss()
+                    }
+                }
+            } message: {
+                Text("归档后，该物品将从「我的物品」列表中移除，并移至「归档」标签下。是否继续？")
             }
         }
     }
@@ -203,6 +256,11 @@ struct ItemDetailView: View {
     
     private var daysSinceCreation: Int {
         item.daysSinceCreated
+    }
+    
+    private var averageDailyCost: Double {
+        guard daysSinceCreation > 0 else { return item.price }
+        return item.price / Double(daysSinceCreation)
     }
     
     private func shareWishToFriends() {

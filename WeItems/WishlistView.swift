@@ -55,12 +55,15 @@ struct FlowLayout: Layout {
 struct WishlistView: View {
     @ObservedObject var store: ItemStore
     @ObservedObject var wishlistGroupStore: WishlistGroupStore
+    @ObservedObject var sharedWishlistStore: SharedWishlistStore
+    @EnvironmentObject var authManager: AuthManager
     
     @State private var showingAddItem = false
     @State private var editingItem: Item? = nil
     @State private var showingItemDetail: Item? = nil
     @State private var showingAddGroup = false
-    @State private var selectedGroupId: UUID? = nil
+    @State private var showingLogin = false
+    @Binding var selectedGroupId: UUID?
     
     private var currentItems: [Item] {
         var filtered = store.items.filter { $0.listType == .wishlist }
@@ -93,6 +96,69 @@ struct WishlistView: View {
             
             ScrollView {
                 VStack(spacing: 20) {
+                    // 分享邀请
+                    if authManager.isAuthenticated {
+                        NavigationLink(destination: SharedWishlistListView(sharedStore: sharedWishlistStore, itemStore: store, wishlistGroupStore: wishlistGroupStore)) {
+                            HStack {
+                                Text("让朋友们一起来实现心愿")
+                                    .font(.subheadline)
+                                    .fontWeight(.bold)
+                                    .foregroundStyle(.white)
+                                
+                                Spacer()
+                                
+                                Image(systemName: "chevron.right")
+                                    .font(.caption)
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(.white.opacity(0.7))
+                            }
+                            .padding()
+                            .background(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [Color.green, Color.green.opacity(0.8)],
+                                            startPoint: .leading,
+                                            endPoint: .trailing
+                                        )
+                                    )
+                            )
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        .padding(.horizontal)
+                    } else {
+                        Button {
+                            showingLogin = true
+                        } label: {
+                            HStack {
+                                Text("登录分享心愿")
+                                    .font(.subheadline)
+                                    .fontWeight(.bold)
+                                    .foregroundStyle(.white)
+                                
+                                Spacer()
+                                
+                                Image(systemName: "chevron.right")
+                                    .font(.caption)
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(.white.opacity(0.7))
+                            }
+                            .padding()
+                            .background(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [Color.blue, Color.blue.opacity(0.8)],
+                                            startPoint: .leading,
+                                            endPoint: .trailing
+                                        )
+                                    )
+                            )
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        .padding(.horizontal)
+                    }
+                    
                     // 总价统计
                     WishlistTotalCard(totalPrice: totalPrice, itemCount: itemCount)
                         .padding(.horizontal)
@@ -138,6 +204,9 @@ struct WishlistView: View {
         }
         .sheet(isPresented: $showingAddGroup) {
             AddWishlistGroupView(groupStore: wishlistGroupStore)
+        }
+        .sheet(isPresented: $showingLogin) {
+            AuthViewWrapper()
         }
     }
 }
@@ -395,6 +464,13 @@ struct AddWishlistItemView: View {
     @State private var purchaseLink = ""
     @State private var selectedGroupId: UUID?
     
+    init(store: ItemStore, wishlistGroupStore: WishlistGroupStore, defaultGroupId: UUID? = nil) {
+        self.store = store
+        self.wishlistGroupStore = wishlistGroupStore
+        self.defaultGroupId = defaultGroupId
+        _selectedGroupId = State(initialValue: defaultGroupId)
+    }
+    
     // 展示类型
     @State private var isCustomDisplayType = false
     @State private var customDisplayType = ""
@@ -580,27 +656,32 @@ struct AddWishlistItemView: View {
                                 )
                         }
                         
-                        PhotosPicker(selection: $selectedPhoto,
-                                   matching: .images) {
-                            Label(selectedImageData == nil ? "选择照片" : "更换照片",
-                                  systemImage: "photo")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .onChange(of: selectedPhoto) { _, newValue in
-                            Task {
-                                if let data = try? await newValue?.loadTransferable(type: Data.self) {
-                                    selectedImageData = data
+                        HStack {
+                            PhotosPicker(selection: $selectedPhoto,
+                                       matching: .images) {
+                                Label(selectedImageData == nil ? "选择照片" : "更换照片",
+                                      systemImage: "photo")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(BorderlessButtonStyle())
+                            .onChange(of: selectedPhoto) { _, newValue in
+                                Task {
+                                    if let data = try? await newValue?.loadTransferable(type: Data.self) {
+                                        selectedImageData = data
+                                    }
                                 }
                             }
-                        }
-                        
-                        if selectedImageData != nil {
-                            Button(role: .destructive) {
-                                selectedImageData = nil
-                                selectedPhoto = nil
-                            } label: {
-                                Label("删除图片", systemImage: "trash")
-                                    .frame(maxWidth: .infinity)
+                            
+                            if selectedImageData != nil {
+                                Divider()
+                                Button(role: .destructive) {
+                                    selectedImageData = nil
+                                    selectedPhoto = nil
+                                } label: {
+                                    Label("删除图片", systemImage: "trash")
+                                        .frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(BorderlessButtonStyle())
                             }
                         }
                     }
@@ -878,27 +959,32 @@ struct EditWishlistItemView: View {
                                 )
                         }
                         
-                        PhotosPicker(selection: $selectedPhoto,
-                                   matching: .images) {
-                            Label(selectedImageData == nil ? "选择照片" : "更换照片",
-                                  systemImage: "photo")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .onChange(of: selectedPhoto) { _, newValue in
-                            Task {
-                                if let data = try? await newValue?.loadTransferable(type: Data.self) {
-                                    selectedImageData = data
+                        HStack {
+                            PhotosPicker(selection: $selectedPhoto,
+                                       matching: .images) {
+                                Label(selectedImageData == nil ? "选择照片" : "更换照片",
+                                      systemImage: "photo")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(BorderlessButtonStyle())
+                            .onChange(of: selectedPhoto) { _, newValue in
+                                Task {
+                                    if let data = try? await newValue?.loadTransferable(type: Data.self) {
+                                        selectedImageData = data
+                                    }
                                 }
                             }
-                        }
-                        
-                        if selectedImageData != nil {
-                            Button(role: .destructive) {
-                                selectedImageData = nil
-                                selectedPhoto = nil
-                            } label: {
-                                Label("删除图片", systemImage: "trash")
-                                    .frame(maxWidth: .infinity)
+                            
+                            if selectedImageData != nil {
+                                Divider()
+                                Button(role: .destructive) {
+                                    selectedImageData = nil
+                                    selectedPhoto = nil
+                                } label: {
+                                    Label("删除图片", systemImage: "trash")
+                                        .frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(BorderlessButtonStyle())
                             }
                         }
                     }
@@ -968,7 +1054,7 @@ struct AddWishlistGroupView: View {
     @State private var selectedIcon = "folder"
     @State private var selectedColor: GroupColor = .pink
     
-    private let icons = ["folder", "star", "heart", "bag", "cart", "gift", "house", "car", "airplane", "gamecontroller", "books.vertical", "tv", "headphones", "watch", "shoe", "tshirt", "laptopcomputer", "iphone", "camera", "bicycle"]
+    private let icons = ["folder", "star", "heart", "bag", "cart", "gift", "house", "car", "airplane", "gamecontroller", "books.vertical", "tv", "headphones", "shoe", "tshirt", "laptopcomputer", "iphone", "camera", "bicycle"]
     
     private var isValid: Bool {
         !name.isEmpty
@@ -1002,6 +1088,7 @@ struct AddWishlistGroupView: View {
                                     )
                                     .clipShape(RoundedRectangle(cornerRadius: 8))
                             }
+                            .buttonStyle(BorderlessButtonStyle())
                         }
                     }
                     .padding(.vertical, 8)
@@ -1027,6 +1114,7 @@ struct AddWishlistGroupView: View {
                                             .stroke(color.swiftUIColor.opacity(0.3), lineWidth: 1)
                                     )
                             }
+                            .buttonStyle(BorderlessButtonStyle())
                         }
                     }
                     .padding(.vertical, 8)
@@ -1060,5 +1148,5 @@ struct AddWishlistGroupView: View {
 }
 
 #Preview {
-    WishlistView(store: ItemStore(), wishlistGroupStore: WishlistGroupStore())
+    WishlistView(store: ItemStore(), wishlistGroupStore: WishlistGroupStore(), sharedWishlistStore: SharedWishlistStore(), selectedGroupId: .constant(nil))
 }

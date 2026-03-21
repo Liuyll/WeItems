@@ -11,13 +11,23 @@ class GroupStore: ObservableObject {
     @Published var groups: [ItemGroup] = []
     
     private let fileName = "groups.json"
+    
+    private var userDir: URL {
+        UserStorageHelper.shared.currentUserDirectory
+    }
+    
     private var fileURL: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent(fileName)
+        userDir.appendingPathComponent(fileName)
     }
     
     init() {
         loadGroups()
+    }
+    
+    /// 切换用户后重新加载数据
+    func reloadForCurrentUser() {
+        loadGroups()
+        print("[GroupStore] 已切换到用户: \(UserStorageHelper.shared.currentUserKey), 共 \(groups.count) 个分组")
     }
     
     func add(_ group: ItemGroup) {
@@ -57,15 +67,35 @@ class GroupStore: ObservableObject {
     }
     
     private func loadGroups() {
+        var allGroups: [ItemGroup] = []
+        
+        allGroups.append(contentsOf: loadGroupsFromFile(fileURL))
+        
+        // 已登录用户额外加载 anonymous 目录
+        if UserStorageHelper.shared.isLoggedIn {
+            let anonymousFile = UserStorageHelper.shared.anonymousDirectory
+                .appendingPathComponent(fileName)
+            let anonymousGroups = loadGroupsFromFile(anonymousFile)
+            let existingIds = Set(allGroups.map { $0.id })
+            for group in anonymousGroups where !existingIds.contains(group.id) {
+                allGroups.append(group)
+            }
+        }
+        
+        groups = allGroups
+        print("分组加载成功，共 \(groups.count) 个分组 (用户: \(UserStorageHelper.shared.currentUserKey))")
+    }
+    
+    private func loadGroupsFromFile(_ url: URL) -> [ItemGroup] {
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
         do {
-            let data = try Data(contentsOf: fileURL)
+            let data = try Data(contentsOf: url)
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
-            groups = try decoder.decode([ItemGroup].self, from: data)
-            print("分组加载成功，共 \(groups.count) 个分组")
+            return try decoder.decode([ItemGroup].self, from: data)
         } catch {
-            print("加载分组失败: \(error)")
-            groups = []
+            print("加载分组失败(\(url.lastPathComponent)): \(error)")
+            return []
         }
     }
 }

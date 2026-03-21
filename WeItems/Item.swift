@@ -23,14 +23,16 @@ struct Item: Identifiable, Codable {
     var groupId: UUID?            // 我的物品分组ID
     var listType: ListType
     var createdAt: Date
+    var updatedAt: Date           // 最近更新时间
     var isSelected: Bool
+    var isArchived: Bool          // 是否归档（仅用于我的物品）
     
     // 心愿清单专用字段
     var displayType: String?      // 心愿清单中展示的类型（可自定义）
     var targetType: String?       // 实现心愿后归属的类型（必须是预设类型）
     var wishlistGroupId: UUID?    // 心愿清单分组ID
     
-    init(id: UUID = UUID(), name: String, details: String, purchaseLink: String, imageData: Data? = nil, price: Double, type: String, groupId: UUID? = nil, listType: ListType = .items, createdAt: Date = Date(), isSelected: Bool = false, displayType: String? = nil, targetType: String? = nil, wishlistGroupId: UUID? = nil) {
+    init(id: UUID = UUID(), name: String, details: String, purchaseLink: String, imageData: Data? = nil, price: Double, type: String, groupId: UUID? = nil, listType: ListType = .items, createdAt: Date = Date(), updatedAt: Date? = nil, isSelected: Bool = false, isArchived: Bool = false, displayType: String? = nil, targetType: String? = nil, wishlistGroupId: UUID? = nil) {
         self.id = id
         self.name = name
         self.details = details
@@ -41,10 +43,33 @@ struct Item: Identifiable, Codable {
         self.groupId = groupId
         self.listType = listType
         self.createdAt = createdAt
+        self.updatedAt = updatedAt ?? createdAt
         self.isSelected = isSelected
+        self.isArchived = isArchived
         self.displayType = displayType
         self.targetType = targetType
         self.wishlistGroupId = wishlistGroupId
+    }
+    
+    // 自定义 Decode，兼容旧数据（缺少 updatedAt 时用 createdAt 补充）
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        details = try container.decode(String.self, forKey: .details)
+        purchaseLink = try container.decode(String.self, forKey: .purchaseLink)
+        imageData = try container.decodeIfPresent(Data.self, forKey: .imageData)
+        price = try container.decode(Double.self, forKey: .price)
+        type = try container.decode(String.self, forKey: .type)
+        groupId = try container.decodeIfPresent(UUID.self, forKey: .groupId)
+        listType = try container.decode(ListType.self, forKey: .listType)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
+        isSelected = try container.decode(Bool.self, forKey: .isSelected)
+        isArchived = try container.decode(Bool.self, forKey: .isArchived)
+        displayType = try container.decodeIfPresent(String.self, forKey: .displayType)
+        targetType = try container.decodeIfPresent(String.self, forKey: .targetType)
+        wishlistGroupId = try container.decodeIfPresent(UUID.self, forKey: .wishlistGroupId)
     }
     
     // 获取展示用的类型（心愿清单优先用 displayType）
@@ -76,7 +101,7 @@ enum ItemType: String, CaseIterable {
     case largeItem = "大件"
     case lifeGood = "人生好物"
     case edc = "EDC"
-    case outdoor = "户外装备"
+    case outdoor = "精神旅行"
     case other = "其他"
 
     var icon: String {

@@ -102,27 +102,32 @@ struct EditItemView: View {
                                 )
                         }
                         
-                        PhotosPicker(selection: $selectedPhoto,
-                                   matching: .images) {
-                            Label(item.imageData == nil ? "选择照片" : "更换照片",
-                                  systemImage: "photo")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .onChange(of: selectedPhoto) { _, newValue in
-                            Task {
-                                if let data = try? await newValue?.loadTransferable(type: Data.self) {
-                                    item.imageData = data
+                        HStack {
+                            PhotosPicker(selection: $selectedPhoto,
+                                       matching: .images) {
+                                Label(item.imageData == nil ? "选择照片" : "更换照片",
+                                      systemImage: "photo")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(BorderlessButtonStyle())
+                            .onChange(of: selectedPhoto) { _, newValue in
+                                Task {
+                                    if let data = try? await newValue?.loadTransferable(type: Data.self) {
+                                        item.imageData = data
+                                    }
                                 }
                             }
-                        }
-                        
-                        if item.imageData != nil {
-                            Button(role: .destructive) {
-                                item.imageData = nil
-                                selectedPhoto = nil
-                            } label: {
-                                Label("删除图片", systemImage: "trash")
-                                    .frame(maxWidth: .infinity)
+                            
+                            if item.imageData != nil {
+                                Divider()
+                                Button(role: .destructive) {
+                                    item.imageData = nil
+                                    selectedPhoto = nil
+                                } label: {
+                                    Label("删除图片", systemImage: "trash")
+                                        .frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(BorderlessButtonStyle())
                             }
                         }
                     }

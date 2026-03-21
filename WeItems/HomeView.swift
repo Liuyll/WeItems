@@ -9,10 +9,17 @@ struct HomeView: View {
     @StateObject private var store = ItemStore()
     @StateObject private var groupStore = GroupStore()
     @StateObject private var wishlistGroupStore = WishlistGroupStore()
+    @StateObject private var sharedWishlistStore = SharedWishlistStore()
+    @EnvironmentObject var authManager: AuthManager
 
     @State private var showingAddItem = false
+    @State private var addItemId = UUID()
     @State private var showingAddGroup = false
     @State private var currentMode: AppMode = .items
+    @State private var showingProfile = false
+    @State private var autoSyncToast: String?
+    @State private var showAutoSyncToast = false
+    @State private var wishlistSelectedGroupId: UUID? = nil
     
     enum AppMode: String, CaseIterable {
         case items = "我的物品"
@@ -37,62 +44,205 @@ struct HomeView: View {
     }
     
     var body: some View {
-        NavigationStack {
-            Group {
-                switch currentMode {
-                case .items:
-                    ItemsView(store: store, groupStore: groupStore, showingAddGroup: $showingAddGroup)
-                case .wishlist:
-                    WishlistView(store: store, wishlistGroupStore: wishlistGroupStore)
-                case .daily:
-                    DailyExpenseView(store: store, groupStore: groupStore)
+        ZStack {
+            NavigationStack {
+                Group {
+                    switch currentMode {
+                    case .items:
+                        ItemsView(store: store, groupStore: groupStore, showingAddGroup: $showingAddGroup)
+                    case .wishlist:
+                        WishlistView(store: store, wishlistGroupStore: wishlistGroupStore, sharedWishlistStore: sharedWishlistStore, selectedGroupId: $wishlistSelectedGroupId)
+                    case .daily:
+                        DailyExpenseView(store: store, groupStore: groupStore)
+                    }
                 }
-            }
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Menu {
-                        ForEach(AppMode.allCases, id: \.self) { mode in
-                            Button {
-                                withAnimation(.spring(duration: 0.3)) {
-                                    currentMode = mode
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        HStack(spacing: 12) {
+                            // 皮卡丘头像（已登录时显示在最顶部）
+                            if authManager.isAuthenticated {
+                                Button {
+                                    showingProfile = true
+                                } label: {
+                                    Image(systemName: "bolt.circle.fill")
+                                        .font(.system(size: 28))
+                                        .foregroundStyle(.yellow)
+                                }
+                                .buttonStyle(PlainButtonStyle())
+                            }
+                            
+                            // 模式选择器
+                            Menu {
+                                ForEach(AppMode.allCases, id: \.self) { mode in
+                                    Button {
+                                        withAnimation(.spring(duration: 0.3)) {
+                                            currentMode = mode
+                                        }
+                                    } label: {
+                                        Label(mode.rawValue, systemImage: mode.icon)
+                                        if currentMode == mode {
+                                            Image(systemName: "checkmark")
+                                        }
+                                    }
                                 }
                             } label: {
-                                Label(mode.rawValue, systemImage: mode.icon)
-                                if currentMode == mode {
-                                    Image(systemName: "checkmark")
+                                HStack(spacing: 4) {
+                                    Text(currentMode.rawValue)
+                                        .font(.headline)
+                                    Image(systemName: "chevron.down")
+                                        .font(.caption)
                                 }
+                                .foregroundStyle(.primary)
                             }
                         }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Text(currentMode.rawValue)
-                                .font(.headline)
-                            Image(systemName: "chevron.down")
-                                .font(.caption)
-                        }
-                        .foregroundStyle(.primary)
                     }
+                    
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button {
+                            addItemId = UUID()
+                            showingAddItem = true
+                        } label: {
+                            Image(systemName: "plus.circle.fill")
+                                .font(.title2)
+                                .foregroundStyle(currentMode.color)
+                        }
+                    }
+                }
+                .sheet(isPresented: $showingAddItem) {
+                    if currentMode == .items {
+                        AddItemView(store: store, groupStore: groupStore, defaultGroupId: nil)
+                            .id(addItemId)
+                    } else if currentMode == .wishlist {
+                        AddWishlistItemView(store: store, wishlistGroupStore: wishlistGroupStore, defaultGroupId: wishlistSelectedGroupId)
+                            .id(addItemId)
+                    }
+                }
+                .sheet(isPresented: $showingAddGroup) {
+                    AddGroupView(groupStore: groupStore)
+                }
+                .sheet(isPresented: $showingProfile) {
+                    ProfileView()
+                        .environmentObject(store)
+                }
+                .onReceive(NotificationCenter.default.publisher(for: AuthManager.userDidChangeNotification)) { _ in
+                    store.reloadForCurrentUser()
+                    groupStore.reloadForCurrentUser()
+                    wishlistGroupStore.reloadForCurrentUser()
+                }
+                .onAppear {
+                    checkAutoSync()
+                }
+                .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
+                    checkAutoSync()
+                }
+            }
+            
+            // 自动同步 Toast
+            if showAutoSyncToast, let message = autoSyncToast {
+                VStack {
+                    Spacer()
+                    Text(message)
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 12)
+                        .background(
+                            Capsule()
+                                .fill(Color.black.opacity(0.75))
+                        )
+                        .padding(.bottom, 60)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+                .animation(.easeInOut(duration: 0.3), value: showAutoSyncToast)
+            }
+        }
+    }
+    
+    /// 检查是否需要自动同步
+    private func checkAutoSync() {
+        guard authManager.isAuthenticated, store.needsAutoSync else { return }
+        
+        print("[自动同步] 满足条件：已登录、有变更、距上次同步超过1天，开始自动同步...")
+        
+        Task {
+            let tokenValid = await authManager.ensureValidToken()
+            guard tokenValid else {
+                print("[自动同步] Token 无效，跳过自动同步")
+                return
+            }
+            guard let client = authManager.getCloudBaseClient() else {
+                print("[自动同步] 无法获取云客户端，跳过自动同步")
+                return
+            }
+            
+            // 同时同步物品和心愿清单
+            async let itemsResult = client.syncItems(items: store.items)
+            async let wishesResult = client.syncWishes(items: store.items)
+            
+            let (itemsSyncResult, wishesSyncResult) = await (itemsResult, wishesResult)
+            
+            await MainActor.run {
+                var anySuccess = false
+                
+                if let result = itemsSyncResult {
+                    for name in result.deletedLocalNames {
+                        if let item = store.items.first(where: { $0.name == name && $0.listType == .items }) {
+                            store.delete(item)
+                            print("[自动同步] 已删除本地物品: \(name)")
+                        }
+                    }
+                    anySuccess = true
                 }
                 
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button {
-                        showingAddItem = true
-                    } label: {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.title2)
-                            .foregroundStyle(currentMode.color)
+                if let result = wishesSyncResult {
+                    for name in result.deletedLocalNames {
+                        if let item = store.items.first(where: { $0.name == name && $0.listType == .wishlist }) {
+                            store.delete(item)
+                            print("[自动同步] 已删除本地心愿: \(name)")
+                        }
                     }
+                    anySuccess = true
+                }
+                
+                let message = anySuccess ? "自动同步成功" : "自动同步失败"
+                
+                // 记录同步历史
+                let record = SyncRecord(
+                    id: UUID(),
+                    date: Date(),
+                    trigger: .auto,
+                    itemsUploaded: itemsSyncResult?.uploadedCount ?? 0,
+                    itemsUpdated: itemsSyncResult?.updatedCount ?? 0,
+                    itemsDeletedLocal: itemsSyncResult?.deletedLocalNames.count ?? 0,
+                    itemsFailed: itemsSyncResult?.failedIds.count ?? 0,
+                    wishesUploaded: wishesSyncResult?.uploadedCount ?? 0,
+                    wishesUpdated: wishesSyncResult?.updatedCount ?? 0,
+                    wishesDeletedLocal: wishesSyncResult?.deletedLocalNames.count ?? 0,
+                    wishesFailed: wishesSyncResult?.failedIds.count ?? 0,
+                    success: anySuccess,
+                    message: message
+                )
+                SyncHistoryStore.shared.addRecord(record)
+                
+                if anySuccess {
+                    store.markSyncCompleted()
+                    showAutoSyncToastMessage(message)
+                } else {
+                    print("[自动同步] 同步失败")
                 }
             }
-            .sheet(isPresented: $showingAddItem) {
-                if currentMode == .items {
-                    AddItemView(store: store, groupStore: groupStore, defaultGroupId: nil)
-                } else if currentMode == .wishlist {
-                    AddWishlistItemView(store: store, wishlistGroupStore: wishlistGroupStore, defaultGroupId: nil)
-                }
-            }
-            .sheet(isPresented: $showingAddGroup) {
-                AddGroupView(groupStore: groupStore)
+        }
+    }
+    
+    private func showAutoSyncToastMessage(_ message: String) {
+        autoSyncToast = message
+        withAnimation {
+            showAutoSyncToast = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            withAnimation {
+                showAutoSyncToast = false
             }
         }
     }
@@ -103,34 +253,93 @@ struct ItemsView: View {
     @ObservedObject var store: ItemStore
     @ObservedObject var groupStore: GroupStore
     @Binding var showingAddGroup: Bool
+    @EnvironmentObject var authManager: AuthManager
     
     @State private var selectedGroupId: UUID?
     @State private var editingItem: Item? = nil
     @State private var showingItemDetail: Item? = nil
+    @State private var showArchived: Bool = false
+    @State private var showingAccountSync = false
+    @State private var selectedType: ItemType? = nil
     
     private var currentItems: [Item] {
-        store.itemsForGroup(selectedGroupId, listType: .items)
+        var result: [Item]
+        if showArchived {
+            result = store.items.filter { $0.listType == .items && $0.isArchived }
+        } else {
+            var filtered = store.itemsForGroup(selectedGroupId, listType: .items)
+            filtered = filtered.filter { !$0.isArchived }
+            result = filtered
+        }
+        if let type = selectedType {
+            result = result.filter { $0.type == type.rawValue }
+        }
+        return result
     }
     
     private var currentTotalPrice: Double {
-        store.totalPrice(forGroup: selectedGroupId, listType: .items)
+        currentItems.reduce(0) { $0 + $1.price }
     }
     
     private var currentItemCount: Int {
-        store.itemCount(forGroup: selectedGroupId, listType: .items)
+        currentItems.count
     }
     
     private var currentTitle: String {
-        selectedGroupId == nil ? "我的物品" : (groupStore.group(for: selectedGroupId)?.name ?? "")
+        if showArchived {
+            return "归档"
+        }
+        return selectedGroupId == nil ? "我的物品" : (groupStore.group(for: selectedGroupId)?.name ?? "")
+    }
+    
+    private var archivedCount: Int {
+        store.items.filter { $0.listType == .items && $0.isArchived }.count
     }
     
     var body: some View {
         VStack(spacing: 0) {
-            // 分组选择器
+            // 账号与同步入口 - 仅在未登录时显示（在下拉栏下方）
+            if !authManager.isAuthenticated {
+                Button {
+                    showingAccountSync = true
+                } label: {
+                    HStack {
+                        Text("登录即可多端同步")
+                            .font(.subheadline)
+                            .fontWeight(.bold)
+                            .foregroundStyle(.white)
+                        
+                        Spacer()
+                        
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.white.opacity(0.7))
+                    }
+                    .padding()
+                    .background(
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(
+                                LinearGradient(
+                                    colors: [Color.blue, Color.blue.opacity(0.8)],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                )
+                            )
+                    )
+                }
+                .buttonStyle(PlainButtonStyle())
+                .padding(.horizontal)
+                .padding(.top, 8)
+            }
+            
+            // 分组选择器（包含归档标签）
             GroupSelectorView(
                 groupStore: groupStore,
                 itemStore: store,
                 selectedGroupId: $selectedGroupId,
+                showArchived: $showArchived,
+                archivedCount: archivedCount,
                 onAddGroup: { showingAddGroup = true }
             )
             .padding(.horizontal)
@@ -144,10 +353,13 @@ struct ItemsView: View {
             )
             .padding()
             
+            // 物品类型筛选
+            TypeFilterView(selectedType: $selectedType, store: store)
+            
             // 物品列表
             List {
                 ForEach(currentItems) { item in
-                    ItemCard(item: item, group: groupStore.group(for: item.groupId), showGroup: selectedGroupId == nil)
+                    ItemCard(item: item, group: groupStore.group(for: item.groupId), showGroup: selectedGroupId == nil && !showArchived)
                         .listRowSeparator(.hidden)
                         .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                         .onTapGesture {
@@ -163,9 +375,9 @@ struct ItemsView: View {
             .overlay {
                 if currentItems.isEmpty {
                     EmptyStateView(
-                        icon: "tray",
-                        title: "暂无物品",
-                        subtitle: selectedGroupId == nil ? "点击 + 添加你的第一个物品" : "该分组还没有物品"
+                        icon: showArchived ? "archivebox" : "tray",
+                        title: showArchived ? "暂无归档物品" : "暂无物品",
+                        subtitle: showArchived ? "" : (selectedGroupId == nil ? "点击 + 添加你的第一个物品" : "该分组还没有物品")
                     )
                 }
             }
@@ -175,6 +387,20 @@ struct ItemsView: View {
         }
         .sheet(item: $showingItemDetail) { item in
             ItemDetailView(store: store, item: item, group: groupStore.group(for: item.groupId))
+        }
+        .sheet(isPresented: $showingAccountSync, onDismiss: {
+            // Sheet 关闭后，如果已登录则不需要再次显示
+            if authManager.isAuthenticated {
+                print("[ItemsView] 用户已登录，账号与同步入口已隐藏")
+            }
+        }) {
+            AuthViewWrapper()
+        }
+        .onChange(of: authManager.isAuthenticated) { oldValue, newValue in
+            if newValue {
+                // 登录成功后关闭 sheet
+                showingAccountSync = false
+            }
         }
     }
     
@@ -186,11 +412,82 @@ struct ItemsView: View {
     }
 }
 
+// 物品类型筛选视图
+struct TypeFilterView: View {
+    @Binding var selectedType: ItemType?
+    @ObservedObject var store: ItemStore
+    
+    private static let typeColors: [ItemType: Color] = [
+        .digital: .blue,
+        .fashion: .pink,
+        .appliance: .cyan,
+        .largeItem: .purple,
+        .lifeGood: .red,
+        .edc: .brown,
+        .outdoor: .green,
+        .other: .gray
+    ]
+    
+    /// 当前未归档物品中实际存在的类型
+    private var activeTypes: [ItemType] {
+        let myItems = store.items.filter { $0.listType == .items && !$0.isArchived }
+        let typeSet = Set(myItems.compactMap { ItemType(rawValue: $0.type) })
+        return ItemType.allCases.filter { typeSet.contains($0) }
+    }
+    
+    var body: some View {
+        if !activeTypes.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(activeTypes, id: \.self) { type in
+                        let color = Self.typeColors[type] ?? .gray
+                        let isSelected = selectedType == type
+                        let count = store.items.filter { $0.listType == .items && !$0.isArchived && $0.type == type.rawValue }.count
+                        
+                        Button {
+                            withAnimation(.spring(duration: 0.25)) {
+                                selectedType = isSelected ? nil : type
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: type.icon)
+                                    .font(.system(size: 10))
+                                Text(type.rawValue)
+                                    .font(.caption2)
+                                    .fontWeight(.medium)
+                                Text("\(count)")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundStyle(isSelected ? .white.opacity(0.8) : color.opacity(0.7))
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(
+                                Capsule()
+                                    .fill(isSelected ? color : color.opacity(0.1))
+                            )
+                            .foregroundStyle(isSelected ? .white : color)
+                            .overlay(
+                                Capsule()
+                                    .stroke(color.opacity(0.3), lineWidth: isSelected ? 0 : 0.5)
+                            )
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                    }
+                }
+                .padding(.horizontal)
+            }
+            .padding(.bottom, 4)
+        }
+    }
+}
+
 // 分组选择器
 struct GroupSelectorView: View {
     @ObservedObject var groupStore: GroupStore
     @ObservedObject var itemStore: ItemStore
     @Binding var selectedGroupId: UUID?
+    @Binding var showArchived: Bool
+    let archivedCount: Int
     let onAddGroup: () -> Void
     
     @State private var editingGroupId: UUID? = nil
@@ -200,54 +497,90 @@ struct GroupSelectorView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 12) {
                 // 全部
-                GroupChip(
-                    name: "全部",
-                    icon: "square.grid.2x2",
-                    color: .blue,
-                    isSelected: selectedGroupId == nil,
-                    isEditing: false
-                )
-                .onTapGesture {
+                Button {
                     withAnimation(.spring(duration: 0.3)) {
                         selectedGroupId = nil
+                        showArchived = false
                         editingGroupId = nil
                     }
+                } label: {
+                    GroupChip(
+                        name: "全部",
+                        icon: "square.grid.2x2",
+                        color: .blue,
+                        isSelected: selectedGroupId == nil && !showArchived,
+                        isEditing: false
+                    )
                 }
+                .buttonStyle(PlainButtonStyle())
                 
                 // 各个分组
                 ForEach(groupStore.groups) { group in
-                    GroupChip(
-                        name: group.name,
-                        icon: group.icon,
-                        color: group.color.swiftUIColor,
-                        isSelected: selectedGroupId == group.id,
-                        isEditing: editingGroupId == group.id
-                    )
-                    .onTapGesture {
+                    ZStack {
+                        Button {
+                            withAnimation(.spring(duration: 0.3)) {
+                                selectedGroupId = group.id
+                                showArchived = false
+                                editingGroupId = nil
+                            }
+                        } label: {
+                            GroupChip(
+                                name: group.name,
+                                icon: group.icon,
+                                color: group.color.swiftUIColor,
+                                isSelected: selectedGroupId == group.id && !showArchived,
+                                isEditing: editingGroupId == group.id
+                            )
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        .simultaneousGesture(
+                            LongPressGesture()
+                                .onEnded { _ in
+                                    withAnimation(.spring(duration: 0.3)) {
+                                        editingGroupId = group.id
+                                    }
+                                }
+                        )
+                        
+                        // 删除按钮
+                        if editingGroupId == group.id {
+                            VStack {
+                                HStack {
+                                    Spacer()
+                                    Button {
+                                        groupToDelete = group
+                                    } label: {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .font(.system(size: 18))
+                                            .foregroundStyle(.red)
+                                            .background(Circle().fill(.white))
+                                    }
+                                    .offset(x: 6, y: -6)
+                                }
+                                Spacer()
+                            }
+                        }
+                    }
+                }
+                
+                // 归档标签（有归档物品时才显示）
+                if archivedCount > 0 {
+                    Button {
                         withAnimation(.spring(duration: 0.3)) {
-                            selectedGroupId = group.id
+                            showArchived = true
+                            selectedGroupId = nil
                             editingGroupId = nil
                         }
+                    } label: {
+                        GroupChip(
+                            name: "归档",
+                            icon: "archivebox",
+                            color: .purple,
+                            isSelected: showArchived,
+                            isEditing: false
+                        )
                     }
-                    .onLongPressGesture {
-                        withAnimation(.spring(duration: 0.3)) {
-                            editingGroupId = group.id
-                        }
-                    }
-                    .overlay(alignment: .topTrailing) {
-                        if editingGroupId == group.id {
-                            Button {
-                                groupToDelete = group
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .font(.system(size: 18))
-                                    .foregroundStyle(.red)
-                                    .background(Circle().fill(.white))
-                            }
-                            .offset(x: 6, y: -6)
-                            .transition(.scale.combined(with: .opacity))
-                        }
-                    }
+                    .buttonStyle(PlainButtonStyle())
                 }
                 
                 // 添加分组按钮
@@ -425,7 +758,7 @@ struct ItemCard: View {
                 Spacer()
             }
             
-            // 图片展示
+            // 图片展示（无图片时不显示）
             if let image = item.image {
                 image
                     .resizable()
@@ -433,15 +766,6 @@ struct ItemCard: View {
                     .frame(height: 180)
                     .frame(maxWidth: .infinity)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
-            } else {
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(Color.gray.opacity(0.2))
-                    .frame(height: 180)
-                    .overlay(
-                        Image(systemName: "photo")
-                            .font(.largeTitle)
-                            .foregroundStyle(.gray)
-                    )
             }
             
             // 详情
@@ -494,6 +818,27 @@ struct EmptyStateView: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+// MARK: - AuthView 包装器
+struct AuthViewWrapper: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject var authManager: AuthManager
+    
+    var body: some View {
+        AuthView(onLoginSuccess: { response in
+            // 登录成功后更新 AuthManager
+            authManager.loginSuccess(
+                accessToken: response.accessToken,
+                refreshToken: response.refreshToken,
+                expiresIn: response.expiresIn,
+                tokenType: response.tokenType,
+                sub: response.sub
+            )
+            // 关闭 sheet
+            dismiss()
+        })
     }
 }
 

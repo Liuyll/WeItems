@@ -15,7 +15,6 @@ struct AddItemView: View {
     
     @State private var name = ""
     @State private var details = ""
-    @State private var purchaseLink = ""
     @State private var price = ""
     @State private var selectedType: ItemType = .other
     @State private var selectedGroupId: UUID?
@@ -24,6 +23,9 @@ struct AddItemView: View {
     @State private var selectedImageData: Data?
     
     @State private var showingAddGroup = false
+    @State private var showingCelebration = false
+    @State private var showingDuplicateAlert = false
+    @State private var spiritTravelCount = 0
     
     private var isValid: Bool {
         !name.isEmpty && !price.isEmpty && Double(price) != nil
@@ -104,27 +106,32 @@ struct AddItemView: View {
                                 )
                         }
                         
-                        PhotosPicker(selection: $selectedPhoto,
-                                   matching: .images) {
-                            Label(selectedImageData == nil ? "选择照片" : "更换照片",
-                                  systemImage: "photo")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .onChange(of: selectedPhoto) { _, newValue in
-                            Task {
-                                if let data = try? await newValue?.loadTransferable(type: Data.self) {
-                                    selectedImageData = data
+                        HStack {
+                            PhotosPicker(selection: $selectedPhoto,
+                                       matching: .images) {
+                                Label(selectedImageData == nil ? "选择照片" : "更换照片",
+                                      systemImage: "photo")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(BorderlessButtonStyle())
+                            .onChange(of: selectedPhoto) { _, newValue in
+                                Task {
+                                    if let data = try? await newValue?.loadTransferable(type: Data.self) {
+                                        selectedImageData = data
+                                    }
                                 }
                             }
-                        }
-                        
-                        if selectedImageData != nil {
-                            Button(role: .destructive) {
-                                selectedImageData = nil
-                                selectedPhoto = nil
-                            } label: {
-                                Label("删除图片", systemImage: "trash")
-                                    .frame(maxWidth: .infinity)
+                            
+                            if selectedImageData != nil {
+                                Divider()
+                                Button(role: .destructive) {
+                                    selectedImageData = nil
+                                    selectedPhoto = nil
+                                } label: {
+                                    Label("删除图片", systemImage: "trash")
+                                        .frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(BorderlessButtonStyle())
                             }
                         }
                     }
@@ -135,13 +142,6 @@ struct AddItemView: View {
                 Section("详情描述") {
                     TextEditor(text: $details)
                         .frame(minHeight: 80)
-                }
-                
-                // 购买链接
-                Section("购买链接") {
-                    TextField("输入链接地址", text: $purchaseLink)
-                        .keyboardType(.URL)
-                        .autocapitalization(.none)
                 }
             }
             .navigationTitle("添加物品")
@@ -164,6 +164,16 @@ struct AddItemView: View {
             .sheet(isPresented: $showingAddGroup) {
                 AddGroupView(groupStore: groupStore)
             }
+            .fullScreenCover(isPresented: $showingCelebration, onDismiss: {
+                dismiss()
+            }) {
+                SpiritTravelCelebrationView(count: spiritTravelCount)
+            }
+            .alert("同名物品已存在", isPresented: $showingDuplicateAlert) {
+                Button("确定") {}
+            } message: {
+                Text("已存在名为「\(name)」的物品，请更换名称后重试。")
+            }
             .onAppear {
                 selectedGroupId = defaultGroupId
             }
@@ -173,10 +183,17 @@ struct AddItemView: View {
     private func saveItem() {
         guard let priceValue = Double(price) else { return }
         
+        // 检查是否存在同名物品
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if store.items.contains(where: { $0.name == trimmedName }) {
+            showingDuplicateAlert = true
+            return
+        }
+        
         let newItem = Item(
             name: name,
             details: details,
-            purchaseLink: purchaseLink,
+            purchaseLink: "",
             imageData: selectedImageData,
             price: priceValue,
             type: selectedType.rawValue,
@@ -184,7 +201,28 @@ struct AddItemView: View {
         )
         
         store.add(newItem)
-        dismiss()
+        
+        // 检查是否为精神旅行类型
+        if selectedType == .outdoor {
+            // 统计本年度精神旅行次数（包括刚添加的）
+            spiritTravelCount = countCurrentYearSpiritTravels()
+            showingCelebration = true
+        } else {
+            dismiss()
+        }
+    }
+    
+    private func countCurrentYearSpiritTravels() -> Int {
+        let calendar = Calendar.current
+        let currentYear = calendar.component(.year, from: Date())
+        
+        return store.items.filter { item in
+            let itemYear = calendar.component(.year, from: item.createdAt)
+            // 统计本年度所有精神旅行物品（包括已归档的，不包括已删除的）
+            return item.type == ItemType.outdoor.rawValue && 
+                   itemYear == currentYear &&
+                   item.listType == .items
+        }.count
     }
 }
 

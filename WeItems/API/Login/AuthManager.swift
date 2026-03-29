@@ -49,9 +49,9 @@ class AuthManager: ObservableObject {
     
     /// 应用启动时验证 Token
     /// 1. 检查本地是否有 token
-    /// 2. 验证 token 是否有效
-    /// 3. 如果无效，尝试刷新 token
-    /// 4. 如果都失败，则标记为未认证
+    /// 2. 如果上次验证在 24 小时内，直接复用（跳过网络请求）
+    /// 3. 超过 24 小时，使用 refresh_token 刷新
+    /// 4. 如果刷新失败，则标记为未认证
     @MainActor
     func validateTokenOnLaunch() async {
         isLoading = true
@@ -72,23 +72,33 @@ class AuthManager: ObservableObject {
             cloudBaseClient = CloudBaseClient(envId: envId, accessToken: accessToken)
         }
         
-        // 2. 尝试验证当前 token
-        if await introspectCurrentToken() {
-            print("[AuthManager] Token 验证成功")
+        // 2. 检查上次验证时间，24 小时内直接复用
+        if TokenStorage.shared.isLastVerifyStillValid() {
+            print("[AuthManager] 上次验证在 24 小时内，直接复用本地 token")
             authState = .authenticated
             return
         }
         
-        // 3. Token 无效，尝试刷新
-        print("[AuthManager] Token 无效，尝试刷新...")
+        // 3. 超过 24 小时，使用 refresh_token 刷新
+        print("[AuthManager] 超过 24 小时或首次验证，使用 refresh_token 刷新...")
         if await refreshTokenWithStoredRefreshToken(refreshToken: refreshToken) {
             print("[AuthManager] Token 刷新成功")
+            TokenStorage.shared.saveLastVerifyTime()
             authState = .authenticated
             return
         }
         
-        // 4. 都失败了，清除 token 并标记为未认证
-        print("[AuthManager] Token 刷新失败，需要重新登录")
+        // 4. refresh 失败，尝试直接验证当前 token（可能 refresh_token 过期但 access_token 还有效）
+        print("[AuthManager] Refresh 失败，尝试验证当前 access_token...")
+        if await introspectCurrentToken() {
+            print("[AuthManager] 当前 access_token 仍然有效")
+            TokenStorage.shared.saveLastVerifyTime()
+            authState = .authenticated
+            return
+        }
+        
+        // 5. 都失败了，清除 token 并标记为未认证
+        print("[AuthManager] Token 刷新和验证均失败，需要重新登录")
         TokenStorage.shared.clearToken()
         authState = .unauthenticated
     }
@@ -137,6 +147,9 @@ class AuthManager: ObservableObject {
             sub: sub
         )
         
+        // 记录本次验证时间
+        TokenStorage.shared.saveLastVerifyTime()
+        
         // 更新 cloudBaseClient
         if let envId = Self.loadEnvId() {
             self.cloudBaseClient = CloudBaseClient(
@@ -163,24 +176,19 @@ class AuthManager: ObservableObject {
         NotificationCenter.default.post(name: Self.userDidChangeNotification, object: nil)
     }
     
-    /// 确保 token 有效：如果已过期则自动刷新
+    /// 确保 token 有效：如果上次验证超过 24 小时则自动刷新
     /// 在进行任何 API 调用前应先调用此方法
     /// - Returns: token 是否有效（刷新成功也算有效）
     @MainActor
     func ensureValidToken() async -> Bool {
-        // 1. 本地判断 token 是否过期
-        guard !TokenStorage.shared.isTokenExpired() else {
-            print("[AuthManager] Token 已过期，尝试刷新...")
-            return await tryRefreshToken()
-        }
-        
-        // 2. 本地未过期，再向服务端验证一次
-        if await introspectCurrentToken() {
+        // 1. 检查上次验证时间，24 小时内直接复用
+        if TokenStorage.shared.isLastVerifyStillValid() {
+            print("[AuthManager] 上次验证在 24 小时内，token 有效")
             return true
         }
         
-        // 3. 服务端验证失败，尝试刷新
-        print("[AuthManager] Token 服务端验证失败，尝试刷新...")
+        // 2. 超过 24 小时，使用 refresh_token 刷新
+        print("[AuthManager] 超过 24 小时，尝试刷新 token...")
         return await tryRefreshToken()
     }
     
@@ -195,6 +203,7 @@ class AuthManager: ObservableObject {
         
         if await refreshTokenWithStoredRefreshToken(refreshToken: refreshToken) {
             print("[AuthManager] Token 刷新成功")
+            TokenStorage.shared.saveLastVerifyTime()
             authState = .authenticated
             return true
         }
@@ -213,5 +222,31 @@ class AuthManager: ObservableObject {
     /// 检查是否已认证
     var isAuthenticated: Bool {
         return authState == .authenticated
+    }
+    
+    /// 判断启动时是否需要网络验证 token
+    /// - 没有本地 token → 不需要（直接进入首页，显示未登录状态）
+    /// - 有 token 且 24h 内已验证 → 不需要（直接复用，可以跳过开屏页）
+    /// - 有 token 但超过 24h → 需要（要走网络刷新流程，需要开屏页等待）
+    func needsNetworkVerification() -> Bool {
+        guard TokenStorage.shared.getAccessToken() != nil,
+              TokenStorage.shared.getRefreshToken() != nil else {
+            // 没有 token，不需要网络验证
+            return false
+        }
+        
+        if TokenStorage.shared.isLastVerifyStillValid() {
+            // 24h 内已验证，不需要网络请求，同步设置状态
+            authState = .authenticated
+            // 确保 CloudBaseClient 已创建
+            if cloudBaseClient == nil, let envId = Self.loadEnvId(),
+               let accessToken = TokenStorage.shared.getAccessToken() {
+                cloudBaseClient = CloudBaseClient(envId: envId, accessToken: accessToken)
+            }
+            return false
+        }
+        
+        // 需要网络验证
+        return true
     }
 }

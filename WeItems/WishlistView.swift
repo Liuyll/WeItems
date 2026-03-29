@@ -64,6 +64,7 @@ struct WishlistView: View {
     @State private var showingAddGroup = false
     @State private var showingLogin = false
     @Binding var selectedGroupId: UUID?
+    @State private var lastScrollOffset: CGFloat = 0
     
     private var currentItems: [Item] {
         var filtered = store.items.filter { $0.listType == .wishlist }
@@ -96,6 +97,17 @@ struct WishlistView: View {
             
             ScrollView {
                 VStack(spacing: 20) {
+                    // 滚动检测锚点
+                    Color.clear
+                        .frame(height: 0)
+                        .background(
+                            GeometryReader { proxy in
+                                Color.clear
+                                    .preference(key: ScrollOffsetPreferenceKey.self,
+                                                value: proxy.frame(in: .global).minY)
+                            }
+                        )
+                    
                     // 分享邀请
                     if authManager.isAuthenticated {
                         NavigationLink(destination: SharedWishlistListView(sharedStore: sharedWishlistStore, itemStore: store, wishlistGroupStore: wishlistGroupStore)) {
@@ -192,6 +204,12 @@ struct WishlistView: View {
                 }
                 .padding(.vertical)
             }
+            .onPreferenceChange(ScrollOffsetPreferenceKey.self) { newOffset in
+                if abs(newOffset - lastScrollOffset) > 2 {
+                    lastScrollOffset = newOffset
+                    NotificationCenter.default.post(name: .scrollDidChange, object: nil)
+                }
+            }
         }
         .sheet(isPresented: $showingAddItem) {
             AddWishlistItemView(store: store, wishlistGroupStore: wishlistGroupStore, defaultGroupId: selectedGroupId)
@@ -200,7 +218,7 @@ struct WishlistView: View {
             EditWishlistItemView(item: item, store: store, wishlistGroupStore: wishlistGroupStore)
         }
         .sheet(item: $showingItemDetail) { item in
-            ItemDetailView(store: store, item: item, group: wishlistGroupStore.group(for: item.wishlistGroupId))
+            ItemDetailView(store: store, item: item, group: wishlistGroupStore.group(for: item.wishlistGroupId), sharedStore: sharedWishlistStore, wishlistGroupStore: wishlistGroupStore)
         }
         .sheet(isPresented: $showingAddGroup) {
             AddWishlistGroupView(groupStore: wishlistGroupStore)
@@ -451,6 +469,78 @@ struct WishlistCard: View {
     }
 }
 
+// MARK: - 卡通卡片背景修饰器
+struct CartoonCardModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .padding(16)
+            .background(
+                RoundedRectangle(cornerRadius: 18)
+                    .fill(Color(.secondarySystemGroupedBackground))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18)
+                    .stroke(Color.pink.opacity(0.10), lineWidth: 1)
+            )
+            .shadow(color: Color.pink.opacity(0.06), radius: 6, x: 0, y: 3)
+    }
+}
+
+extension View {
+    func cartoonCard() -> some View {
+        modifier(CartoonCardModifier())
+    }
+}
+
+// MARK: - 卡通区块标题
+struct CartoonSectionHeader: View {
+    let emoji: String
+    let title: String
+    let color: Color
+    
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(emoji)
+                .font(.title3)
+            Text(title)
+                .font(.subheadline)
+                .fontWeight(.bold)
+                .foregroundStyle(color)
+        }
+        .padding(.bottom, 2)
+    }
+}
+
+// MARK: - 卡通输入框
+struct CartoonTextField: View {
+    let placeholder: String
+    @Binding var text: String
+    var keyboardType: UIKeyboardType = .default
+    var leadingIcon: String? = nil
+    var iconColor: Color = .pink
+    
+    var body: some View {
+        HStack(spacing: 10) {
+            if let icon = leadingIcon {
+                Text(icon)
+                    .font(.body)
+            }
+            TextField(placeholder, text: $text)
+                .keyboardType(keyboardType)
+                .autocorrectionDisabled()
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(.tertiarySystemGroupedBackground))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.pink.opacity(0.12), lineWidth: 1)
+        )
+    }
+}
+
 // 添加心愿物品视图
 struct AddWishlistItemView: View {
     @Environment(\.dismiss) private var dismiss
@@ -462,7 +552,13 @@ struct AddWishlistItemView: View {
     @State private var name = ""
     @State private var price = ""
     @State private var purchaseLink = ""
+    @State private var details = ""
     @State private var selectedGroupId: UUID?
+    
+    // 彩蛋动画状态（20%概率触发）
+    @State private var isEasterEgg = false
+    @State private var showTitle = false
+    @State private var showFireworks = false
     
     init(store: ItemStore, wishlistGroupStore: WishlistGroupStore, defaultGroupId: UUID? = nil) {
         self.store = store
@@ -481,6 +577,7 @@ struct AddWishlistItemView: View {
     
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var selectedImageData: Data?
+    @State private var compressedImageData: Data?
     
     private var isValid: Bool {
         !name.isEmpty && !price.isEmpty && Double(price) != nil
@@ -492,226 +589,392 @@ struct AddWishlistItemView: View {
     
     var body: some View {
         NavigationStack {
-            Form {
-                Section("基本信息") {
-                    TextField("物品名称", text: $name)
-                    
-                    HStack {
-                        Text("¥")
-                            .foregroundStyle(.secondary)
-                        TextField("价格", text: $price)
-                            .keyboardType(.decimalPad)
-                    }
-                    
-                    // 分组选择
-                    if wishlistGroupStore.groups.isEmpty {
-                        Text("暂无分组")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Picker("所属分组", selection: $selectedGroupId) {
-                            Text("无分组")
-                                .tag(nil as UUID?)
-                            
-                            ForEach(wishlistGroupStore.groups) { group in
-                                Label(group.name, systemImage: group.icon)
-                                    .tag(group.id as UUID?)
-                            }
-                        }
-                    }
-                }
-                
-                // 展示类型（心愿清单中显示的分类）
-                Section("展示类型") {
-                    Toggle("自定义类型", isOn: $isCustomDisplayType)
-                    
-                    if isCustomDisplayType {
-                        // 历史自定义类型选择
-                        if !store.customDisplayTypes.isEmpty {
+            ZStack {
+            ScrollView {
+                VStack(spacing: 18) {
+                    // 📝 基本信息卡片
+                    VStack(alignment: .leading, spacing: 14) {
+                        CartoonSectionHeader(emoji: "📝", title: "基本信息", color: Color(red: 0.3, green: 0.5, blue: 0.8))
+                        
+                        CartoonTextField(placeholder: "给心愿起个名字吧~", text: $name)
+                        
+                        CartoonTextField(placeholder: "大概要花多少钱？", text: $price, keyboardType: .decimalPad)
+                        
+                        // 分组选择
+                        if !wishlistGroupStore.groups.isEmpty {
                             VStack(alignment: .leading, spacing: 8) {
-                                Text("历史类型（点击选择）")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                HStack(spacing: 4) {
+                                    Text("📂")
+                                    Text("选个分组")
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                }
                                 
-                                FlowLayout(spacing: 8) {
-                                    ForEach(store.customDisplayTypes, id: \.self) { type in
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    HStack(spacing: 8) {
+                                        // 无分组
                                         Button {
-                                            customDisplayType = type
+                                            selectedGroupId = nil
                                         } label: {
-                                            Text(type)
+                                            Text("🌈 无分组")
                                                 .font(.subheadline)
-                                                .padding(.horizontal, 12)
-                                                .padding(.vertical, 6)
+                                                .fontWeight(selectedGroupId == nil ? .bold : .regular)
+                                                .padding(.horizontal, 14)
+                                                .padding(.vertical, 8)
                                                 .background(
-                                                    customDisplayType == type 
-                                                    ? Color.pink.opacity(0.2)
-                                                    : Color.gray.opacity(0.1)
+                                                    Capsule()
+                                                        .fill(selectedGroupId == nil ? Color.pink.opacity(0.18) : Color(.tertiarySystemGroupedBackground))
                                                 )
-                                                .foregroundStyle(
-                                                    customDisplayType == type
-                                                    ? .pink
-                                                    : .primary
+                                                .foregroundStyle(selectedGroupId == nil ? .pink : .primary)
+                                                .overlay(
+                                                    Capsule()
+                                                        .stroke(selectedGroupId == nil ? Color.pink.opacity(0.3) : Color.clear, lineWidth: 1)
                                                 )
-                                                .clipShape(Capsule())
+                                        }
+                                        .buttonStyle(PlainButtonStyle())
+                                        
+                                        ForEach(wishlistGroupStore.groups) { group in
+                                            Button {
+                                                selectedGroupId = group.id
+                                            } label: {
+                                                HStack(spacing: 4) {
+                                                    Image(systemName: group.icon)
+                                                        .font(.caption)
+                                                    Text(group.name)
+                                                        .font(.subheadline)
+                                                        .fontWeight(selectedGroupId == group.id ? .bold : .regular)
+                                                }
+                                                .padding(.horizontal, 14)
+                                                .padding(.vertical, 8)
+                                                .background(
+                                                    Capsule()
+                                                        .fill(selectedGroupId == group.id ? group.color.swiftUIColor.opacity(0.18) : Color(.tertiarySystemGroupedBackground))
+                                                )
+                                                .foregroundStyle(selectedGroupId == group.id ? group.color.swiftUIColor : .primary)
+                                                .overlay(
+                                                    Capsule()
+                                                        .stroke(selectedGroupId == group.id ? group.color.swiftUIColor.opacity(0.3) : Color.clear, lineWidth: 1)
+                                                )
+                                            }
+                                            .buttonStyle(PlainButtonStyle())
                                         }
                                     }
                                 }
-                            }
-                            .padding(.vertical, 4)
-                        }
-                        
-                        TextField("输入新的展示类型名称", text: $customDisplayType)
-                        
-                        // 自定义类型时才需要选择归属类型
-                        Menu {
-                            ForEach(ItemType.allCases, id: \.self) { type in
-                                Button {
-                                    selectedTargetType = type
-                                } label: {
-                                    HStack {
-                                        Image(systemName: type.icon)
-                                        Text(type.rawValue)
-                                        if selectedTargetType == type {
-                                            Image(systemName: "checkmark")
-                                        }
-                                    }
-                                }
-                            }
-                        } label: {
-                            HStack {
-                                Text("归属类型")
-                                    .foregroundStyle(.primary)
-                                Spacer()
-                                HStack(spacing: 4) {
-                                    Image(systemName: selectedTargetType.icon)
-                                        .foregroundStyle(.pink)
-                                    Text(selectedTargetType.rawValue)
-                                        .foregroundStyle(.pink)
-                                }
-                                Image(systemName: "chevron.up.chevron.down")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        
-                        Text("实现心愿后将归类到\(selectedTargetType.rawValue)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Menu {
-                            ForEach(ItemType.allCases, id: \.self) { type in
-                                Button {
-                                    selectedDisplayType = type
-                                } label: {
-                                    HStack {
-                                        Image(systemName: type.icon)
-                                        Text(type.rawValue)
-                                        if selectedDisplayType == type {
-                                            Image(systemName: "checkmark")
-                                        }
-                                    }
-                                }
-                            }
-                        } label: {
-                            HStack {
-                                Text("选择展示类型")
-                                    .foregroundStyle(.primary)
-                                Spacer()
-                                HStack(spacing: 4) {
-                                    Image(systemName: selectedDisplayType.icon)
-                                        .foregroundStyle(.pink)
-                                    Text(selectedDisplayType.rawValue)
-                                        .foregroundStyle(.pink)
-                                }
-                                Image(systemName: "chevron.up.chevron.down")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
                             }
                         }
                     }
-                }
-                
-                // 图片选择
-                Section("图片") {
-                    VStack(spacing: 16) {
-                        if let imageData = selectedImageData,
-                           let uiImage = UIImage(data: imageData) {
-                            Image(uiImage: uiImage)
-                                .resizable()
-                                .scaledToFill()
-                                .frame(height: 200)
-                                .frame(maxWidth: .infinity)
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
-                        } else {
-                            RoundedRectangle(cornerRadius: 12)
-                                .fill(Color.gray.opacity(0.1))
-                                .frame(height: 200)
-                                .overlay(
-                                    VStack(spacing: 8) {
-                                        Image(systemName: "photo.badge.plus")
-                                            .font(.system(size: 40))
-                                            .foregroundStyle(.gray)
-                                        Text("选择图片")
-                                            .foregroundStyle(.secondary)
-                                    }
-                                )
-                        }
+                    .cartoonCard()
+                    
+                    // 🏷️ 展示类型卡片
+                    VStack(alignment: .leading, spacing: 14) {
+                        CartoonSectionHeader(emoji: "🏷️", title: "展示类型", color: Color(red: 0.55, green: 0.4, blue: 0.75))
                         
+                        // 自定义切换
                         HStack {
-                            PhotosPicker(selection: $selectedPhoto,
-                                       matching: .images) {
-                                Label(selectedImageData == nil ? "选择照片" : "更换照片",
-                                      systemImage: "photo")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(BorderlessButtonStyle())
-                            .onChange(of: selectedPhoto) { _, newValue in
-                                Task {
-                                    if let data = try? await newValue?.loadTransferable(type: Data.self) {
-                                        selectedImageData = data
+                            Text("自定义类型")
+                                .font(.subheadline)
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            Toggle("", isOn: $isCustomDisplayType)
+                                .labelsHidden()
+                                .tint(.pink)
+                        }
+                        .padding(12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(Color(.tertiarySystemGroupedBackground))
+                        )
+                        
+                        if isCustomDisplayType {
+                            // 历史自定义类型
+                            if !store.customDisplayTypes.isEmpty {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("💫 历史类型（点击选择）")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    
+                                    FlowLayout(spacing: 8) {
+                                        ForEach(store.customDisplayTypes, id: \.self) { type in
+                                            Button {
+                                                customDisplayType = type
+                                            } label: {
+                                                Text(type)
+                                                    .font(.subheadline)
+                                                    .fontWeight(customDisplayType == type ? .bold : .regular)
+                                                    .padding(.horizontal, 14)
+                                                    .padding(.vertical, 7)
+                                                    .background(
+                                                        Capsule()
+                                                            .fill(customDisplayType == type
+                                                                  ? Color.purple.opacity(0.18)
+                                                                  : Color(.tertiarySystemGroupedBackground))
+                                                    )
+                                                    .foregroundStyle(customDisplayType == type ? .purple : .primary)
+                                                    .overlay(
+                                                        Capsule()
+                                                            .stroke(customDisplayType == type ? Color.purple.opacity(0.3) : Color.clear, lineWidth: 1)
+                                                    )
+                                            }
+                                            .buttonStyle(PlainButtonStyle())
+                                        }
                                     }
                                 }
                             }
                             
-                            if selectedImageData != nil {
-                                Divider()
-                                Button(role: .destructive) {
-                                    selectedImageData = nil
-                                    selectedPhoto = nil
-                                } label: {
-                                    Label("删除图片", systemImage: "trash")
-                                        .frame(maxWidth: .infinity)
+                            CartoonTextField(placeholder: "输入新的展示类型名称", text: $customDisplayType)
+                            
+                            // 归属类型
+                            Menu {
+                                ForEach(ItemType.allCases, id: \.self) { type in
+                                    Button {
+                                        selectedTargetType = type
+                                    } label: {
+                                        HStack {
+                                            Image(systemName: type.icon)
+                                            Text(type.rawValue)
+                                            if selectedTargetType == type {
+                                                Image(systemName: "checkmark")
+                                            }
+                                        }
+                                    }
                                 }
-                                .buttonStyle(BorderlessButtonStyle())
+                            } label: {
+                                HStack {
+                                    Text("归属类型")
+                                        .font(.subheadline)
+                                        .foregroundStyle(.primary)
+                                    Spacer()
+                                    HStack(spacing: 4) {
+                                        Image(systemName: selectedTargetType.icon)
+                                            .foregroundStyle(Color(red: 0.55, green: 0.4, blue: 0.75))
+                                        Text(selectedTargetType.rawValue)
+                                            .foregroundStyle(Color(red: 0.55, green: 0.4, blue: 0.75))
+                                    }
+                                    .font(.subheadline)
+                                    .fontWeight(.semibold)
+                                    Image(systemName: "chevron.up.chevron.down")
+                                        .font(.caption2)
+                                        .foregroundStyle(.tertiary)
+                                }
+                                .padding(12)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .fill(Color(.tertiarySystemGroupedBackground))
+                                )
+                            }
+                            
+                            Text("✨ 实现心愿后将归类到「\(selectedTargetType.rawValue)」")
+                                .font(.caption)
+                                .foregroundStyle(Color(red: 0.55, green: 0.4, blue: 0.75).opacity(0.8))
+                        } else {
+                            // 标准类型选择 - 用胶囊标签网格
+                            FlowLayout(spacing: 8) {
+                                ForEach(ItemType.allCases, id: \.self) { type in
+                                    Button {
+                                        selectedDisplayType = type
+                                    } label: {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: type.icon)
+                                                .font(.caption)
+                                            Text(type.rawValue)
+                                                .font(.subheadline)
+                                                .fontWeight(selectedDisplayType == type ? .bold : .regular)
+                                        }
+                                        .padding(.horizontal, 14)
+                                        .padding(.vertical, 8)
+                                        .background(
+                                            Capsule()
+                                                .fill(selectedDisplayType == type
+                                                      ? Color.pink.opacity(0.18)
+                                                      : Color(.tertiarySystemGroupedBackground))
+                                        )
+                                        .foregroundStyle(selectedDisplayType == type ? .pink : .primary)
+                                        .overlay(
+                                            Capsule()
+                                                .stroke(selectedDisplayType == type ? Color.pink.opacity(0.3) : Color.clear, lineWidth: 1)
+                                        )
+                                    }
+                                    .buttonStyle(PlainButtonStyle())
+                                }
                             }
                         }
                     }
-                    .padding(.vertical, 8)
+                    .cartoonCard()
+                    
+                    // 📷 图片卡片
+                    VStack(alignment: .leading, spacing: 14) {
+                        CartoonSectionHeader(emoji: "📷", title: "心愿美照", color: Color(red: 0.2, green: 0.6, blue: 0.65))
+                        
+                        ZStack {
+                            if let imageData = selectedImageData,
+                               let uiImage = UIImage(data: imageData) {
+                                Image(uiImage: uiImage)
+                                    .resizable()
+                                    .scaledToFill()
+                                    .frame(height: 180)
+                                    .frame(maxWidth: .infinity)
+                                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 14)
+                                            .stroke(Color.pink.opacity(0.15), lineWidth: 1)
+                                    )
+                                    .overlay(alignment: .bottomTrailing) {
+                                        HStack(spacing: 8) {
+                                            PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                                                HStack(spacing: 4) {
+                                                    Image(systemName: "arrow.triangle.2.circlepath")
+                                                        .font(.caption)
+                                                    Text("更换")
+                                                        .font(.caption)
+                                                        .fontWeight(.medium)
+                                                }
+                                                .foregroundStyle(.white)
+                                                .padding(.horizontal, 10)
+                                                .padding(.vertical, 6)
+                                                .background(Capsule().fill(Color.black.opacity(0.5)))
+                                            }
+                                            .buttonStyle(PlainButtonStyle())
+                                            
+                                            Button {
+                                                selectedImageData = nil
+                                                compressedImageData = nil
+                                                selectedPhoto = nil
+                                            } label: {
+                                                HStack(spacing: 4) {
+                                                    Image(systemName: "trash")
+                                                        .font(.caption)
+                                                    Text("删除")
+                                                        .font(.caption)
+                                                        .fontWeight(.medium)
+                                                }
+                                                .foregroundStyle(.white)
+                                                .padding(.horizontal, 10)
+                                                .padding(.vertical, 6)
+                                                .background(Capsule().fill(Color.red.opacity(0.7)))
+                                            }
+                                            .buttonStyle(PlainButtonStyle())
+                                        }
+                                        .padding(10)
+                                    }
+                            } else {
+                                PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                                    RoundedRectangle(cornerRadius: 14)
+                                        .fill(Color(.tertiarySystemGroupedBackground))
+                                        .frame(height: 140)
+                                        .overlay(
+                                            VStack(spacing: 8) {
+                                                Image(systemName: "photo.badge.plus")
+                                                    .font(.system(size: 32))
+                                                    .foregroundStyle(Color(red: 0.2, green: 0.6, blue: 0.65))
+                                                Text("点击选择图片")
+                                                    .font(.subheadline)
+                                                    .fontWeight(.medium)
+                                                    .foregroundStyle(Color(red: 0.2, green: 0.6, blue: 0.65))
+                                            }
+                                        )
+                                }
+                                .buttonStyle(PlainButtonStyle())
+                            }
+                        }
+                        .onChange(of: selectedPhoto) { _, newValue in
+                            Task {
+                                if let data = try? await newValue?.loadTransferable(type: Data.self) {
+                                    selectedImageData = data
+                                    // 生成 0.7 压缩版，仅用于同步上传
+                                    if let uiImage = UIImage(data: data) {
+                                        compressedImageData = uiImage.jpegData(compressionQuality: 0.7)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .cartoonCard()
+                    
+                    // 🔗 购买链接卡片
+                    VStack(alignment: .leading, spacing: 14) {
+                        CartoonSectionHeader(emoji: "🔗", title: "购买链接", color: Color(red: 0.3, green: 0.55, blue: 0.85))
+                        
+                        CartoonTextField(placeholder: "在哪里可以买到呢？", text: $purchaseLink, keyboardType: .URL)
+                    }
+                    .cartoonCard()
+                    
+                    // 📖 心愿描述卡片
+                    VStack(alignment: .leading, spacing: 14) {
+                        CartoonSectionHeader(emoji: "📖", title: "心愿描述", color: Color(red: 0.6, green: 0.45, blue: 0.3))
+                        
+                        TextEditor(text: $details)
+                            .frame(minHeight: 80)
+                            .scrollContentBackground(.hidden)
+                            .autocorrectionDisabled()
+                            .padding(12)
+                            .background(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill(Color(.tertiarySystemGroupedBackground))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(Color.pink.opacity(0.12), lineWidth: 1)
+                            )
+                        
+                        if details.isEmpty {
+                            Text("写点什么来记录这个心愿的故事吧~")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .cartoonCard()
+                    
+                    Spacer(minLength: 30)
                 }
-                
-                // 购买链接
-                Section("购买链接") {
-                    TextField("输入链接地址", text: $purchaseLink)
-                        .keyboardType(.URL)
-                        .autocapitalization(.none)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 20)
+            }
+            .background(Color(.systemGroupedBackground))
+            .onAppear {
+                // 20% 概率触发烟花彩蛋
+                isEasterEgg = Int.random(in: 1...5) == 1
+                if isEasterEgg {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        showFireworks = true
+                    }
                 }
             }
-            .navigationTitle("添加心愿")
+            .navigationTitle("许下一个新心愿")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button("取消") {
+                    Button {
                         dismiss()
+                    } label: {
+                        Text("取消")
+                            .foregroundStyle(.secondary)
                     }
                 }
                 
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("保存") {
+                    Button {
                         saveItem()
+                    } label: {
+                        Text("保存")
+                            .fontWeight(.bold)
+                            .foregroundStyle(isValid ? .pink : .gray.opacity(0.35))
                     }
                     .disabled(!isValid)
-                    .fontWeight(.semibold)
                 }
             }
+                
+                // 烟花覆盖层（仅彩蛋模式）
+                if isEasterEgg && showFireworks {
+                    FireworksOverlay()
+                        .ignoresSafeArea()
+                        .onAppear {
+                            // 烟花持续约2s后自动消失
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                                showFireworks = false
+                            }
+                        }
+                }
+            } // ZStack
         }
     }
     
@@ -722,9 +985,11 @@ struct AddWishlistItemView: View {
         
         let newItem = Item(
             name: name,
-            details: "",
+            details: details,
             purchaseLink: purchaseLink,
             imageData: selectedImageData,
+            compressedImageData: compressedImageData,
+            imageChanged: selectedImageData != nil,  // 新建心愿：有图片即需上传
             price: priceValue,
             type: finalType,
             listType: .wishlist,
@@ -753,7 +1018,9 @@ struct EditWishlistItemView: View {
     let originalItem: Item
     @State private var name: String
     @State private var price: Double
+    @State private var priceText: String
     @State private var purchaseLink: String
+    @State private var details: String
     
     // 展示类型
     @State private var isCustomDisplayType: Bool
@@ -765,7 +1032,11 @@ struct EditWishlistItemView: View {
     
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var selectedImageData: Data?
+    @State private var compressedImageData: Data?
+    @State private var imageChanged: Bool = false  // 标记图片是否被用户编辑过
     @State private var selectedGroupId: UUID?
+    
+    @State private var showDeleteConfirm = false
     
     init(item: Item, store: ItemStore, wishlistGroupStore: WishlistGroupStore) {
         self.originalItem = item
@@ -773,8 +1044,11 @@ struct EditWishlistItemView: View {
         self.wishlistGroupStore = wishlistGroupStore
         _name = State(initialValue: item.name)
         _price = State(initialValue: item.price)
+        _priceText = State(initialValue: item.price == 0 ? "" : String(format: "%.2f", item.price))
         _purchaseLink = State(initialValue: item.purchaseLink)
+        _details = State(initialValue: item.details)
         _selectedImageData = State(initialValue: item.imageData)
+        _compressedImageData = State(initialValue: item.compressedImageData)
         _selectedGroupId = State(initialValue: item.wishlistGroupId)
         
         // 判断展示类型是否为自定义
@@ -795,230 +1069,399 @@ struct EditWishlistItemView: View {
     
     var body: some View {
         NavigationStack {
-            Form {
-                Section("基本信息") {
-                    TextField("物品名称", text: $name)
-                    
-                    HStack {
-                        Text("¥")
-                            .foregroundStyle(.secondary)
-                        TextField("价格", value: $price, format: .number)
-                            .keyboardType(.decimalPad)
-                    }
-                    
-                    // 分组选择
-                    if wishlistGroupStore.groups.isEmpty {
-                        Text("暂无分组")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Picker("所属分组", selection: $selectedGroupId) {
-                            Text("无分组")
-                                .tag(nil as UUID?)
-                            
-                            ForEach(wishlistGroupStore.groups) { group in
-                                Label(group.name, systemImage: group.icon)
-                                    .tag(group.id as UUID?)
+            ScrollView {
+                VStack(spacing: 18) {
+                    // 📝 基本信息卡片
+                    VStack(alignment: .leading, spacing: 14) {
+                        CartoonSectionHeader(emoji: "📝", title: "基本信息", color: Color(red: 0.3, green: 0.5, blue: 0.8))
+                        
+                        CartoonTextField(placeholder: "给心愿起个名字吧~", text: $name)
+                        
+                        CartoonTextField(placeholder: "大概要花多少钱？", text: $priceText, keyboardType: .decimalPad)
+                            .onChange(of: priceText) { _, newValue in
+                                price = Double(newValue) ?? 0
                             }
-                        }
-                    }
-                }
-                
-                // 展示类型（心愿清单中显示的分类）
-                Section("展示类型") {
-                    Toggle("自定义类型", isOn: $isCustomDisplayType)
-                    
-                    if isCustomDisplayType {
-                        // 历史自定义类型选择
-                        if !store.customDisplayTypes.isEmpty {
+                        
+                        // 分组选择
+                        if !wishlistGroupStore.groups.isEmpty {
                             VStack(alignment: .leading, spacing: 8) {
-                                Text("历史类型（点击选择）")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                HStack(spacing: 4) {
+                                    Text("📂")
+                                    Text("选个分组")
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                }
                                 
-                                FlowLayout(spacing: 8) {
-                                    ForEach(store.customDisplayTypes, id: \.self) { type in
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    HStack(spacing: 8) {
                                         Button {
-                                            customDisplayType = type
+                                            selectedGroupId = nil
                                         } label: {
-                                            Text(type)
+                                            Text("🌈 无分组")
                                                 .font(.subheadline)
-                                                .padding(.horizontal, 12)
-                                                .padding(.vertical, 6)
+                                                .fontWeight(selectedGroupId == nil ? .bold : .regular)
+                                                .padding(.horizontal, 14)
+                                                .padding(.vertical, 8)
                                                 .background(
-                                                    customDisplayType == type 
-                                                    ? Color.pink.opacity(0.2)
-                                                    : Color.gray.opacity(0.1)
+                                                    Capsule()
+                                                        .fill(selectedGroupId == nil ? Color.pink.opacity(0.18) : Color(.tertiarySystemGroupedBackground))
                                                 )
-                                                .foregroundStyle(
-                                                    customDisplayType == type
-                                                    ? .pink
-                                                    : .primary
+                                                .foregroundStyle(selectedGroupId == nil ? .pink : .primary)
+                                                .overlay(
+                                                    Capsule()
+                                                        .stroke(selectedGroupId == nil ? Color.pink.opacity(0.3) : Color.clear, lineWidth: 1)
                                                 )
-                                                .clipShape(Capsule())
+                                        }
+                                        .buttonStyle(PlainButtonStyle())
+                                        
+                                        ForEach(wishlistGroupStore.groups) { group in
+                                            Button {
+                                                selectedGroupId = group.id
+                                            } label: {
+                                                HStack(spacing: 4) {
+                                                    Image(systemName: group.icon)
+                                                        .font(.caption)
+                                                    Text(group.name)
+                                                        .font(.subheadline)
+                                                        .fontWeight(selectedGroupId == group.id ? .bold : .regular)
+                                                }
+                                                .padding(.horizontal, 14)
+                                                .padding(.vertical, 8)
+                                                .background(
+                                                    Capsule()
+                                                        .fill(selectedGroupId == group.id ? group.color.swiftUIColor.opacity(0.18) : Color(.tertiarySystemGroupedBackground))
+                                                )
+                                                .foregroundStyle(selectedGroupId == group.id ? group.color.swiftUIColor : .primary)
+                                                .overlay(
+                                                    Capsule()
+                                                        .stroke(selectedGroupId == group.id ? group.color.swiftUIColor.opacity(0.3) : Color.clear, lineWidth: 1)
+                                                )
+                                            }
+                                            .buttonStyle(PlainButtonStyle())
                                         }
                                     }
                                 }
-                            }
-                            .padding(.vertical, 4)
-                        }
-                        
-                        TextField("输入新的展示类型名称", text: $customDisplayType)
-                        
-                        // 自定义类型时才需要选择归属类型
-                        Menu {
-                            ForEach(ItemType.allCases, id: \.self) { type in
-                                Button {
-                                    selectedTargetType = type
-                                } label: {
-                                    HStack {
-                                        Image(systemName: type.icon)
-                                        Text(type.rawValue)
-                                        if selectedTargetType == type {
-                                            Image(systemName: "checkmark")
-                                        }
-                                    }
-                                }
-                            }
-                        } label: {
-                            HStack {
-                                Text("归属类型")
-                                    .foregroundStyle(.primary)
-                                Spacer()
-                                HStack(spacing: 4) {
-                                    Image(systemName: selectedTargetType.icon)
-                                        .foregroundStyle(.pink)
-                                    Text(selectedTargetType.rawValue)
-                                        .foregroundStyle(.pink)
-                                }
-                                Image(systemName: "chevron.up.chevron.down")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        
-                        Text("实现心愿后将归类到\(selectedTargetType.rawValue)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Menu {
-                            ForEach(ItemType.allCases, id: \.self) { type in
-                                Button {
-                                    selectedDisplayType = type
-                                } label: {
-                                    HStack {
-                                        Image(systemName: type.icon)
-                                        Text(type.rawValue)
-                                        if selectedDisplayType == type {
-                                            Image(systemName: "checkmark")
-                                        }
-                                    }
-                                }
-                            }
-                        } label: {
-                            HStack {
-                                Text("选择展示类型")
-                                    .foregroundStyle(.primary)
-                                Spacer()
-                                HStack(spacing: 4) {
-                                    Image(systemName: selectedDisplayType.icon)
-                                        .foregroundStyle(.pink)
-                                    Text(selectedDisplayType.rawValue)
-                                        .foregroundStyle(.pink)
-                                }
-                                Image(systemName: "chevron.up.chevron.down")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
                             }
                         }
                     }
-                }
-                
-                // 图片选择
-                Section("图片") {
-                    VStack(spacing: 16) {
-                        if let imageData = selectedImageData,
-                           let uiImage = UIImage(data: imageData) {
-                            Image(uiImage: uiImage)
-                                .resizable()
-                                .scaledToFill()
-                                .frame(height: 200)
-                                .frame(maxWidth: .infinity)
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
-                        } else {
-                            RoundedRectangle(cornerRadius: 12)
-                                .fill(Color.gray.opacity(0.1))
-                                .frame(height: 200)
-                                .overlay(
-                                    VStack(spacing: 8) {
-                                        Image(systemName: "photo.badge.plus")
-                                            .font(.system(size: 40))
-                                            .foregroundStyle(.gray)
-                                        Text("选择图片")
-                                            .foregroundStyle(.secondary)
-                                    }
-                                )
-                        }
+                    .cartoonCard()
+                    
+                    // 🏷️ 展示类型卡片
+                    VStack(alignment: .leading, spacing: 14) {
+                        CartoonSectionHeader(emoji: "🏷️", title: "展示类型", color: Color(red: 0.55, green: 0.4, blue: 0.75))
                         
                         HStack {
-                            PhotosPicker(selection: $selectedPhoto,
-                                       matching: .images) {
-                                Label(selectedImageData == nil ? "选择照片" : "更换照片",
-                                      systemImage: "photo")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(BorderlessButtonStyle())
-                            .onChange(of: selectedPhoto) { _, newValue in
-                                Task {
-                                    if let data = try? await newValue?.loadTransferable(type: Data.self) {
-                                        selectedImageData = data
+                            Text("自定义类型")
+                                .font(.subheadline)
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            Toggle("", isOn: $isCustomDisplayType)
+                                .labelsHidden()
+                                .tint(.pink)
+                        }
+                        .padding(12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(Color(.tertiarySystemGroupedBackground))
+                        )
+                        
+                        if isCustomDisplayType {
+                            if !store.customDisplayTypes.isEmpty {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("💫 历史类型（点击选择）")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    
+                                    FlowLayout(spacing: 8) {
+                                        ForEach(store.customDisplayTypes, id: \.self) { type in
+                                            Button {
+                                                customDisplayType = type
+                                            } label: {
+                                                Text(type)
+                                                    .font(.subheadline)
+                                                    .fontWeight(customDisplayType == type ? .bold : .regular)
+                                                    .padding(.horizontal, 14)
+                                                    .padding(.vertical, 7)
+                                                    .background(
+                                                        Capsule()
+                                                            .fill(customDisplayType == type
+                                                                  ? Color.purple.opacity(0.18)
+                                                                  : Color(.tertiarySystemGroupedBackground))
+                                                    )
+                                                    .foregroundStyle(customDisplayType == type ? .purple : .primary)
+                                                    .overlay(
+                                                        Capsule()
+                                                            .stroke(customDisplayType == type ? Color.purple.opacity(0.3) : Color.clear, lineWidth: 1)
+                                                    )
+                                            }
+                                            .buttonStyle(PlainButtonStyle())
+                                        }
                                     }
                                 }
                             }
                             
-                            if selectedImageData != nil {
-                                Divider()
-                                Button(role: .destructive) {
-                                    selectedImageData = nil
-                                    selectedPhoto = nil
-                                } label: {
-                                    Label("删除图片", systemImage: "trash")
-                                        .frame(maxWidth: .infinity)
+                            CartoonTextField(placeholder: "输入新的展示类型名称", text: $customDisplayType)
+                            
+                            Menu {
+                                ForEach(ItemType.allCases, id: \.self) { type in
+                                    Button {
+                                        selectedTargetType = type
+                                    } label: {
+                                        HStack {
+                                            Image(systemName: type.icon)
+                                            Text(type.rawValue)
+                                            if selectedTargetType == type {
+                                                Image(systemName: "checkmark")
+                                            }
+                                        }
+                                    }
                                 }
-                                .buttonStyle(BorderlessButtonStyle())
+                            } label: {
+                                HStack {
+                                    Text("归属类型")
+                                        .font(.subheadline)
+                                        .foregroundStyle(.primary)
+                                    Spacer()
+                                    HStack(spacing: 4) {
+                                        Image(systemName: selectedTargetType.icon)
+                                            .foregroundStyle(Color(red: 0.55, green: 0.4, blue: 0.75))
+                                        Text(selectedTargetType.rawValue)
+                                            .foregroundStyle(Color(red: 0.55, green: 0.4, blue: 0.75))
+                                    }
+                                    .font(.subheadline)
+                                    .fontWeight(.semibold)
+                                    Image(systemName: "chevron.up.chevron.down")
+                                        .font(.caption2)
+                                        .foregroundStyle(.tertiary)
+                                }
+                                .padding(12)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .fill(Color(.tertiarySystemGroupedBackground))
+                                )
+                            }
+                            
+                            Text("✨ 实现心愿后将归类到「\(selectedTargetType.rawValue)」")
+                                .font(.caption)
+                                .foregroundStyle(Color(red: 0.55, green: 0.4, blue: 0.75).opacity(0.8))
+                        } else {
+                            FlowLayout(spacing: 8) {
+                                ForEach(ItemType.allCases, id: \.self) { type in
+                                    Button {
+                                        selectedDisplayType = type
+                                    } label: {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: type.icon)
+                                                .font(.caption)
+                                            Text(type.rawValue)
+                                                .font(.subheadline)
+                                                .fontWeight(selectedDisplayType == type ? .bold : .regular)
+                                        }
+                                        .padding(.horizontal, 14)
+                                        .padding(.vertical, 8)
+                                        .background(
+                                            Capsule()
+                                                .fill(selectedDisplayType == type
+                                                      ? Color.pink.opacity(0.18)
+                                                      : Color(.tertiarySystemGroupedBackground))
+                                        )
+                                        .foregroundStyle(selectedDisplayType == type ? .pink : .primary)
+                                        .overlay(
+                                            Capsule()
+                                                .stroke(selectedDisplayType == type ? Color.pink.opacity(0.3) : Color.clear, lineWidth: 1)
+                                        )
+                                    }
+                                    .buttonStyle(PlainButtonStyle())
+                                }
                             }
                         }
                     }
-                    .padding(.vertical, 8)
-                }
-                
-                // 购买链接
-                Section("购买链接") {
-                    TextField("输入链接地址", text: $purchaseLink)
-                        .keyboardType(.URL)
-                        .autocapitalization(.none)
-                }
-                
-                Section {
-                    Button("删除", role: .destructive) {
-                        store.delete(originalItem)
-                        dismiss()
+                    .cartoonCard()
+                    
+                    // 📷 图片卡片
+                    VStack(alignment: .leading, spacing: 14) {
+                        CartoonSectionHeader(emoji: "📷", title: "心愿美照", color: Color(red: 0.2, green: 0.6, blue: 0.65))
+                        
+                        ZStack {
+                            if let imageData = selectedImageData,
+                               let uiImage = UIImage(data: imageData) {
+                                Image(uiImage: uiImage)
+                                    .resizable()
+                                    .scaledToFill()
+                                    .frame(height: 180)
+                                    .frame(maxWidth: .infinity)
+                                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 14)
+                                            .stroke(Color.pink.opacity(0.15), lineWidth: 1)
+                                    )
+                                    .overlay(alignment: .bottomTrailing) {
+                                        HStack(spacing: 8) {
+                                            PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                                                HStack(spacing: 4) {
+                                                    Image(systemName: "arrow.triangle.2.circlepath")
+                                                        .font(.caption)
+                                                    Text("更换")
+                                                        .font(.caption)
+                                                        .fontWeight(.medium)
+                                                }
+                                                .foregroundStyle(.white)
+                                                .padding(.horizontal, 10)
+                                                .padding(.vertical, 6)
+                                                .background(Capsule().fill(Color.black.opacity(0.5)))
+                                            }
+                                            .buttonStyle(PlainButtonStyle())
+                                            
+                                            Button {
+                                                selectedImageData = nil
+                                                compressedImageData = nil
+                                                selectedPhoto = nil
+                                                imageChanged = true  // 用户删除了图片
+                                            } label: {
+                                                HStack(spacing: 4) {
+                                                    Image(systemName: "trash")
+                                                        .font(.caption)
+                                                    Text("删除")
+                                                        .font(.caption)
+                                                        .fontWeight(.medium)
+                                                }
+                                                .foregroundStyle(.white)
+                                                .padding(.horizontal, 10)
+                                                .padding(.vertical, 6)
+                                                .background(Capsule().fill(Color.red.opacity(0.7)))
+                                            }
+                                            .buttonStyle(PlainButtonStyle())
+                                        }
+                                        .padding(10)
+                                    }
+                            } else {
+                                PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                                    RoundedRectangle(cornerRadius: 14)
+                                        .fill(Color(.tertiarySystemGroupedBackground))
+                                        .frame(height: 140)
+                                        .overlay(
+                                            VStack(spacing: 8) {
+                                                Image(systemName: "photo.badge.plus")
+                                                    .font(.system(size: 32))
+                                                    .foregroundStyle(Color(red: 0.2, green: 0.6, blue: 0.65))
+                                                Text("点击选择图片")
+                                                    .font(.subheadline)
+                                                    .fontWeight(.medium)
+                                                    .foregroundStyle(Color(red: 0.2, green: 0.6, blue: 0.65))
+                                            }
+                                        )
+                                }
+                                .buttonStyle(PlainButtonStyle())
+                            }
+                        }
+                        .onChange(of: selectedPhoto) { _, newValue in
+                            Task {
+                                if let data = try? await newValue?.loadTransferable(type: Data.self) {
+                                    selectedImageData = data
+                                    imageChanged = true  // 用户更换了图片
+                                    // 生成 0.7 压缩版，仅用于同步上传
+                                    if let uiImage = UIImage(data: data) {
+                                        compressedImageData = uiImage.jpegData(compressionQuality: 0.7)
+                                    }
+                                }
+                            }
+                        }
                     }
+                    .cartoonCard()
+                    
+                    // 🔗 购买链接卡片
+                    VStack(alignment: .leading, spacing: 14) {
+                        CartoonSectionHeader(emoji: "🔗", title: "购买链接", color: Color(red: 0.3, green: 0.55, blue: 0.85))
+                        
+                        CartoonTextField(placeholder: "在哪里可以买到呢？", text: $purchaseLink, keyboardType: .URL)
+                    }
+                    .cartoonCard()
+                    
+                    // 📖 心愿描述卡片
+                    VStack(alignment: .leading, spacing: 14) {
+                        CartoonSectionHeader(emoji: "📖", title: "心愿描述", color: Color(red: 0.6, green: 0.45, blue: 0.3))
+                        
+                        TextEditor(text: $details)
+                            .frame(minHeight: 80)
+                            .scrollContentBackground(.hidden)
+                            .autocorrectionDisabled()
+                            .padding(12)
+                            .background(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill(Color(.tertiarySystemGroupedBackground))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(Color.pink.opacity(0.12), lineWidth: 1)
+                            )
+                        
+                        if details.isEmpty {
+                            Text("写点什么来记录这个心愿的故事吧~")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .cartoonCard()
+                    
+                    // 🗑️ 删除按钮
+                    Button {
+                        showDeleteConfirm = true
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text("🗑️")
+                            Text("删除这个心愿")
+                                .font(.subheadline)
+                                .fontWeight(.medium)
+                        }
+                        .foregroundStyle(.red.opacity(0.7))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(
+                            RoundedRectangle(cornerRadius: 14)
+                                .fill(Color.red.opacity(0.06))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14)
+                                .stroke(Color.red.opacity(0.12), lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .alert("确定删除？", isPresented: $showDeleteConfirm) {
+                        Button("取消", role: .cancel) { }
+                        Button("删除", role: .destructive) {
+                            store.delete(originalItem)
+                            dismiss()
+                        }
+                    } message: {
+                        Text("删除后无法恢复，确定要删除「\(name)」吗？")
+                    }
+                    
+                    Spacer(minLength: 30)
                 }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 20)
             }
+            .background(Color(.systemGroupedBackground))
             .navigationTitle("编辑心愿")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button("取消") {
+                    Button {
                         dismiss()
+                    } label: {
+                        Text("取消")
+                            .foregroundStyle(.secondary)
                     }
                 }
                 
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("保存") {
+                    Button {
                         saveItem()
+                    } label: {
+                        Text("保存")
+                            .fontWeight(.bold)
+                            .foregroundStyle(.pink)
                     }
-                    .fontWeight(.semibold)
                 }
             }
         }
@@ -1029,7 +1472,10 @@ struct EditWishlistItemView: View {
         updatedItem.name = name
         updatedItem.price = price
         updatedItem.purchaseLink = purchaseLink
+        updatedItem.details = details
         updatedItem.imageData = selectedImageData
+        updatedItem.compressedImageData = compressedImageData
+        updatedItem.imageChanged = imageChanged  // 传递图片变更标记
         updatedItem.displayType = finalDisplayType
         updatedItem.targetType = isCustomDisplayType ? selectedTargetType.rawValue : nil
         updatedItem.type = isCustomDisplayType ? customDisplayType : selectedDisplayType.rawValue

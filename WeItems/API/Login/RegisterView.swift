@@ -240,10 +240,19 @@ struct RegisterView: View {
                 name: nil
             )
             
-            // 保存登录凭证（这里可以根据你的需求来处理）
+            // 保存 Token 到本地（access_token 和 refresh_token 存入 Keychain）
+            TokenStorage.shared.saveToken(
+                accessToken: response.accessToken,
+                refreshToken: response.refreshToken,
+                expiresIn: response.expiresIn,
+                tokenType: response.tokenType,
+                sub: response.sub,
+                phoneNumber: phoneNumber
+            )
+            
             print("注册成功！")
-            print("Access Token: \(response.accessToken)")
-            print("Refresh Token: \(response.refreshToken)")
+            print("Access Token: \(response.accessToken.prefix(20))...")
+            print("Refresh Token: \(response.refreshToken.prefix(20))...")
             print("过期时间: \(response.expiresIn) 秒")
             print("用户ID: \(response.sub)")
             

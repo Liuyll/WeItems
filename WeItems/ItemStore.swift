@@ -206,6 +206,40 @@ class ItemStore: ObservableObject {
         saveCustomDisplayTypes()
     }
     
+    /// 从当前所有心愿清单中扫描自定义类型，补充到 customDisplayTypes
+    /// 只扫描 displayType 不在预设 ItemType 中的项
+    func rebuildCustomDisplayTypesFromWishes() {
+        let presetTypes = Set(ItemType.allCases.map { $0.rawValue })
+        var scannedTypes: [String] = []
+        
+        for item in items where item.listType == .wishlist {
+            let display = item.effectiveDisplayType
+            if !presetTypes.contains(display) && !display.isEmpty && !scannedTypes.contains(display) {
+                scannedTypes.append(display)
+            }
+        }
+        
+        guard !scannedTypes.isEmpty else {
+            print("[ItemStore] 扫描心愿清单未发现自定义类型")
+            return
+        }
+        
+        // 合并：已有的保持顺序在前，扫描到的新增到后面
+        var merged = customDisplayTypes
+        for t in scannedTypes where !merged.contains(t) {
+            merged.append(t)
+        }
+        
+        // 限制最多20个
+        if merged.count > 20 {
+            merged = Array(merged.prefix(20))
+        }
+        
+        customDisplayTypes = merged
+        saveCustomDisplayTypes()
+        print("[ItemStore] 从心愿清单扫描到 \(scannedTypes.count) 个自定义类型，当前共 \(customDisplayTypes.count) 个")
+    }
+    
     private func saveCustomDisplayTypes() {
         do {
             let encoder = JSONEncoder()
@@ -235,6 +269,11 @@ class ItemStore: ObservableObject {
         
         customDisplayTypes = allTypes
         print("自定义类型加载成功，共 \(customDisplayTypes.count) 个")
+        
+        // 如果自定义类型列表为空，尝试从已有心愿清单中扫描
+        if customDisplayTypes.isEmpty {
+            rebuildCustomDisplayTypesFromWishes()
+        }
     }
     
     private func loadTypesFromFile(_ url: URL) -> [String] {
@@ -254,6 +293,11 @@ class ItemStore: ObservableObject {
         userDir.appendingPathComponent("item_\(itemId.uuidString).jpg")
     }
     
+    /// 压缩版图片文件路径（仅用于同步上传）
+    private func compressedImageURL(for itemId: UUID) -> URL {
+        userDir.appendingPathComponent("item_\(itemId.uuidString)_compressed.jpg")
+    }
+    
     func saveImage(_ imageData: Data, for itemId: UUID) -> Bool {
         let url = imageURL(for: itemId)
         do {
@@ -263,6 +307,35 @@ class ItemStore: ObservableObject {
             print("保存图片失败: \(error)")
             return false
         }
+    }
+    
+    /// 保存压缩版图片（0.7 质量），用于同步上传
+    func saveCompressedImage(_ imageData: Data, for itemId: UUID) -> Bool {
+        guard let uiImage = UIImage(data: imageData) else { return false }
+        guard let compressed = uiImage.jpegData(compressionQuality: 0.7) else { return false }
+        let url = compressedImageURL(for: itemId)
+        do {
+            try compressed.write(to: url)
+            return true
+        } catch {
+            print("保存压缩图片失败: \(error)")
+            return false
+        }
+    }
+    
+    /// 加载压缩版图片
+    func loadCompressedImage(for itemId: UUID) -> Data? {
+        let url = compressedImageURL(for: itemId)
+        if let data = try? Data(contentsOf: url) {
+            return data
+        }
+        // 已登录用户回退到 anonymous 目录查找
+        if UserStorageHelper.shared.isLoggedIn {
+            let anonymousURL = UserStorageHelper.shared.anonymousDirectory
+                .appendingPathComponent("item_\(itemId.uuidString)_compressed.jpg")
+            return try? Data(contentsOf: anonymousURL)
+        }
+        return nil
     }
     
     func loadImage(for itemId: UUID) -> Data? {
@@ -283,6 +356,9 @@ class ItemStore: ObservableObject {
         guard item.imageData != nil else { return }
         let url = imageURL(for: item.id)
         try? FileManager.default.removeItem(at: url)
+        // 同时删除压缩版
+        let compressedUrl = compressedImageURL(for: item.id)
+        try? FileManager.default.removeItem(at: compressedUrl)
     }
     
     // MARK: - 数据持久化
@@ -296,7 +372,13 @@ class ItemStore: ObservableObject {
         for i in 0..<items.count {
             if let imageData = items[i].imageData {
                 if saveImage(imageData, for: items[i].id) {
-                    // 保存成功后，内存中保留数据但序列化时会处理
+                    // 保存成功后，同时生成压缩版用于同步上传
+                    if saveCompressedImage(imageData, for: items[i].id) {
+                        // 加载压缩版到内存
+                        if let compressed = loadCompressedImage(for: items[i].id) {
+                            items[i].compressedImageData = compressed
+                        }
+                    }
                 }
             }
         }
@@ -306,7 +388,7 @@ class ItemStore: ObservableObject {
             encoder.dateEncodingStrategy = .iso8601
             let data = try encoder.encode(items)
             try data.write(to: fileURL)
-            print("数据保存成功: \(fileURL.path)")
+
         } catch {
             print("保存数据失败: \(error)")
         }
@@ -336,6 +418,10 @@ class ItemStore: ObservableObject {
         for i in 0..<items.count {
             if let imageData = loadImage(for: items[i].id) {
                 items[i].imageData = imageData
+            }
+            // 加载压缩版图片（用于同步上传）
+            if let compressedData = loadCompressedImage(for: items[i].id) {
+                items[i].compressedImageData = compressedData
             }
         }
         

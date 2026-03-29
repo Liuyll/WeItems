@@ -25,6 +25,7 @@ struct AuthView: View {
     @State private var verificationCode = "" // 验证码
     
     // MARK: - UI状态
+    @State private var isPasswordVisible = false
     @State private var isSendingCode = false
     @State private var countdown = 0
     @State private var timer: Timer?
@@ -65,7 +66,7 @@ struct AuthView: View {
         ZStack {
             // 渐变背景
             LinearGradient(
-                colors: [.green.opacity(0.7), .mint.opacity(0.8), .teal.opacity(0.7)],
+                colors: [.blue.opacity(0.8), .cyan.opacity(0.7), .indigo.opacity(0.7)],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
@@ -78,10 +79,6 @@ struct AuthView: View {
                         .font(.largeTitle)
                         .fontWeight(.bold)
                         .foregroundStyle(.white)
-                    
-                    Text(loginMode == .password ? "密码登录" : "验证码登录")
-                        .font(.subheadline)
-                        .foregroundStyle(.white.opacity(0.8))
                 }
                 .padding(.top, 60)
                 
@@ -124,8 +121,25 @@ struct AuthView: View {
                                 .foregroundStyle(.white.opacity(0.8))
                                 .frame(width: 24)
                             
-                            SecureField("密码", text: $password)
-                                .foregroundStyle(.white)
+                            if isPasswordVisible {
+                                TextField("密码", text: $password)
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
+                                    .foregroundStyle(.white)
+                            } else {
+                                SecureField("密码", text: $password)
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
+                                    .foregroundStyle(.white)
+                            }
+                            
+                            Button {
+                                isPasswordVisible.toggle()
+                            } label: {
+                                Image(systemName: isPasswordVisible ? "eye.slash" : "eye")
+                                    .foregroundStyle(.white.opacity(0.6))
+                            }
+                            .buttonStyle(.plain)
                         }
                         .padding()
                         .background(.ultraThinMaterial)
@@ -178,14 +192,14 @@ struct AuthView: View {
                     } label: {
                         if isLoading {
                             ProgressView()
-                                .tint(.green)
+                                .tint(.blue)
                                 .frame(maxWidth: .infinity)
                                 .padding()
                         } else {
                             Text(loginMode == .password ? "登录" : (verificationId != nil ? "登录" : "注册"))
                                 .font(.headline)
                                 .fontWeight(.semibold)
-                                .foregroundStyle(submitEnabled ? .green : .gray)
+                                .foregroundStyle(submitEnabled ? .blue : .gray)
                                 .frame(maxWidth: .infinity)
                                 .padding()
                         }
@@ -319,6 +333,7 @@ struct AuthView: View {
     }
     
     private func submitPasswordLogin() async throws {
+        print("[AuthView] 提交密码原始值: \(password)")
         do {
             let response = try await LoginManager.shared.loginWithPhone(
                 phoneNumber: phoneNumber,

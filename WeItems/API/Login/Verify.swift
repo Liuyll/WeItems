@@ -155,7 +155,7 @@ class VerificationManager {
         }
         print("================")
         
-        guard let httpResponse = response as? HTTPURLResponse else {
+        guard response is HTTPURLResponse else {
             throw VerificationError.networkError
         }
         
@@ -257,7 +257,7 @@ class VerificationManager {
         }
         print("================")
         
-        guard let httpResponse = response as? HTTPURLResponse else {
+        guard let _ = response as? HTTPURLResponse else {
             throw VerificationError.networkError
         }
         
@@ -340,7 +340,7 @@ class VerificationManager {
         }
         print("================")
         
-        guard let httpResponse = response as? HTTPURLResponse else {
+        guard response is HTTPURLResponse else {
             throw VerificationError.networkError
         }
         

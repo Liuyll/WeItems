@@ -4,12 +4,76 @@
 //
 
 import SwiftUI
+import Combine
+
+// MARK: - 滚动检测通知
+extension Notification.Name {
+    static let scrollDidChange = Notification.Name("scrollDidChange")
+}
+
+// MARK: - 滚动偏移检测 PreferenceKey
+struct ScrollOffsetPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+// MARK: - 滚动检测修饰符
+struct ScrollDetectorModifier: ViewModifier {
+    let coordinateSpace: String
+    @State private var lastOffset: CGFloat = 0
+    
+    func body(content: Content) -> some View {
+        content
+            .background(
+                GeometryReader { proxy in
+                    let offset = proxy.frame(in: .named(coordinateSpace)).minY
+                    Color.clear
+                        .preference(key: ScrollOffsetPreferenceKey.self, value: offset)
+                }
+            )
+            .onPreferenceChange(ScrollOffsetPreferenceKey.self) { newOffset in
+                if abs(newOffset - lastOffset) > 1 {
+                    lastOffset = newOffset
+                    NotificationCenter.default.post(name: .scrollDidChange, object: nil)
+                }
+            }
+    }
+}
+
+extension View {
+    func detectScroll(coordinateSpace: String = "scrollDetector") -> some View {
+        modifier(ScrollDetectorModifier(coordinateSpace: coordinateSpace))
+    }
+}
+
+// MARK: - 底部 Tab 类型
+enum BottomTab: String, CaseIterable {
+    case items = "物品"
+    case trend = "趋势"
+    
+    var icon: String {
+        switch self {
+        case .items: return "cube.fill"
+        case .trend: return "chart.line.uptrend.xyaxis"
+        }
+    }
+    
+    var color: Color {
+        switch self {
+        case .items: return .blue
+        case .trend: return .orange
+        }
+    }
+}
 
 struct HomeView: View {
     @StateObject private var store = ItemStore()
     @StateObject private var groupStore = GroupStore()
     @StateObject private var wishlistGroupStore = WishlistGroupStore()
     @StateObject private var sharedWishlistStore = SharedWishlistStore()
+    @StateObject private var financeStore = FinanceStore()
     @EnvironmentObject var authManager: AuthManager
 
     @State private var showingAddItem = false
@@ -17,14 +81,33 @@ struct HomeView: View {
     @State private var showingAddGroup = false
     @State private var currentMode: AppMode = .items
     @State private var showingProfile = false
-    @State private var autoSyncToast: String?
-    @State private var showAutoSyncToast = false
     @State private var wishlistSelectedGroupId: UUID? = nil
+    @State private var selectedTab: BottomTab = .items
+    
+    // TabBar 显示/隐藏控制
+    @State private var isTabBarVisible: Bool = true
+    @State private var tabBarHideTimer: Timer? = nil
+    
+    // 剪贴板检测相关
+    @State private var detectedClipboardGroupId: String? = nil
+    @State private var showingClipboardImportAlert = false
+    @State private var isClipboardImporting = false
+    @State private var clipboardImportSuccess = false
+    @State private var clipboardImportedName = ""
+    @State private var clipboardImportError: String? = nil
+    @State private var showingClipboardImportError = false
+    
+    // 昵称输入弹窗相关
+    @State private var showingNicknameInput = false
+    @State private var nicknameInput = ""
+    @State private var pendingDocId: String? = nil
+    @State private var pendingNumberList: [[String: String]] = []
+    @State private var pendingUserId: String = ""
     
     enum AppMode: String, CaseIterable {
         case items = "我的物品"
         case wishlist = "心愿清单"
-        case daily = "日常消费"
+        case daily = "个人资产"
         
         var icon: String {
             switch self {
@@ -44,205 +127,332 @@ struct HomeView: View {
     }
     
     var body: some View {
-        ZStack {
-            NavigationStack {
-                Group {
-                    switch currentMode {
-                    case .items:
-                        ItemsView(store: store, groupStore: groupStore, showingAddGroup: $showingAddGroup)
-                    case .wishlist:
-                        WishlistView(store: store, wishlistGroupStore: wishlistGroupStore, sharedWishlistStore: sharedWishlistStore, selectedGroupId: $wishlistSelectedGroupId)
-                    case .daily:
-                        DailyExpenseView(store: store, groupStore: groupStore)
+        ZStack(alignment: .bottom) {
+            // 主内容区域
+            Group {
+                switch selectedTab {
+                case .items:
+                    itemsTabContent
+                case .trend:
+                    NavigationStack {
+                        TrendView(store: store)
                     }
                 }
-                .toolbar {
-                    ToolbarItem(placement: .navigationBarLeading) {
-                        HStack(spacing: 12) {
-                            // 皮卡丘头像（已登录时显示在最顶部）
-                            if authManager.isAuthenticated {
-                                Button {
-                                    showingProfile = true
-                                } label: {
-                                    Image(systemName: "bolt.circle.fill")
-                                        .font(.system(size: 28))
-                                        .foregroundStyle(.yellow)
-                                }
-                                .buttonStyle(PlainButtonStyle())
+            }
+            
+            // 底部固定 TabBar（滚动时出现，停止 2s 后消失）
+            CustomTabBar(selectedTab: $selectedTab)
+                .offset(y: isTabBarVisible ? 0 : 100)
+                .opacity(isTabBarVisible ? 1 : 0)
+                .animation(.spring(duration: 0.35, bounce: 0.3), value: isTabBarVisible)
+            
+            // 剪贴板导入加载遮罩
+            if isClipboardImporting {
+                ZStack {
+                    Color.black.opacity(0.3).ignoresSafeArea()
+                    VStack(spacing: 12) {
+                        ProgressView()
+                            .controlSize(.large)
+                        Text("正在导入...")
+                            .font(.subheadline)
+                            .foregroundStyle(.white)
+                    }
+                    .padding(24)
+                    .background(RoundedRectangle(cornerRadius: 16).fill(.ultraThinMaterial))
+                }
+            }
+        }
+        .ignoresSafeArea(.keyboard) // 键盘弹出时不影响 TabBar
+        .onReceive(NotificationCenter.default.publisher(for: .scrollDidChange)) { _ in
+            showTabBarTemporarily()
+        }
+        .onChange(of: selectedTab) { _, _ in
+            showTabBarTemporarily()
+        }
+        .onAppear {
+            // 初始显示后 2 秒自动隐藏
+            scheduleTabBarHide()
+        }
+    }
+    
+    /// 显示 TabBar 并在 2 秒后自动隐藏
+    private func showTabBarTemporarily() {
+        // 取消之前的定时器
+        tabBarHideTimer?.invalidate()
+        
+        // 显示 TabBar
+        if !isTabBarVisible {
+            withAnimation(.spring(duration: 0.35, bounce: 0.3)) {
+                isTabBarVisible = true
+            }
+        }
+        
+        // 2 秒后隐藏
+        scheduleTabBarHide()
+    }
+    
+    /// 安排 2 秒后隐藏 TabBar
+    private func scheduleTabBarHide() {
+        tabBarHideTimer?.invalidate()
+        tabBarHideTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { _ in
+            DispatchQueue.main.async {
+                withAnimation(.spring(duration: 0.35, bounce: 0.3)) {
+                    isTabBarVisible = false
+                }
+            }
+        }
+    }
+    
+    // MARK: - 物品 Tab 内容
+    private var itemsTabContent: some View {
+        NavigationStack {
+            Group {
+                switch currentMode {
+                case .items:
+                    ItemsView(store: store, groupStore: groupStore, showingAddGroup: $showingAddGroup)
+                case .wishlist:
+                    WishlistView(store: store, wishlistGroupStore: wishlistGroupStore, sharedWishlistStore: sharedWishlistStore, selectedGroupId: $wishlistSelectedGroupId)
+                case .daily:
+                    DailyExpenseView(store: store, groupStore: groupStore, financeStore: financeStore)
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                Color.clear.frame(height: 60) // 为底部 TabBar 留出空间
+            }
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    HStack(spacing: 12) {
+                        // 皮卡丘头像（已登录时显示在最顶部）
+                        if authManager.isAuthenticated {
+                            Button {
+                                showingProfile = true
+                            } label: {
+                                Image(systemName: "bolt.circle.fill")
+                                    .font(.system(size: 28))
+                                    .foregroundStyle(.yellow)
                             }
-                            
-                            // 模式选择器
-                            Menu {
-                                ForEach(AppMode.allCases, id: \.self) { mode in
-                                    Button {
-                                        withAnimation(.spring(duration: 0.3)) {
-                                            currentMode = mode
-                                        }
-                                    } label: {
-                                        Label(mode.rawValue, systemImage: mode.icon)
-                                        if currentMode == mode {
-                                            Image(systemName: "checkmark")
-                                        }
+                            .buttonStyle(PlainButtonStyle())
+                        }
+                        
+                        // 模式选择器
+                        Menu {
+                            ForEach(AppMode.allCases, id: \.self) { mode in
+                                Button {
+                                    withAnimation(.spring(duration: 0.3)) {
+                                        currentMode = mode
+                                    }
+                                } label: {
+                                    Label(mode.rawValue, systemImage: mode.icon)
+                                    if currentMode == mode {
+                                        Image(systemName: "checkmark")
                                     }
                                 }
-                            } label: {
-                                HStack(spacing: 4) {
-                                    Text(currentMode.rawValue)
-                                        .font(.headline)
-                                    Image(systemName: "chevron.down")
-                                        .font(.caption)
-                                }
-                                .foregroundStyle(.primary)
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text(currentMode.rawValue)
+                                    .font(.headline)
+                                Image(systemName: "chevron.down")
+                                    .font(.caption)
+                            }
+                            .foregroundStyle(.primary)
+                        }
+                    }
+                }
+                
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        addItemId = UUID()
+                        showingAddItem = true
+                    } label: {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(currentMode.color)
+                    }
+                }
+            }
+            .sheet(isPresented: $showingAddItem) {
+                if currentMode == .items {
+                    AddItemView(store: store, groupStore: groupStore, defaultGroupId: nil)
+                        .id(addItemId)
+                } else if currentMode == .wishlist {
+                    AddWishlistItemView(store: store, wishlistGroupStore: wishlistGroupStore, defaultGroupId: wishlistSelectedGroupId)
+                        .id(addItemId)
+                } else if currentMode == .daily {
+                    AddFinanceRecordView(financeStore: financeStore)
+                        .id(addItemId)
+                }
+            }
+            .sheet(isPresented: $showingAddGroup) {
+                AddGroupView(groupStore: groupStore)
+            }
+            .sheet(isPresented: $showingProfile) {
+                ProfileView()
+                    .environmentObject(store)
+                    .environmentObject(sharedWishlistStore)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: AuthManager.userDidChangeNotification)) { _ in
+                store.reloadForCurrentUser()
+                groupStore.reloadForCurrentUser()
+                wishlistGroupStore.reloadForCurrentUser()
+            }
+            .onAppear {
+                checkClipboardForSharedWishlist()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
+                checkClipboardForSharedWishlist()
+            }
+            .alert("检测到共享清单", isPresented: $showingClipboardImportAlert) {
+                Button("取消", role: .cancel) { }
+                Button("立即导入") {
+                    if let groupId = detectedClipboardGroupId {
+                        importFromClipboard(groupId: groupId)
+                    }
+                }
+            } message: {
+                Text("剪贴板中包含共享清单 ID：\(detectedClipboardGroupId ?? "")，是否导入好朋友的清单？")
+            }
+            .alert("导入成功", isPresented: $clipboardImportSuccess) {
+                Button("好的") { }
+            } message: {
+                Text("已成功导入「\(clipboardImportedName)」")
+            }
+            .alert("导入失败", isPresented: $showingClipboardImportError) {
+                Button("好的") { }
+            } message: {
+                Text(clipboardImportError ?? "未知错误")
+            }
+            .alert("在此心愿清单中，希望大家叫你什么？", isPresented: $showingNicknameInput) {
+                TextField("输入你的昵称", text: $nicknameInput)
+                    .autocorrectionDisabled()
+                Button("确定") {
+                    let nickname = nicknameInput.trimmingCharacters(in: .whitespaces)
+                    guard !nickname.isEmpty, let docId = pendingDocId else { return }
+                    // 用用户填写的昵称替换 number_name
+                    var numberList = pendingNumberList
+                    if let index = numberList.firstIndex(where: { $0["number_id"] == pendingUserId }) {
+                        numberList[index]["number_name"] = nickname
+                    }
+                    Task {
+                        guard let client = AuthManager.shared.getCloudBaseClient() else { return }
+                        let result = await client.callFunction(
+                            functionName: "update_sharewish",
+                            data: [
+                                "docId": docId,
+                                "modelName": "sharewish",
+                                "updateData": ["numbers": ["number_list": numberList]]
+                            ]
+                        )
+                        await MainActor.run {
+                            if result != nil {
+                                clipboardImportSuccess = true
+                            } else {
+                                clipboardImportError = "云函数调用失败，请重试"
+                                showingClipboardImportError = true
                             }
                         }
                     }
-                    
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Button {
-                            addItemId = UUID()
-                            showingAddItem = true
-                        } label: {
-                            Image(systemName: "plus.circle.fill")
-                                .font(.title2)
-                                .foregroundStyle(currentMode.color)
-                        }
-                    }
                 }
-                .sheet(isPresented: $showingAddItem) {
-                    if currentMode == .items {
-                        AddItemView(store: store, groupStore: groupStore, defaultGroupId: nil)
-                            .id(addItemId)
-                    } else if currentMode == .wishlist {
-                        AddWishlistItemView(store: store, wishlistGroupStore: wishlistGroupStore, defaultGroupId: wishlistSelectedGroupId)
-                            .id(addItemId)
-                    }
-                }
-                .sheet(isPresented: $showingAddGroup) {
-                    AddGroupView(groupStore: groupStore)
-                }
-                .sheet(isPresented: $showingProfile) {
-                    ProfileView()
-                        .environmentObject(store)
-                }
-                .onReceive(NotificationCenter.default.publisher(for: AuthManager.userDidChangeNotification)) { _ in
-                    store.reloadForCurrentUser()
-                    groupStore.reloadForCurrentUser()
-                    wishlistGroupStore.reloadForCurrentUser()
-                }
-                .onAppear {
-                    checkAutoSync()
-                }
-                .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
-                    checkAutoSync()
-                }
-            }
-            
-            // 自动同步 Toast
-            if showAutoSyncToast, let message = autoSyncToast {
-                VStack {
-                    Spacer()
-                    Text(message)
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 12)
-                        .background(
-                            Capsule()
-                                .fill(Color.black.opacity(0.75))
-                        )
-                        .padding(.bottom, 60)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-                .animation(.easeInOut(duration: 0.3), value: showAutoSyncToast)
+            } message: {
+                Text("这个名字会显示给清单中的其他小伙伴")
             }
         }
     }
     
-    /// 检查是否需要自动同步
-    private func checkAutoSync() {
-        guard authManager.isAuthenticated, store.needsAutoSync else { return }
-        
-        print("[自动同步] 满足条件：已登录、有变更、距上次同步超过1天，开始自动同步...")
+
+    
+    /// 检查剪贴板是否包含 sharewish_ 开头的共享清单 ID
+    private func checkClipboardForSharedWishlist() {
+        guard authManager.isAuthenticated else { return }
+        // 异步读取剪贴板，用户拒绝粘贴不影响后续逻辑
+        DispatchQueue.main.async {
+            guard let text = PrivacySettings.readFromClipboard(), !text.isEmpty else { return }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.hasPrefix("sharewish_") else { return }
+            if sharedWishlistStore.lists.contains(where: { $0.wishGroupId == trimmed }) { return }
+            detectedClipboardGroupId = trimmed
+            showingClipboardImportAlert = true
+        }
+    }
+    
+    /// 从剪贴板检测到的清单 ID 执行导入
+    private func importFromClipboard(groupId: String) {
+        isClipboardImporting = true
         
         Task {
-            let tokenValid = await authManager.ensureValidToken()
-            guard tokenValid else {
-                print("[自动同步] Token 无效，跳过自动同步")
-                return
-            }
-            guard let client = authManager.getCloudBaseClient() else {
-                print("[自动同步] 无法获取云客户端，跳过自动同步")
+            guard let client = AuthManager.shared.getCloudBaseClient() else {
+                await MainActor.run {
+                    isClipboardImporting = false
+                    clipboardImportError = "未登录，请先登录后再导入"
+                    showingClipboardImportError = true
+                }
                 return
             }
             
-            // 同时同步物品和心愿清单
-            async let itemsResult = client.syncItems(items: store.items)
-            async let wishesResult = client.syncWishes(items: store.items)
-            
-            let (itemsSyncResult, wishesSyncResult) = await (itemsResult, wishesResult)
+            let response = await client.fetchSharedWishlistByGroupId(wishGroupId: groupId)
             
             await MainActor.run {
-                var anySuccess = false
+                isClipboardImporting = false
                 
-                if let result = itemsSyncResult {
-                    for name in result.deletedLocalNames {
-                        if let item = store.items.first(where: { $0.name == name && $0.listType == .items }) {
-                            store.delete(item)
-                            print("[自动同步] 已删除本地物品: \(name)")
-                        }
-                    }
-                    anySuccess = true
+                guard let records = response?.data?.records, let record = records.first else {
+                    clipboardImportError = "未找到该清单，请检查 ID 是否正确"
+                    showingClipboardImportError = true
+                    return
                 }
                 
-                if let result = wishesSyncResult {
-                    for name in result.deletedLocalNames {
-                        if let item = store.items.first(where: { $0.name == name && $0.listType == .wishlist }) {
-                            store.delete(item)
-                            print("[自动同步] 已删除本地心愿: \(name)")
-                        }
-                    }
-                    anySuccess = true
+                let listName = record.name ?? "好朋友的清单"
+                let listEmoji = record.emoji ?? "🎁"
+                let ownerName = record.owner_name
+                let remoteItems = record.wishinfo?.items ?? []
+                
+                let sharedItems: [SharedWishItem] = remoteItems.map { remote in
+                    SharedWishItem(
+                        name: remote.name ?? "未知心愿",
+                        price: remote.price ?? 0,
+                        isCompleted: remote.isCompleted ?? false,
+                        displayType: remote.displayType,
+                        purchaseLink: remote.purchaseLink,
+                        details: remote.details,
+                        completedBy: remote.completedBy
+                    )
                 }
                 
-                let message = anySuccess ? "自动同步成功" : "自动同步失败"
-                
-                // 记录同步历史
-                let record = SyncRecord(
-                    id: UUID(),
-                    date: Date(),
-                    trigger: .auto,
-                    itemsUploaded: itemsSyncResult?.uploadedCount ?? 0,
-                    itemsUpdated: itemsSyncResult?.updatedCount ?? 0,
-                    itemsDeletedLocal: itemsSyncResult?.deletedLocalNames.count ?? 0,
-                    itemsFailed: itemsSyncResult?.failedIds.count ?? 0,
-                    wishesUploaded: wishesSyncResult?.uploadedCount ?? 0,
-                    wishesUpdated: wishesSyncResult?.updatedCount ?? 0,
-                    wishesDeletedLocal: wishesSyncResult?.deletedLocalNames.count ?? 0,
-                    wishesFailed: wishesSyncResult?.failedIds.count ?? 0,
-                    success: anySuccess,
-                    message: message
+                let newList = SharedWishlist(
+                    name: listName,
+                    emoji: listEmoji,
+                    items: sharedItems,
+                    isSynced: true,
+                    wishGroupId: groupId,
+                    isOwner: false,
+                    ownerName: ownerName
                 )
-                SyncHistoryStore.shared.addRecord(record)
+                sharedWishlistStore.add(newList)
                 
-                if anySuccess {
-                    store.markSyncCompleted()
-                    showAutoSyncToastMessage(message)
-                } else {
-                    print("[自动同步] 同步失败")
+                // 暂存数据，弹出昵称输入框
+                let currentUserId = TokenStorage.shared.getSub() ?? ""
+                if let docId = record._id {
+                    var numberList: [[String: String]] = record.numbers?.number_list?.map { item in
+                        ["number_name": item.number_name ?? "", "number_id": item.number_id ?? ""]
+                    } ?? []
+                    if !numberList.contains(where: { $0["number_id"] == currentUserId }) {
+                        numberList.append(["number_name": "", "number_id": currentUserId])
+                    }
+                    pendingDocId = docId
+                    pendingNumberList = numberList
+                    pendingUserId = currentUserId
+                    nicknameInput = ""
                 }
-            }
-        }
-    }
-    
-    private func showAutoSyncToastMessage(_ message: String) {
-        autoSyncToast = message
-        withAnimation {
-            showAutoSyncToast = true
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-            withAnimation {
-                showAutoSyncToast = false
+                
+                // 清除剪贴板中的清单 ID，避免重复检测
+                UIPasteboard.general.string = ""
+                
+                if let ownerName = ownerName, !ownerName.isEmpty {
+                    clipboardImportedName = "来自\(ownerName)的心愿清单"
+                } else {
+                    clipboardImportedName = listName
+                }
+                // 先弹昵称输入框，输入完成后再显示导入成功
+                showingNicknameInput = true
             }
         }
     }
@@ -297,8 +507,8 @@ struct ItemsView: View {
     }
     
     var body: some View {
-        VStack(spacing: 0) {
-            // 账号与同步入口 - 仅在未登录时显示（在下拉栏下方）
+        List {
+            // 账号与同步入口 - 仅在未登录时显示
             if !authManager.isAuthenticated {
                 Button {
                     showingAccountSync = true
@@ -329,8 +539,8 @@ struct ItemsView: View {
                     )
                 }
                 .buttonStyle(PlainButtonStyle())
-                .padding(.horizontal)
-                .padding(.top, 8)
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 0, trailing: 16))
             }
             
             // 分组选择器（包含归档标签）
@@ -342,8 +552,8 @@ struct ItemsView: View {
                 archivedCount: archivedCount,
                 onAddGroup: { showingAddGroup = true }
             )
-            .padding(.horizontal)
-            .padding(.top, 8)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
             
             // 总价统计卡片
             TotalPriceCard(
@@ -351,35 +561,49 @@ struct ItemsView: View {
                 itemCount: currentItemCount,
                 title: currentTitle
             )
-            .padding()
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
             
             // 物品类型筛选
             TypeFilterView(selectedType: $selectedType, store: store)
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 4, trailing: 0))
             
             // 物品列表
-            List {
-                ForEach(currentItems) { item in
-                    ItemCard(item: item, group: groupStore.group(for: item.groupId), showGroup: selectedGroupId == nil && !showArchived)
-                        .listRowSeparator(.hidden)
-                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-                        .onTapGesture {
-                            showingItemDetail = item
-                        }
-                        .onLongPressGesture {
-                            editingItem = item
-                        }
-                }
-                .onDelete(perform: deleteItems)
+            ForEach(currentItems) { item in
+                ItemCard(item: item, group: groupStore.group(for: item.groupId), showGroup: selectedGroupId == nil && !showArchived)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                    .onTapGesture {
+                        showingItemDetail = item
+                    }
+                    .onLongPressGesture {
+                        editingItem = item
+                    }
             }
-            .listStyle(.plain)
-            .overlay {
-                if currentItems.isEmpty {
-                    EmptyStateView(
-                        icon: showArchived ? "archivebox" : "tray",
-                        title: showArchived ? "暂无归档物品" : "暂无物品",
-                        subtitle: showArchived ? "" : (selectedGroupId == nil ? "点击 + 添加你的第一个物品" : "该分组还没有物品")
-                    )
-                }
+            .onDelete(perform: deleteItems)
+        }
+        .listStyle(.plain)
+        .onScrollGeometryChange(for: CGFloat.self) { geometry in
+            geometry.contentOffset.y
+        } action: { oldValue, newValue in
+            if abs(newValue - oldValue) > 1 {
+                NotificationCenter.default.post(name: .scrollDidChange, object: nil)
+            }
+        }
+        .simultaneousGesture(
+            TapGesture().onEnded {
+                // 点击空白区域也显示 TabBar（物品不够多无法滚动时）
+                NotificationCenter.default.post(name: .scrollDidChange, object: nil)
+            }
+        )
+        .overlay {
+            if currentItems.isEmpty {
+                EmptyStateView(
+                    icon: showArchived ? "archivebox" : "tray",
+                    title: showArchived ? "暂无归档物品" : "暂无物品",
+                    subtitle: showArchived ? "" : (selectedGroupId == nil ? "点击 + 添加你的第一个物品" : "该分组还没有物品")
+                )
             }
         }
         .sheet(item: $editingItem) { item in
@@ -603,7 +827,7 @@ struct GroupSelectorView: View {
                 }
             }
             .padding(.horizontal, 4)
-            .padding(.vertical, 12)
+            .padding(.vertical, 6)
         }
         .alert("删除分组", isPresented: .constant(groupToDelete != nil)) {
             Button("取消", role: .cancel) {
@@ -839,6 +1063,86 @@ struct AuthViewWrapper: View {
             // 关闭 sheet
             dismiss()
         })
+    }
+}
+
+// MARK: - 自定义底部 TabBar（液态玻璃风格）
+struct CustomTabBar: View {
+    @Binding var selectedTab: BottomTab
+    
+    var body: some View {
+        if #available(iOS 26.0, *) {
+            // iOS 26+：液态玻璃
+            liquidGlassTabBar
+                .padding(.bottom, 16)
+        } else {
+            // iOS 26 以下：毛玻璃胶囊
+            fallbackTabBar
+                .padding(.bottom, 16)
+        }
+    }
+    
+    // MARK: - iOS 26+ 液态玻璃版本
+    @available(iOS 26.0, *)
+    private var liquidGlassTabBar: some View {
+        HStack(spacing: 0) {
+            ForEach(BottomTab.allCases, id: \.self) { tab in
+                Button {
+                    withAnimation(.spring(duration: 0.3)) {
+                        selectedTab = tab
+                    }
+                } label: {
+                    VStack(spacing: 3) {
+                        Image(systemName: tab.icon)
+                            .font(.system(size: 18, weight: selectedTab == tab ? .semibold : .regular))
+                            .symbolEffect(.bounce, value: selectedTab == tab)
+                        
+                        Text(tab.rawValue)
+                            .font(.system(size: 10, weight: selectedTab == tab ? .bold : .medium))
+                    }
+                    .foregroundStyle(selectedTab == tab ? tab.color : .secondary)
+                    .frame(minWidth: 80, minHeight: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+        .glassEffect(.regular.interactive(), in: .capsule)
+    }
+    
+    // MARK: - iOS 26 以下毛玻璃版本
+    private var fallbackTabBar: some View {
+        HStack(spacing: 0) {
+            ForEach(BottomTab.allCases, id: \.self) { tab in
+                Button {
+                    withAnimation(.spring(duration: 0.3)) {
+                        selectedTab = tab
+                    }
+                } label: {
+                    VStack(spacing: 3) {
+                        Image(systemName: tab.icon)
+                            .font(.system(size: 18, weight: selectedTab == tab ? .semibold : .regular))
+                            .symbolEffect(.bounce, value: selectedTab == tab)
+                        
+                        Text(tab.rawValue)
+                            .font(.system(size: 10, weight: selectedTab == tab ? .bold : .medium))
+                    }
+                    .foregroundStyle(selectedTab == tab ? tab.color : .secondary)
+                    .frame(minWidth: 80, minHeight: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+        .background(
+            Capsule()
+                .fill(.ultraThinMaterial)
+                .shadow(color: .black.opacity(0.12), radius: 12, x: 0, y: 4)
+        )
     }
 }
 

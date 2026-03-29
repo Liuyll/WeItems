@@ -114,6 +114,11 @@ struct EditItemView: View {
                                 Task {
                                     if let data = try? await newValue?.loadTransferable(type: Data.self) {
                                         item.imageData = data
+                                        item.imageChanged = true  // 用户编辑了图片
+                                        // 生成 0.7 压缩版，仅用于同步上传
+                                        if let uiImage = UIImage(data: data) {
+                                            item.compressedImageData = uiImage.jpegData(compressionQuality: 0.7)
+                                        }
                                     }
                                 }
                             }
@@ -122,6 +127,8 @@ struct EditItemView: View {
                                 Divider()
                                 Button(role: .destructive) {
                                     item.imageData = nil
+                                    item.compressedImageData = nil
+                                    item.imageChanged = true  // 用户删除了图片
                                     selectedPhoto = nil
                                 } label: {
                                     Label("删除图片", systemImage: "trash")

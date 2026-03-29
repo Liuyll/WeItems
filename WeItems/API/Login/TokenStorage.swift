@@ -17,6 +17,10 @@ class TokenStorage {
     private let subKey = "com.weitems.sub"
     private let phoneNumberKey = "com.weitems.phone_number"
     private let saveTimeKey = "com.weitems.save_time"
+    private let lastVerifyTimeKey = "com.weitems.last_verify_time"
+    
+    /// Token 有效期（24 小时，单位秒）
+    static let tokenValidDuration: TimeInterval = 24 * 60 * 60
     
     private init() {}
     
@@ -98,6 +102,33 @@ class TokenStorage {
         return currentTime > (saveTime + Double(expiresIn))
     }
     
+    // MARK: - 上次验证时间管理
+    
+    /// 记录本次 auth verify 成功的时间
+    func saveLastVerifyTime() {
+        let now = Date().timeIntervalSince1970
+        UserDefaults.standard.set(now, forKey: lastVerifyTimeKey)
+        print("[TokenStorage] 已记录验证时间: \(Date())")
+    }
+    
+    /// 获取上次验证成功的时间戳（秒）
+    func getLastVerifyTime() -> TimeInterval? {
+        let value = UserDefaults.standard.double(forKey: lastVerifyTimeKey)
+        return value > 0 ? value : nil
+    }
+    
+    /// 检查上次验证是否仍在 24 小时有效期内
+    /// - Returns: true 表示仍在有效期，无需再次网络验证
+    func isLastVerifyStillValid() -> Bool {
+        guard let lastVerify = getLastVerifyTime() else {
+            return false
+        }
+        let elapsed = Date().timeIntervalSince1970 - lastVerify
+        let valid = elapsed < Self.tokenValidDuration
+        print("[TokenStorage] 距上次验证: \(Int(elapsed))秒（\(String(format: "%.1f", elapsed / 3600))小时），\(valid ? "仍有效" : "已过期")")
+        return valid
+    }
+    
     /// 清除所有 Token
     func clearToken() {
         deleteFromKeychain(key: accessTokenKey)
@@ -107,6 +138,7 @@ class TokenStorage {
         UserDefaults.standard.removeObject(forKey: subKey)
         UserDefaults.standard.removeObject(forKey: phoneNumberKey)
         UserDefaults.standard.removeObject(forKey: saveTimeKey)
+        UserDefaults.standard.removeObject(forKey: lastVerifyTimeKey)
         
         print("=== Token 已清除 ===")
     }

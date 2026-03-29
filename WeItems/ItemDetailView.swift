@@ -10,8 +10,14 @@ struct ItemDetailView: View {
     @ObservedObject var store: ItemStore
     @State var item: Item
     let group: ItemGroup?
+    var sharedStore: SharedWishlistStore?
+    var wishlistGroupStore: WishlistGroupStore?
     
     @State private var showingArchiveConfirm = false
+    @State private var showingMoveToWishlistConfirm = false
+    @State private var showingFulfillWishConfirm = false
+    @State private var showingAddToSharedWishlist = false
+    @State private var showingEditWish = false
     
     var body: some View {
         NavigationStack {
@@ -150,17 +156,20 @@ struct ItemDetailView: View {
                     if item.listType == .wishlist {
                         VStack(spacing: 12) {
                             Button {
-                                withAnimation(.spring(duration: 0.3)) {
-                                    store.moveToList(itemId: item.id, listType: .items)
-                                    dismiss()
+                                if UserDefaults.standard.bool(forKey: "hasShownFulfillWishHint") {
+                                    withAnimation(.spring(duration: 0.3)) {
+                                        store.moveToList(itemId: item.id, listType: .items)
+                                        dismiss()
+                                    }
+                                } else {
+                                    showingFulfillWishConfirm = true
                                 }
                             } label: {
                                 HStack {
                                     Image(systemName: "checkmark.circle.fill")
-                                    Text("实现心愿")
+                                    Text("我已实现心愿")
                                         .fontWeight(.semibold)
                                     Spacer()
-                                    Image(systemName: "arrow.right.circle.fill")
                                 }
                                 .padding()
                                 .background(Color.green.opacity(0.1))
@@ -169,20 +178,49 @@ struct ItemDetailView: View {
                             }
                             
                             Button {
-                                shareWishToFriends()
+                                if let _ = sharedStore {
+                                    showingAddToSharedWishlist = true
+                                } else {
+                                    shareWishToFriends()
+                                }
                             } label: {
                                 HStack {
                                     Image(systemName: "person.2.fill")
                                     Text("让好朋友们帮我实现")
                                         .fontWeight(.semibold)
                                     Spacer()
-                                    Image(systemName: "doc.on.doc.fill")
                                 }
                                 .padding()
-                                .background(Color.orange.opacity(0.1))
-                                .foregroundStyle(.orange)
+                                .background(Color.pink.opacity(0.1))
+                                .foregroundStyle(.pink)
                                 .clipShape(RoundedRectangle(cornerRadius: 12))
                             }
+                        }
+                    }
+                    
+                    // 移入心愿列表（仅在我的物品中显示）
+                    if item.listType == .items {
+                        Button {
+                            if UserDefaults.standard.bool(forKey: "hasShownMoveToWishlistHint") {
+                                withAnimation(.spring(duration: 0.3)) {
+                                    store.moveToList(itemId: item.id, listType: .wishlist)
+                                    dismiss()
+                                }
+                            } else {
+                                showingMoveToWishlistConfirm = true
+                            }
+                        } label: {
+                            HStack {
+                                Image(systemName: "heart.circle.fill")
+                                Text("移入心愿列表")
+                                    .fontWeight(.semibold)
+                                Spacer()
+                                Image(systemName: "arrow.right.circle.fill")
+                            }
+                            .padding()
+                            .background(Color.pink.opacity(0.1))
+                            .foregroundStyle(.pink)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
                         }
                     }
                     
@@ -218,13 +256,27 @@ struct ItemDetailView: View {
                 }
                 .padding()
             }
-            .navigationTitle("物品详情")
+            .navigationTitle(item.listType == .wishlist ? "心愿详情" : "物品详情")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                if item.listType == .wishlist {
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        Button {
+                            showingEditWish = true
+                        } label: {
+                            Text("编辑")
+                        }
+                    }
+                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("完成") {
                         dismiss()
                     }
+                }
+            }
+            .sheet(isPresented: $showingEditWish) {
+                if let groupStore = wishlistGroupStore {
+                    EditWishlistItemView(item: item, store: store, wishlistGroupStore: groupStore)
                 }
             }
             .alert("确认归档", isPresented: $showingArchiveConfirm) {
@@ -237,6 +289,35 @@ struct ItemDetailView: View {
                 }
             } message: {
                 Text("归档后，该物品将从「我的物品」列表中移除，并移至「归档」标签下。是否继续？")
+            }
+            .alert("移入心愿列表", isPresented: $showingMoveToWishlistConfirm) {
+                Button("取消", role: .cancel) { }
+                Button("确认移入", role: .none) {
+                    UserDefaults.standard.set(true, forKey: "hasShownMoveToWishlistHint")
+                    withAnimation(.spring(duration: 0.3)) {
+                        store.moveToList(itemId: item.id, listType: .wishlist)
+                        dismiss()
+                    }
+                }
+            } message: {
+                Text("移入后，该物品将从「我的物品」列表中移除，并移至「心愿列表」中。是否继续？")
+            }
+            .alert("实现心愿", isPresented: $showingFulfillWishConfirm) {
+                Button("取消", role: .cancel) { }
+                Button("确认实现", role: .none) {
+                    UserDefaults.standard.set(true, forKey: "hasShownFulfillWishHint")
+                    withAnimation(.spring(duration: 0.3)) {
+                        store.moveToList(itemId: item.id, listType: .items)
+                        dismiss()
+                    }
+                }
+            } message: {
+                Text("实现心愿后，该物品将从「心愿列表」中移除，并移至「我的物品」中。是否继续？")
+            }
+            .sheet(isPresented: $showingAddToSharedWishlist) {
+                if let sharedStore = sharedStore {
+                    AddToSharedWishlistSheet(item: item, sharedStore: sharedStore)
+                }
             }
         }
     }
@@ -282,7 +363,7 @@ struct ItemDetailView: View {
             let jsonData = try JSONSerialization.data(withJSONObject: wishData, options: .prettyPrinted)
             if let jsonString = String(data: jsonData, encoding: .utf8) {
                 // 复制到剪切板
-                UIPasteboard.general.string = jsonString
+                PrivacySettings.copyToClipboard(jsonString)
                 
                 // 显示提示
                 let generator = UINotificationFeedbackGenerator()
@@ -290,6 +371,124 @@ struct ItemDetailView: View {
             }
         } catch {
             print("导出失败: \(error)")
+        }
+    }
+}
+
+// MARK: - 添加到共享心愿清单 Sheet
+struct AddToSharedWishlistSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let item: Item
+    @ObservedObject var sharedStore: SharedWishlistStore
+    
+    @State private var showingCreateNew = false
+    @State private var newListName = ""
+    @State private var newListEmoji = "🎁"
+    @State private var addedToListId: UUID? = nil
+    
+    private let emojis = ["🎁", "🎂", "🎄", "💝", "🏠", "✈️", "🎮", "📱", "👗", "🎵", "📚", "🍰", "🌟", "💍", "🎯", "🎪"]
+    
+    private func makeSharedItem() -> SharedWishItem {
+        SharedWishItem(
+            sourceItemId: item.id,
+            name: item.name,
+            price: item.price,
+            displayType: item.effectiveDisplayType,
+            imageData: item.imageData,
+            purchaseLink: item.purchaseLink.isEmpty ? nil : item.purchaseLink,
+            details: item.details.isEmpty ? nil : item.details
+        )
+    }
+    
+    var body: some View {
+        NavigationStack {
+            List {
+                if !sharedStore.lists.isEmpty {
+                    Section("添加到已有清单") {
+                        ForEach(sharedStore.lists) { list in
+                            Button {
+                                sharedStore.addItem(listId: list.id, item: makeSharedItem())
+                                addedToListId = list.id
+                                let generator = UINotificationFeedbackGenerator()
+                                generator.notificationOccurred(.success)
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                    dismiss()
+                                }
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Text(list.emoji)
+                                        .font(.title2)
+                                        .frame(width: 40, height: 40)
+                                        .background(Color.green.opacity(0.1))
+                                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(list.name)
+                                            .font(.body)
+                                            .fontWeight(.medium)
+                                            .foregroundStyle(.primary)
+                                        Text("\(list.items.count) 个心愿")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    
+                                    Spacer()
+                                    
+                                    if addedToListId == list.id {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundStyle(.green)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                Section {
+                    Button {
+                        showingCreateNew = true
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "plus.circle.fill")
+                                .font(.title2)
+                                .foregroundStyle(.green)
+                            Text("创建新的共享清单")
+                                .fontWeight(.medium)
+                                .foregroundStyle(.primary)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("添加到共享清单")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("取消") { dismiss() }
+                }
+            }
+            .alert("新建共享清单", isPresented: $showingCreateNew) {
+                TextField("清单名称", text: $newListName)
+                Button("取消", role: .cancel) {
+                    newListName = ""
+                }
+                Button("创建") {
+                    guard !newListName.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+                    let newList = SharedWishlist(
+                        name: newListName.trimmingCharacters(in: .whitespaces),
+                        emoji: newListEmoji,
+                        items: [makeSharedItem()]
+                    )
+                    sharedStore.add(newList)
+                    newListName = ""
+                    let generator = UINotificationFeedbackGenerator()
+                    generator.notificationOccurred(.success)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        dismiss()
+                    }
+                }
+            } message: {
+                Text("输入新共享清单的名称，心愿将自动添加到其中")
+            }
         }
     }
 }

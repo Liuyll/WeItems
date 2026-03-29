@@ -21,11 +21,13 @@ struct AddItemView: View {
     
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var selectedImageData: Data?
+    @State private var compressedImageData: Data?
     
     @State private var showingAddGroup = false
     @State private var showingCelebration = false
     @State private var showingDuplicateAlert = false
     @State private var spiritTravelCount = 0
+    @State private var isLargeItem = false
     
     private var isValid: Bool {
         !name.isEmpty && !price.isEmpty && Double(price) != nil
@@ -51,6 +53,8 @@ struct AddItemView: View {
                                 .tag(type)
                         }
                     }
+                    
+                    Toggle("大件", isOn: $isLargeItem)
                 }
                 
                 // 分组选择
@@ -118,6 +122,10 @@ struct AddItemView: View {
                                 Task {
                                     if let data = try? await newValue?.loadTransferable(type: Data.self) {
                                         selectedImageData = data
+                                        // 生成 0.7 压缩版，仅用于同步上传
+                                        if let uiImage = UIImage(data: data) {
+                                            compressedImageData = uiImage.jpegData(compressionQuality: 0.7)
+                                        }
                                     }
                                 }
                             }
@@ -126,6 +134,7 @@ struct AddItemView: View {
                                 Divider()
                                 Button(role: .destructive) {
                                     selectedImageData = nil
+                                    compressedImageData = nil
                                     selectedPhoto = nil
                                 } label: {
                                     Label("删除图片", systemImage: "trash")
@@ -195,9 +204,12 @@ struct AddItemView: View {
             details: details,
             purchaseLink: "",
             imageData: selectedImageData,
+            compressedImageData: compressedImageData,
+            imageChanged: selectedImageData != nil,
             price: priceValue,
             type: selectedType.rawValue,
-            groupId: selectedGroupId
+            groupId: selectedGroupId,
+            isLargeItem: isLargeItem
         )
         
         store.add(newItem)

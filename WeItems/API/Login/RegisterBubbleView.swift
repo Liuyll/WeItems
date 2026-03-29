@@ -364,8 +364,18 @@ struct RegisterBubbleView: View {
                 name: nil
             )
             
+            // 保存 Token 到本地（access_token 和 refresh_token 存入 Keychain）
+            TokenStorage.shared.saveToken(
+                accessToken: response.accessToken,
+                refreshToken: response.refreshToken,
+                expiresIn: response.expiresIn,
+                tokenType: response.tokenType,
+                sub: response.sub,
+                phoneNumber: phoneNumber
+            )
+            
             print("注册成功！")
-            print("Access Token: \(response.accessToken)")
+            print("Access Token: \(response.accessToken.prefix(20))...")
             
             await MainActor.run {
                 isLoading = false

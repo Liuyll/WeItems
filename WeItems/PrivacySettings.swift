@@ -19,9 +19,9 @@ class PrivacySettings: ObservableObject {
     }
     
     private init() {
-        // 默认开启剪贴板读取权限
+        // 默认关闭剪贴板读取权限
         if UserDefaults.standard.object(forKey: clipboardReadKey) == nil {
-            UserDefaults.standard.set(true, forKey: clipboardReadKey)
+            UserDefaults.standard.set(false, forKey: clipboardReadKey)
         }
         self.isClipboardReadEnabled = UserDefaults.standard.bool(forKey: clipboardReadKey)
     }

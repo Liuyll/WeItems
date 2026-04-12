@@ -19,8 +19,8 @@ class TokenStorage {
     private let saveTimeKey = "com.weitems.save_time"
     private let lastVerifyTimeKey = "com.weitems.last_verify_time"
     
-    /// Token 有效期（24 小时，单位秒）
-    static let tokenValidDuration: TimeInterval = 24 * 60 * 60
+    /// Token 有效期缓冲（提前 5 分钟刷新）
+    static let tokenRefreshThreshold: TimeInterval = 5 * 60
     
     private init() {}
     
@@ -47,6 +47,9 @@ class TokenStorage {
         if let phoneNumber = phoneNumber {
             UserDefaults.standard.set(phoneNumber, forKey: phoneNumberKey)
         }
+        
+        // 记录本次验证时间
+        saveLastVerifyTime()
         
         print("=== Token 已保存到本地 ===")
         print("access_token: \(accessToken.prefix(20))...")
@@ -91,7 +94,7 @@ class TokenStorage {
         return "user_\(phoneNumber)"
     }
     
-    /// 检查 Token 是否过期
+    /// 检查 access_token 是否已过期
     func isTokenExpired() -> Bool {
         guard let saveTime = UserDefaults.standard.object(forKey: saveTimeKey) as? TimeInterval,
               let expiresIn = UserDefaults.standard.object(forKey: expiresInKey) as? Int else {
@@ -100,6 +103,21 @@ class TokenStorage {
         
         let currentTime = Date().timeIntervalSince1970
         return currentTime > (saveTime + Double(expiresIn))
+    }
+    
+    /// access_token 剩余有效秒数
+    func tokenRemainingSeconds() -> TimeInterval {
+        guard let saveTime = UserDefaults.standard.object(forKey: saveTimeKey) as? TimeInterval,
+              let expiresIn = UserDefaults.standard.object(forKey: expiresInKey) as? Int else {
+            return 0
+        }
+        let expireTime = saveTime + Double(expiresIn)
+        return max(0, expireTime - Date().timeIntervalSince1970)
+    }
+    
+    /// 是否需要刷新 token（过期或即将过期）
+    func needsRefresh() -> Bool {
+        return tokenRemainingSeconds() < Self.tokenRefreshThreshold
     }
     
     // MARK: - 上次验证时间管理
@@ -117,15 +135,12 @@ class TokenStorage {
         return value > 0 ? value : nil
     }
     
-    /// 检查上次验证是否仍在 24 小时有效期内
-    /// - Returns: true 表示仍在有效期，无需再次网络验证
+    /// access_token 是否仍然有效（未过期且不需要刷新）
+    /// - Returns: true 表示 token 仍然有效，无需刷新
     func isLastVerifyStillValid() -> Bool {
-        guard let lastVerify = getLastVerifyTime() else {
-            return false
-        }
-        let elapsed = Date().timeIntervalSince1970 - lastVerify
-        let valid = elapsed < Self.tokenValidDuration
-        print("[TokenStorage] 距上次验证: \(Int(elapsed))秒（\(String(format: "%.1f", elapsed / 3600))小时），\(valid ? "仍有效" : "已过期")")
+        let remaining = tokenRemainingSeconds()
+        let valid = remaining > Self.tokenRefreshThreshold
+        print("[TokenStorage] access_token 剩余: \(Int(remaining))秒（\(String(format: "%.1f", remaining / 3600))小时），\(valid ? "仍有效" : "需刷新")")
         return valid
     }
     

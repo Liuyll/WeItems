@@ -14,6 +14,7 @@ enum ListType: String, Codable, CaseIterable {
 
 struct Item: Identifiable, Codable {
     let id: UUID
+    var itemId: String              // 唯一业务 ID: userid_时间戳_8位随机数
     var name: String
     var details: String
     var purchaseLink: String
@@ -29,6 +30,8 @@ struct Item: Identifiable, Codable {
     var isSelected: Bool
     var isArchived: Bool          // 是否归档（仅用于我的物品）
     var isLargeItem: Bool         // 是否大件物品
+    var isPriceless: Bool         // 无价之物（不计入资产和总价值，不计算每天开销）
+    var ownedDate: Date?          // 拥有日期（用户自定义的拥有起始日期）
     
     // 心愿清单专用字段
     var displayType: String?      // 心愿清单中展示的类型（可自定义）
@@ -38,16 +41,33 @@ struct Item: Identifiable, Codable {
     // 云端图片
     var imageUrl: String?         // 云存储图片下载链接（用于同步对比）
     
+    // 售出相关
+    var soldPrice: Double?        // 售出价格
+    var soldDate: Date?           // 售出日期
+    
+    // 同步状态
+    var isSynced: Bool            // 是否已同步到远端（本地新建为 false，同步成功或从远端拉取为 true）
+    
     // imageChanged 不参与 Codable 编解码
     enum CodingKeys: String, CodingKey {
-        case id, name, details, purchaseLink, imageData, compressedImageData
+        case id, itemId, name, details, purchaseLink, imageData, compressedImageData
         case price, type, groupId, listType, createdAt, updatedAt
-        case isSelected, isArchived, isLargeItem, displayType, targetType, wishlistGroupId
-        case imageUrl
+        case isSelected, isArchived, isLargeItem, isPriceless, ownedDate
+        case displayType, targetType, wishlistGroupId
+        case imageUrl, soldPrice, soldDate, isSynced
     }
     
-    init(id: UUID = UUID(), name: String, details: String, purchaseLink: String, imageData: Data? = nil, compressedImageData: Data? = nil, imageChanged: Bool = false, price: Double, type: String, groupId: UUID? = nil, listType: ListType = .items, createdAt: Date = Date(), updatedAt: Date? = nil, isSelected: Bool = false, isArchived: Bool = false, isLargeItem: Bool = false, displayType: String? = nil, targetType: String? = nil, wishlistGroupId: UUID? = nil, imageUrl: String? = nil) {
+    /// 生成唯一 itemId: userid_时间戳_8位随机数
+    static func generateItemId() -> String {
+        let userId = TokenStorage.shared.getSub() ?? "anonymous"
+        let timestamp = Int(Date().timeIntervalSince1970 * 1000)
+        let random = String(format: "%08d", Int.random(in: 0...99999999))
+        return "\(userId)_\(timestamp)_\(random)"
+    }
+    
+    init(id: UUID = UUID(), itemId: String? = nil, name: String, details: String, purchaseLink: String, imageData: Data? = nil, compressedImageData: Data? = nil, imageChanged: Bool = false, price: Double, type: String, groupId: UUID? = nil, listType: ListType = .items, createdAt: Date = Date(), updatedAt: Date? = nil, isSelected: Bool = false, isArchived: Bool = false, isLargeItem: Bool = false, isPriceless: Bool = false, ownedDate: Date? = nil, displayType: String? = nil, targetType: String? = nil, wishlistGroupId: UUID? = nil, imageUrl: String? = nil, soldPrice: Double? = nil, soldDate: Date? = nil, isSynced: Bool = false) {
         self.id = id
+        self.itemId = itemId ?? Item.generateItemId()
         self.name = name
         self.details = details
         self.purchaseLink = purchaseLink
@@ -63,16 +83,22 @@ struct Item: Identifiable, Codable {
         self.isSelected = isSelected
         self.isArchived = isArchived
         self.isLargeItem = isLargeItem
+        self.isPriceless = isPriceless
+        self.ownedDate = ownedDate
         self.displayType = displayType
         self.targetType = targetType
         self.wishlistGroupId = wishlistGroupId
         self.imageUrl = imageUrl
+        self.soldPrice = soldPrice
+        self.soldDate = soldDate
+        self.isSynced = isSynced
     }
     
     // 自定义 Decode，兼容旧数据（缺少 updatedAt 时用 createdAt 补充）
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
+        itemId = try container.decodeIfPresent(String.self, forKey: .itemId) ?? Item.generateItemId()
         name = try container.decode(String.self, forKey: .name)
         details = try container.decode(String.self, forKey: .details)
         purchaseLink = try container.decode(String.self, forKey: .purchaseLink)
@@ -88,10 +114,15 @@ struct Item: Identifiable, Codable {
         isSelected = try container.decode(Bool.self, forKey: .isSelected)
         isArchived = try container.decode(Bool.self, forKey: .isArchived)
         isLargeItem = try container.decodeIfPresent(Bool.self, forKey: .isLargeItem) ?? false
+        isPriceless = try container.decodeIfPresent(Bool.self, forKey: .isPriceless) ?? false
+        ownedDate = try container.decodeIfPresent(Date.self, forKey: .ownedDate)
         displayType = try container.decodeIfPresent(String.self, forKey: .displayType)
         targetType = try container.decodeIfPresent(String.self, forKey: .targetType)
         wishlistGroupId = try container.decodeIfPresent(UUID.self, forKey: .wishlistGroupId)
         imageUrl = try container.decodeIfPresent(String.self, forKey: .imageUrl)
+        soldPrice = try container.decodeIfPresent(Double.self, forKey: .soldPrice)
+        soldDate = try container.decodeIfPresent(Date.self, forKey: .soldDate)
+        isSynced = try container.decodeIfPresent(Bool.self, forKey: .isSynced) ?? false
     }
     
     // 获取展示用的类型（心愿清单优先用 displayType）
@@ -108,11 +139,26 @@ struct Item: Identifiable, Codable {
         return Image(uiImage: uiImage)
     }
     
-    // 计算属性用于显示
+    // 计算属性用于显示（优先使用拥有日期）
     var daysSinceCreated: Int {
         let calendar = Calendar.current
-        let components = calendar.dateComponents([.day], from: createdAt, to: Date())
-        return (components.day ?? 0) + 1
+        let startDate = ownedDate ?? createdAt
+        let endDate = soldDate ?? Date()
+        let components = calendar.dateComponents([.day], from: startDate, to: endDate)
+        return max((components.day ?? 0) + 1, 1)
+    }
+    
+    /// 售出盈亏金额（正数=亏损，负数=盈利）
+    var soldLoss: Double? {
+        guard let soldPrice else { return nil }
+        return price - soldPrice
+    }
+    
+    /// 日均使用成本（已售出且盈利时为0，未售出：购入价/持有天数）
+    var dailyCost: Double {
+        guard !isPriceless, daysSinceCreated > 0 else { return 0 }
+        let effectivePrice = price - (soldPrice ?? 0)
+        return max(effectivePrice, 0) / Double(daysSinceCreated)
     }
 }
 
@@ -136,6 +182,19 @@ enum ItemType: String, CaseIterable {
         case .edc: return "wallet.bifold"
         case .outdoor: return "tent"
         case .other: return "square.grid.2x2"
+        }
+    }
+    
+    var color: Color {
+        switch self {
+        case .digital: return .blue
+        case .fashion: return .pink
+        case .appliance: return .cyan
+        case .largeItem: return .purple
+        case .lifeGood: return .red
+        case .edc: return .brown
+        case .outdoor: return .green
+        case .other: return .gray
         }
     }
 }

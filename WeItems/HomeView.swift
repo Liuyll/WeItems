@@ -5,6 +5,7 @@
 
 import SwiftUI
 import Combine
+import LocalAuthentication
 
 // MARK: - 滚动检测通知
 extension Notification.Name {
@@ -52,11 +53,13 @@ extension View {
 enum BottomTab: String, CaseIterable {
     case items = "物品"
     case trend = "趋势"
+    case settings = "设置"
     
     var icon: String {
         switch self {
         case .items: return "cube.fill"
         case .trend: return "chart.line.uptrend.xyaxis"
+        case .settings: return "gearshape"
         }
     }
     
@@ -64,6 +67,7 @@ enum BottomTab: String, CaseIterable {
         switch self {
         case .items: return .blue
         case .trend: return .orange
+        case .settings: return .gray
         }
     }
 }
@@ -74,6 +78,7 @@ struct HomeView: View {
     @StateObject private var wishlistGroupStore = WishlistGroupStore()
     @StateObject private var sharedWishlistStore = SharedWishlistStore()
     @StateObject private var financeStore = FinanceStore()
+    @ObservedObject private var avatarStore = AvatarStore.shared
     @EnvironmentObject var authManager: AuthManager
 
     @State private var showingAddItem = false
@@ -83,6 +88,8 @@ struct HomeView: View {
     @State private var showingProfile = false
     @State private var wishlistSelectedGroupId: UUID? = nil
     @State private var selectedTab: BottomTab = .items
+    @AppStorage("assetFaceIDLock") private var assetFaceIDLock = false
+    @State private var assetUnlocked = false
     
     // TabBar 显示/隐藏控制
     @State private var isTabBarVisible: Bool = true
@@ -96,6 +103,9 @@ struct HomeView: View {
     @State private var clipboardImportedName = ""
     @State private var clipboardImportError: String? = nil
     @State private var showingClipboardImportError = false
+    
+    // Pro 升级页面
+    @State private var showingProUpgrade = false
     
     // 昵称输入弹窗相关
     @State private var showingNicknameInput = false
@@ -137,6 +147,15 @@ struct HomeView: View {
                     NavigationStack {
                         TrendView(store: store)
                     }
+                case .settings:
+                    ProfileView(onBack: {
+                        withAnimation(.spring(duration: 0.3)) {
+                            selectedTab = .items
+                        }
+                    })
+                        .environmentObject(store)
+                        .environmentObject(sharedWishlistStore)
+                        .environmentObject(financeStore)
                 }
             }
             
@@ -203,6 +222,56 @@ struct HomeView: View {
         }
     }
     
+    // MARK: - 资产面容锁
+    
+    private var assetLockedView: some View {
+        VStack(spacing: 20) {
+            Spacer()
+            Image(systemName: "faceid")
+                .font(.system(size: 60))
+                .foregroundStyle(.orange.opacity(0.6))
+            Text("个人资产已锁定")
+                .font(.title3)
+                .fontWeight(.medium)
+            Text("请验证 Face ID 查看")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Button {
+                authenticateForAssets()
+            } label: {
+                Text("验证解锁")
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 40)
+                    .padding(.vertical, 12)
+                    .background(Capsule().fill(.orange))
+            }
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemGroupedBackground))
+        .onAppear {
+            authenticateForAssets()
+        }
+    }
+    
+    private func authenticateForAssets() {
+        let context = LAContext()
+        var error: NSError?
+        guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) else {
+            // 设备不支持生物识别，直接解锁
+            assetUnlocked = true
+            return
+        }
+        context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "验证身份以查看个人资产") { success, _ in
+            DispatchQueue.main.async {
+                if success {
+                    assetUnlocked = true
+                }
+            }
+        }
+    }
+    
     // MARK: - 物品 Tab 内容
     private var itemsTabContent: some View {
         NavigationStack {
@@ -213,7 +282,11 @@ struct HomeView: View {
                 case .wishlist:
                     WishlistView(store: store, wishlistGroupStore: wishlistGroupStore, sharedWishlistStore: sharedWishlistStore, selectedGroupId: $wishlistSelectedGroupId)
                 case .daily:
-                    DailyExpenseView(store: store, groupStore: groupStore, financeStore: financeStore)
+                    if assetFaceIDLock && !assetUnlocked {
+                        assetLockedView
+                    } else {
+                        DailyExpenseView(store: store, groupStore: groupStore, financeStore: financeStore)
+                    }
                 }
             }
             .safeAreaInset(edge: .bottom) {
@@ -221,18 +294,27 @@ struct HomeView: View {
             }
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    HStack(spacing: 12) {
-                        // 皮卡丘头像（已登录时显示在最顶部）
-                        if authManager.isAuthenticated {
-                            Button {
-                                showingProfile = true
-                            } label: {
-                                Image(systemName: "bolt.circle.fill")
-                                    .font(.system(size: 28))
-                                    .foregroundStyle(.yellow)
+                    HStack(spacing: 10) {
+                        // 用户头像
+                        Button {
+                            withAnimation(.spring(duration: 0.3)) {
+                                selectedTab = .settings
                             }
-                            .buttonStyle(PlainButtonStyle())
+                        } label: {
+                            if let avatar = avatarStore.avatarImage {
+                                Image(uiImage: avatar)
+                                    .resizable()
+                                    .scaledToFill()
+                                    .frame(width: 30, height: 30)
+                                    .clipShape(Circle())
+                                    .overlay(Circle().stroke(Color.gray.opacity(0.2), lineWidth: 0.5))
+                            } else {
+                                Image(systemName: "person.crop.circle.fill")
+                                    .font(.system(size: 28))
+                                    .foregroundStyle(.gray.opacity(0.5))
+                            }
                         }
+                        .buttonStyle(PlainButtonStyle())
                         
                         // 模式选择器
                         Menu {
@@ -240,6 +322,9 @@ struct HomeView: View {
                                 Button {
                                     withAnimation(.spring(duration: 0.3)) {
                                         currentMode = mode
+                                    }
+                                    if mode != .daily {
+                                        assetUnlocked = false
                                     }
                                 } label: {
                                     Label(mode.rawValue, systemImage: mode.icon)
@@ -251,9 +336,11 @@ struct HomeView: View {
                         } label: {
                             HStack(spacing: 4) {
                                 Text(currentMode.rawValue)
-                                    .font(.headline)
+                                    .font(.system(.headline, design: .rounded))
+                                    .fontWeight(.bold)
                                 Image(systemName: "chevron.down")
-                                    .font(.caption)
+                                    .font(.caption2)
+                                    .fontWeight(.semibold)
                             }
                             .foregroundStyle(.primary)
                         }
@@ -267,6 +354,7 @@ struct HomeView: View {
                     } label: {
                         Image(systemName: "plus.circle.fill")
                             .font(.title2)
+                            .symbolRenderingMode(.monochrome)
                             .foregroundStyle(currentMode.color)
                     }
                 }
@@ -286,15 +374,15 @@ struct HomeView: View {
             .sheet(isPresented: $showingAddGroup) {
                 AddGroupView(groupStore: groupStore)
             }
-            .sheet(isPresented: $showingProfile) {
-                ProfileView()
-                    .environmentObject(store)
-                    .environmentObject(sharedWishlistStore)
+            .sheet(isPresented: $showingProUpgrade) {
+                ProUpgradeView()
             }
             .onReceive(NotificationCenter.default.publisher(for: AuthManager.userDidChangeNotification)) { _ in
                 store.reloadForCurrentUser()
                 groupStore.reloadForCurrentUser()
                 wishlistGroupStore.reloadForCurrentUser()
+                sharedWishlistStore.reloadForCurrentUser()
+                financeStore.reloadForCurrentUser()
             }
             .onAppear {
                 checkClipboardForSharedWishlist()
@@ -302,33 +390,36 @@ struct HomeView: View {
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
                 checkClipboardForSharedWishlist()
             }
-            .alert("检测到共享清单", isPresented: $showingClipboardImportAlert) {
-                Button("取消", role: .cancel) { }
-                Button("立即导入") {
+            .customConfirmAlert(
+                isPresented: $showingClipboardImportAlert,
+                title: "检测到共享清单",
+                message: "剪贴板中包含共享清单 ID：\(detectedClipboardGroupId ?? "")，是否导入好朋友的清单？",
+                confirmText: "立即导入",
+                onConfirm: {
                     if let groupId = detectedClipboardGroupId {
                         importFromClipboard(groupId: groupId)
                     }
                 }
-            } message: {
-                Text("剪贴板中包含共享清单 ID：\(detectedClipboardGroupId ?? "")，是否导入好朋友的清单？")
-            }
-            .alert("导入成功", isPresented: $clipboardImportSuccess) {
-                Button("好的") { }
-            } message: {
-                Text("已成功导入「\(clipboardImportedName)」")
-            }
-            .alert("导入失败", isPresented: $showingClipboardImportError) {
-                Button("好的") { }
-            } message: {
-                Text(clipboardImportError ?? "未知错误")
-            }
-            .alert("在此心愿清单中，希望大家叫你什么？", isPresented: $showingNicknameInput) {
-                TextField("输入你的昵称", text: $nicknameInput)
-                    .autocorrectionDisabled()
-                Button("确定") {
+            )
+            .customInfoAlert(
+                isPresented: $clipboardImportSuccess,
+                title: "导入成功",
+                message: "已成功导入「\(clipboardImportedName)」"
+            )
+            .customInfoAlert(
+                isPresented: $showingClipboardImportError,
+                title: "导入失败",
+                message: clipboardImportError ?? "未知错误"
+            )
+            .customInputAlert(
+                isPresented: $showingNicknameInput,
+                title: "在此心愿清单中，希望大家叫你什么？",
+                message: "这个名字会显示给清单中的其他小伙伴",
+                placeholder: "输入你的昵称",
+                text: $nicknameInput,
+                onConfirm: {
                     let nickname = nicknameInput.trimmingCharacters(in: .whitespaces)
                     guard !nickname.isEmpty, let docId = pendingDocId else { return }
-                    // 用用户填写的昵称替换 number_name
                     var numberList = pendingNumberList
                     if let index = numberList.firstIndex(where: { $0["number_id"] == pendingUserId }) {
                         numberList[index]["number_name"] = nickname
@@ -353,9 +444,7 @@ struct HomeView: View {
                         }
                     }
                 }
-            } message: {
-                Text("这个名字会显示给清单中的其他小伙伴")
-            }
+            )
         }
     }
     
@@ -364,12 +453,21 @@ struct HomeView: View {
     /// 检查剪贴板是否包含 sharewish_ 开头的共享清单 ID
     private func checkClipboardForSharedWishlist() {
         guard authManager.isAuthenticated else { return }
+        // 非 VIP 用户不检测剪贴板
+        guard IAPManager.shared.isVIPActive else { return }
         // 异步读取剪贴板，用户拒绝粘贴不影响后续逻辑
         DispatchQueue.main.async {
             guard let text = PrivacySettings.readFromClipboard(), !text.isEmpty else { return }
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard trimmed.hasPrefix("sharewish_") else { return }
             if sharedWishlistStore.lists.contains(where: { $0.wishGroupId == trimmed }) { return }
+            
+            // 切换到心愿清单页面
+            withAnimation(.spring(duration: 0.3)) {
+                selectedTab = .items
+                currentMode = .wishlist
+            }
+            
             detectedClipboardGroupId = trimmed
             showingClipboardImportAlert = true
         }
@@ -471,6 +569,7 @@ struct ItemsView: View {
     @State private var showArchived: Bool = false
     @State private var showingAccountSync = false
     @State private var selectedType: ItemType? = nil
+    @AppStorage("itemSortMode") private var itemSortMode: ItemSortMode = .addedDate
     
     private var currentItems: [Item] {
         var result: [Item]
@@ -484,11 +583,20 @@ struct ItemsView: View {
         if let type = selectedType {
             result = result.filter { $0.type == type.rawValue }
         }
+        // 排序
+        switch itemSortMode {
+        case .addedDate:
+            result.sort { $0.createdAt > $1.createdAt }
+        case .ownedDate:
+            result.sort { ($0.ownedDate ?? $0.createdAt) > ($1.ownedDate ?? $1.createdAt) }
+        case .price:
+            result.sort { $0.price > $1.price }
+        }
         return result
     }
     
     private var currentTotalPrice: Double {
-        currentItems.reduce(0) { $0 + $1.price }
+        currentItems.filter { !$0.isPriceless }.reduce(0) { $0 + $1.price }
     }
     
     private var currentItemCount: Int {
@@ -497,7 +605,7 @@ struct ItemsView: View {
     
     private var currentTitle: String {
         if showArchived {
-            return "归档"
+            return "售出物品"
         }
         return selectedGroupId == nil ? "我的物品" : (groupStore.group(for: selectedGroupId)?.name ?? "")
     }
@@ -559,7 +667,9 @@ struct ItemsView: View {
             TotalPriceCard(
                 totalPrice: currentTotalPrice,
                 itemCount: currentItemCount,
-                title: currentTitle
+                title: currentTitle,
+                soldTotalPrice: showArchived ? currentItems.compactMap({ $0.soldPrice }).reduce(0, +) : nil,
+                usageCost: showArchived ? (currentTotalPrice - currentItems.compactMap({ $0.soldPrice }).reduce(0, +)) : nil
             )
             .listRowSeparator(.hidden)
             .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
@@ -574,14 +684,21 @@ struct ItemsView: View {
                 ItemCard(item: item, group: groupStore.group(for: item.groupId), showGroup: selectedGroupId == nil && !showArchived)
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                    .listRowBackground(Color.clear)
                     .onTapGesture {
                         showingItemDetail = item
                     }
                     .onLongPressGesture {
                         editingItem = item
                     }
+                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                        Button(role: .destructive) {
+                            store.delete(item)
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                    }
             }
-            .onDelete(perform: deleteItems)
         }
         .listStyle(.plain)
         .onScrollGeometryChange(for: CGFloat.self) { geometry in
@@ -601,7 +718,7 @@ struct ItemsView: View {
             if currentItems.isEmpty {
                 EmptyStateView(
                     icon: showArchived ? "archivebox" : "tray",
-                    title: showArchived ? "暂无归档物品" : "暂无物品",
+                    title: showArchived ? "暂无售出物品" : "暂无物品",
                     subtitle: showArchived ? "" : (selectedGroupId == nil ? "点击 + 添加你的第一个物品" : "该分组还没有物品")
                 )
             }
@@ -787,7 +904,7 @@ struct GroupSelectorView: View {
                     }
                 }
                 
-                // 归档标签（有归档物品时才显示）
+                // 售出物品标签
                 if archivedCount > 0 {
                     Button {
                         withAnimation(.spring(duration: 0.3)) {
@@ -797,8 +914,8 @@ struct GroupSelectorView: View {
                         }
                     } label: {
                         GroupChip(
-                            name: "归档",
-                            icon: "archivebox",
+                            name: "售出",
+                            icon: "tag",
                             color: .purple,
                             isSelected: showArchived,
                             isEditing: false
@@ -829,12 +946,16 @@ struct GroupSelectorView: View {
             .padding(.horizontal, 4)
             .padding(.vertical, 6)
         }
-        .alert("删除分组", isPresented: .constant(groupToDelete != nil)) {
-            Button("取消", role: .cancel) {
-                groupToDelete = nil
-                editingGroupId = nil
-            }
-            Button("删除", role: .destructive) {
+        .customConfirmAlert(
+            isPresented: Binding(
+                get: { groupToDelete != nil },
+                set: { if !$0 { groupToDelete = nil; editingGroupId = nil } }
+            ),
+            title: "删除分组",
+            message: "删除分组后，该分组下的物品将变为无分组状态。确定要删除吗？",
+            confirmText: "删除",
+            isDestructive: true,
+            onConfirm: {
                 if let group = groupToDelete {
                     let itemsInGroup = itemStore.itemsForGroup(group.id, listType: .items)
                     itemStore.moveItems(toGroup: nil, items: itemsInGroup.map { $0.id })
@@ -845,10 +966,12 @@ struct GroupSelectorView: View {
                     editingGroupId = nil
                     groupToDelete = nil
                 }
+            },
+            onCancel: {
+                groupToDelete = nil
+                editingGroupId = nil
             }
-        } message: {
-            Text("删除分组后，该分组下的物品将变为无分组状态。确定要删除吗？")
-        }
+        )
     }
 }
 
@@ -889,6 +1012,8 @@ struct TotalPriceCard: View {
     let totalPrice: Double
     let itemCount: Int
     let title: String
+    var soldTotalPrice: Double? = nil  // 售出总价
+    var usageCost: Double? = nil       // 使用成本（原始 - 售出）
     
     var body: some View {
         VStack(spacing: 12) {
@@ -912,6 +1037,36 @@ struct TotalPriceCard: View {
                         .font(.title2)
                         .fontWeight(.semibold)
                         .foregroundStyle(.blue)
+                }
+            }
+            
+            // 售出统计
+            if let soldTotal = soldTotalPrice, let cost = usageCost {
+                Divider()
+                HStack(spacing: 0) {
+                    VStack(spacing: 2) {
+                        Text("售出总额")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("¥\(String(format: "%.0f", soldTotal))")
+                            .font(.system(.subheadline, design: .rounded))
+                            .fontWeight(.bold)
+                            .foregroundStyle(.green)
+                    }
+                    .frame(maxWidth: .infinity)
+                    
+                    Divider().frame(height: 30)
+                    
+                    VStack(spacing: 2) {
+                        Text(cost >= 0 ? "使用成本" : "总盈利")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("\(cost >= 0 ? "" : "+")¥\(String(format: "%.0f", abs(cost)))")
+                            .font(.system(.subheadline, design: .rounded))
+                            .fontWeight(.bold)
+                            .foregroundStyle(cost >= 0 ? .red : .green)
+                    }
+                    .frame(maxWidth: .infinity)
                 }
             }
         }
@@ -944,10 +1099,17 @@ struct ItemCard: View {
                 
                 Spacer()
                 
-                Text("¥\(String(format: "%.2f", item.price))")
-                    .font(.title3)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.blue)
+                if item.isPriceless {
+                    Text("无价之物")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.orange)
+                } else {
+                    Text("¥\(String(format: "%.2f", item.price))")
+                        .font(.title3)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.blue)
+                }
             }
             
             // 类型和分组标签
@@ -998,6 +1160,59 @@ struct ItemCard: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
+            }
+            
+            // 售出信息（仅售出物品显示）
+            if item.isArchived, let soldPrice = item.soldPrice {
+                VStack(spacing: 6) {
+                    Divider()
+                    HStack(spacing: 0) {
+                        VStack(spacing: 2) {
+                            Text("售出价")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Text("¥\(String(format: "%.0f", soldPrice))")
+                                .font(.caption)
+                                .fontWeight(.bold)
+                                .foregroundStyle(.green)
+                        }
+                        .frame(maxWidth: .infinity)
+                        
+                        VStack(spacing: 2) {
+                            let loss = item.soldLoss ?? 0
+                            Text(loss >= 0 ? "亏损" : "盈利")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Text("\(loss >= 0 ? "-" : "+")¥\(String(format: "%.0f", abs(loss)))")
+                                .font(.caption)
+                                .fontWeight(.bold)
+                                .foregroundStyle(loss >= 0 ? .red : .green)
+                        }
+                        .frame(maxWidth: .infinity)
+                        
+                        VStack(spacing: 2) {
+                            Text("持有")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Text("\(item.daysSinceCreated)天")
+                                .font(.caption)
+                                .fontWeight(.bold)
+                                .foregroundStyle(.primary)
+                        }
+                        .frame(maxWidth: .infinity)
+                        
+                        VStack(spacing: 2) {
+                            Text("日均")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Text("¥\(String(format: "%.2f", item.dailyCost))")
+                                .font(.caption)
+                                .fontWeight(.bold)
+                                .foregroundStyle(.orange)
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                }
             }
         }
         .padding()

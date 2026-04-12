@@ -309,46 +309,10 @@ class CloudBaseClient {
     
     /// 使用 refresh_token 刷新 access_token
     ///
-    /// 注意：刷新成功后，原 refresh_token 会失效，新的 refresh_token 将替换它
-    ///
-    /// - Parameters:
-    ///   - refreshToken: 刷新令牌（必填，用于获取新的 access_token）
-    ///   - clientId: 应用对应的客户端 ID（可选，默认为环境 ID）
-    ///   - customDeviceId: 设备 ID（可选，默认使用 CloudBaseClient.deviceId）
-    ///   - completion: 刷新结果回调，返回 RefreshTokenResponse（成功）或 nil（失败）
-    func refreshAccessToken(
-        refreshToken: String,
-        clientId: String? = nil,
-        customDeviceId: String? = nil,
-        completion: @escaping (RefreshTokenResponse?) -> Void
-    ) {
-        let body: [String: Any] = [
-            "grant_type": "refresh_token",
-            "refresh_token": refreshToken,
-            "client_id": clientId ?? envId
-        ]
-        
-        var headers: [String: String] = [:]
-        let deviceIdToUse = customDeviceId ?? deviceId
-        if let deviceIdToUse = deviceIdToUse {
-            headers["x-device-id"] = deviceIdToUse
-        }
-        
-        request(method: "POST", path: "/auth/v1/token", body: body, customHeaders: headers) { (result: RefreshTokenResponse?) in
-            if let response = result {
-                // 更新本地存储的 access_token
-                self.updateAccessToken(response.accessToken)
-                print("Token 刷新成功，新的 access_token 有效期: \(response.expiresIn) 秒")
-            } else {
-                print("Token 刷新失败")
-            }
-            completion(result)
-        }
-    }
-    
-    /// 使用 refresh_token 刷新 access_token（async/await 版本）
-    ///
-    /// 注意：刷新成功后，原 refresh_token 会失效，新的 refresh_token 将替换它
+    /// 注意：
+    /// 1. 此接口不需要 Authorization header（旧 access_token 可能已过期）
+    /// 2. 刷新成功后，原 refresh_token 立即失效，新的 refresh_token 将替换它
+    /// 3. refresh_token 默认有效期 31 天
     ///
     /// - Parameters:
     ///   - refreshToken: 刷新令牌（必填，用于获取新的 access_token）
@@ -361,37 +325,67 @@ class CloudBaseClient {
         clientId: String? = nil,
         customDeviceId: String? = nil
     ) async -> RefreshTokenResponse? {
-        await withCheckedContinuation { continuation in
-            refreshAccessToken(refreshToken: refreshToken, clientId: clientId, customDeviceId: customDeviceId) { result in
-                continuation.resume(returning: result)
+        guard let url = URL(string: "\(baseUrl)/auth/v1/token") else {
+            print("[Refresh] 无效的 URL")
+            return nil
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        // 注意：refresh token 接口不带 Authorization Bearer header
+        
+        // 设置 x-device-id header（可选）
+        let deviceIdToUse = customDeviceId ?? deviceId
+        if let deviceIdToUse = deviceIdToUse {
+            request.setValue(deviceIdToUse, forHTTPHeaderField: "x-device-id")
+        }
+        
+        let body: [String: Any] = [
+            "grant_type": "refresh_token",
+            "refresh_token": refreshToken,
+            "client_id": clientId ?? envId
+        ]
+        
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        } catch {
+            print("[Refresh] JSON 序列化失败: \(error)")
+            return nil
+        }
+        
+        print("[Refresh] 请求 URL: \(url.absoluteString)")
+        print("[Refresh] client_id: \(clientId ?? envId)")
+        print("[Refresh] refresh_token: \(refreshToken.prefix(20))...")
+        
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+            let rawJSON = String(data: data, encoding: .utf8) ?? "<无法转换>"
+            print("[Refresh] 状态码: \(statusCode)")
+            print("[Refresh] 响应: \(rawJSON)")
+            
+            guard statusCode >= 200 && statusCode <= 299 else {
+                print("[Refresh] 刷新失败，状态码: \(statusCode)")
+                return nil
             }
+            
+            let result = try JSONDecoder().decode(RefreshTokenResponse.self, from: data)
+            
+            // 更新本地 access_token
+            self.updateAccessToken(result.accessToken)
+            print("[Refresh] Token 刷新成功，新 access_token 有效期: \(result.expiresIn) 秒")
+            
+            return result
+        } catch {
+            print("[Refresh] 请求异常: \(error)")
+            return nil
         }
     }
     
     /// 检查 token 是否即将过期，如果即将过期则自动刷新
-    ///
-    /// - Parameters:
-    ///   - refreshToken: 刷新令牌
-    ///   - expiresIn: 当前 access_token 的剩余有效时间（秒）
-    ///   - threshold: 提前刷新的阈值（秒，默认为 300 秒即 5 分钟）
-    ///   - completion: 刷新结果回调
-    func autoRefreshTokenIfNeeded(
-        refreshToken: String,
-        expiresIn: Int,
-        threshold: Int = 300,
-        clientId: String? = nil,
-        completion: @escaping (RefreshTokenResponse?) -> Void
-    ) {
-        if expiresIn < threshold {
-            print("Token 即将过期（剩余 \(expiresIn) 秒），开始自动刷新...")
-            refreshAccessToken(refreshToken: refreshToken, clientId: clientId, completion: completion)
-        } else {
-            print("Token 仍然有效（剩余 \(expiresIn) 秒），无需刷新")
-            completion(nil)
-        }
-    }
-    
-    /// 检查 token 是否即将过期，如果即将过期则自动刷新（async/await 版本）
     ///
     /// - Parameters:
     ///   - refreshToken: 刷新令牌
@@ -405,10 +399,12 @@ class CloudBaseClient {
         threshold: Int = 300,
         clientId: String? = nil
     ) async -> RefreshTokenResponse? {
-        await withCheckedContinuation { continuation in
-            autoRefreshTokenIfNeeded(refreshToken: refreshToken, expiresIn: expiresIn, threshold: threshold, clientId: clientId) { result in
-                continuation.resume(returning: result)
-            }
+        if expiresIn < threshold {
+            print("Token 即将过期（剩余 \(expiresIn) 秒），开始自动刷新...")
+            return await refreshAccessToken(refreshToken: refreshToken, clientId: clientId)
+        } else {
+            print("Token 仍然有效（剩余 \(expiresIn) 秒），无需刷新")
+            return nil
         }
     }
     
@@ -583,7 +579,8 @@ class CloudBaseClient {
     struct SyncResult {
         let uploadedCount: Int           // 新创建到远端的数量
         let updatedCount: Int            // 更新远端的数量
-        let deletedLocalNames: [String]  // 远端更新、需删除本地的物品名
+        let deletedLocalItemIds: [String]  // 远端更新、需删除本地的物品 itemId
+        let deletedRemoteItemIds: [String] // 本地删除后同步到远端删除的 itemId
         let remoteOnlyItems: [Item]      // 远端独有、需添加到本地的物品
         let failedIds: [String]
     }
@@ -598,6 +595,7 @@ class CloudBaseClient {
         let isoFormatter = ISO8601DateFormatter()
         var itemInfo: [String: Any] = [
             "id": item.id.uuidString,
+            "itemId": item.itemId,
             "name": item.name,
             "details": item.details,
             "purchaseLink": item.purchaseLink,
@@ -606,9 +604,19 @@ class CloudBaseClient {
             "listType": item.listType.rawValue,
             "isSelected": item.isSelected,
             "isArchived": item.isArchived,
+            "isPriceless": item.isPriceless,
             "createdAt": isoFormatter.string(from: item.createdAt),
             "updatedAt": isoFormatter.string(from: item.updatedAt)
         ]
+        if let ownedDate = item.ownedDate {
+            itemInfo["ownedDate"] = isoFormatter.string(from: ownedDate)
+        }
+        if let soldPrice = item.soldPrice {
+            itemInfo["soldPrice"] = soldPrice
+        }
+        if let soldDate = item.soldDate {
+            itemInfo["soldDate"] = isoFormatter.string(from: soldDate)
+        }
         if let groupId = item.groupId {
             itemInfo["groupId"] = groupId.uuidString
         }
@@ -627,7 +635,7 @@ class CloudBaseClient {
         }
         
         return [
-            "item_id": "\(sub)_\(item.name)",
+            "item_id": item.itemId,
             "item_info": itemInfo
         ]
     }
@@ -707,6 +715,7 @@ class CloudBaseClient {
     @available(iOS 13.0, *)
     func syncItems(
         items: [Item],
+        deletedItemRecords: [String: Date] = [:],
         envType: String = "prod",
         modelName: String = "weitems"
     ) async -> SyncResult? {
@@ -724,21 +733,20 @@ class CloudBaseClient {
         let response = await fetchItems(envType: envType, modelName: modelName)
         let remoteRecords = response?.data?.records ?? []
         
-        // 构建远端物品字典：name -> (updatedAt, record)
+        // 构建远端物品字典：itemId -> (updatedAt, record)
         let isoFormatter = ISO8601DateFormatter()
         var remoteMap: [String: (date: Date, record: FetchItemsResponse.RemoteRecord)] = [:]
         for record in remoteRecords {
-            if let info = record.item_info, let name = info.name {
+            if let info = record.item_info, let itemId = info.itemId, !itemId.isEmpty {
                 let date: Date
                 if let updatedAtStr = info.updatedAt, let parsed = isoFormatter.date(from: updatedAtStr) {
                     date = parsed
                 } else if let createdAtStr = info.createdAt, let parsed = isoFormatter.date(from: createdAtStr) {
-                    // 兼容旧数据：远端没有 updatedAt 时用 createdAt
                     date = parsed
                 } else {
                     date = Date.distantPast
                 }
-                remoteMap[name] = (date: date, record: record)
+                remoteMap[itemId] = (date: date, record: record)
             }
         }
         
@@ -747,14 +755,15 @@ class CloudBaseClient {
         // Step 2: Merge 逻辑
         var itemsToCreate: [Item] = []        // 本地独有，需创建到远端
         var itemsToUpdate: [Item] = []        // 本地更新，需更新远端
-        var deletedLocalNames: [String] = []  // 远端更新、需删除本地的物品名
+        var deletedLocalItemIds: [String] = []  // 远端更新、需删除本地的物品 itemId
+        var itemsToDeleteRemote: [String] = []  // 本地删除、需同步删除远端的 item_id
         var remoteOnlyItems: [Item] = []      // 远端独有、需添加到本地的物品
         
-        // 构建本地物品名集合，用于检测远端独有
-        let localNameSet = Set(myItems.map { $0.name })
+        // 构建本地物品 itemId 集合，用于检测远端独有
+        let localItemIdSet = Set(myItems.map { $0.itemId })
         
         for localItem in myItems {
-            if let remote = remoteMap[localItem.name] {
+            if let remote = remoteMap[localItem.itemId] {
                 // 同名物品：比较 updatedAt
                 // 精度对齐到秒级（ISO8601 只到秒）
                 let localTimestamp = floor(localItem.updatedAt.timeIntervalSince1970)
@@ -766,11 +775,12 @@ class CloudBaseClient {
                 } else if remoteTimestamp > localTimestamp {
                     // 远端更新，标记删除本地旧版本，并将远端新版本加入 remoteOnlyItems
                     print("[同步] 远端更新: \(localItem.name) (远端: \(remote.date), 本地: \(localItem.updatedAt))")
-                    deletedLocalNames.append(localItem.name)
+                    deletedLocalItemIds.append(localItem.itemId)
                     // 将远端版本加入待下载列表，调用方会先删旧再添新
                     let info = remote.record.item_info
                     let remoteItem = Item(
                         id: UUID(uuidString: info?.id ?? "") ?? UUID(),
+                        itemId: info?.itemId ?? localItem.itemId,
                         name: info?.name ?? localItem.name,
                         details: info?.details ?? "",
                         purchaseLink: info?.purchaseLink ?? "",
@@ -782,10 +792,14 @@ class CloudBaseClient {
                         updatedAt: isoFormatter.date(from: info?.updatedAt ?? info?.createdAt ?? "") ?? Date(),
                         isSelected: info?.isSelected ?? false,
                         isArchived: info?.isArchived ?? false,
+                        isPriceless: info?.isPriceless ?? false,
+                        ownedDate: info?.ownedDate != nil ? isoFormatter.date(from: info!.ownedDate!) : nil,
                         displayType: info?.displayType,
                         targetType: info?.targetType,
                         wishlistGroupId: info?.wishlistGroupId != nil ? UUID(uuidString: info!.wishlistGroupId!) : nil,
-                        imageUrl: info?.imageUrl
+                        imageUrl: info?.imageUrl,
+                        soldPrice: info?.soldPrice,
+                        soldDate: info?.soldDate != nil ? isoFormatter.date(from: info!.soldDate!) : nil
                     )
                     remoteOnlyItems.append(remoteItem)
                 } else {
@@ -801,13 +815,14 @@ class CloudBaseClient {
         }
         
         // 2b: 遍历远端，找出远端独有的物品（本地没有的）
-        for (name, remote) in remoteMap {
-            guard !localNameSet.contains(name) else { continue }
+        for (remoteItemId, remote) in remoteMap {
+            guard !localItemIdSet.contains(remoteItemId) else { continue }
             // 远端独有，需要下载到本地
             let info = remote.record.item_info
             let newItem = Item(
                 id: UUID(uuidString: info?.id ?? "") ?? UUID(),
-                name: info?.name ?? name,
+                itemId: info?.itemId ?? remoteItemId,
+                name: info?.name ?? "",
                 details: info?.details ?? "",
                 purchaseLink: info?.purchaseLink ?? "",
                 price: info?.price ?? 0,
@@ -818,16 +833,35 @@ class CloudBaseClient {
                 updatedAt: isoFormatter.date(from: info?.updatedAt ?? info?.createdAt ?? "") ?? Date(),
                 isSelected: info?.isSelected ?? false,
                 isArchived: info?.isArchived ?? false,
+                isPriceless: info?.isPriceless ?? false,
+                ownedDate: info?.ownedDate != nil ? isoFormatter.date(from: info!.ownedDate!) : nil,
                 displayType: info?.displayType,
                 targetType: info?.targetType,
                 wishlistGroupId: info?.wishlistGroupId != nil ? UUID(uuidString: info!.wishlistGroupId!) : nil,
-                imageUrl: info?.imageUrl
+                imageUrl: info?.imageUrl,
+                soldPrice: info?.soldPrice,
+                soldDate: info?.soldDate != nil ? isoFormatter.date(from: info!.soldDate!) : nil
             )
-            print("[同步] 远端独有: \(name)")
+            print("[同步] 远端独有: \(info?.name ?? remoteItemId)")
+            
+            // 检查本地是否有删除记录
+            if let deletedAt = deletedItemRecords[remoteItemId] {
+                let remoteTimestamp = floor(remote.date.timeIntervalSince1970)
+                let deletedTimestamp = floor(deletedAt.timeIntervalSince1970)
+                if deletedTimestamp >= remoteTimestamp {
+                    // 本地删除时间 >= 远端更新时间，需要删除远端
+                    print("[同步] 本地已删除且更新，标记远端待删: \(info?.name ?? remoteItemId)")
+                    itemsToDeleteRemote.append(remoteItemId)
+                    continue
+                }
+                // 远端更新时间更新，保留远端版本
+                print("[同步] 远端在删除后又更新了，保留远端: \(info?.name ?? remoteItemId)")
+            }
+            
             remoteOnlyItems.append(newItem)
         }
         
-        print("[同步] 需创建 \(itemsToCreate.count) 个，需更新 \(itemsToUpdate.count) 个，需删除本地 \(deletedLocalNames.count) 个，远端独有 \(remoteOnlyItems.count) 个")
+        print("[同步] 需创建 \(itemsToCreate.count) 个，需更新 \(itemsToUpdate.count) 个，需删除本地 \(deletedLocalItemIds.count) 个，需删除远端 \(itemsToDeleteRemote.count) 个，远端独有 \(remoteOnlyItems.count) 个")
         
         var uploadedCount = 0
         var updatedCount = 0
@@ -847,7 +881,7 @@ class CloudBaseClient {
             let itemIdStr = item.id.uuidString
             if finalImageUrlMap[itemIdStr] == nil {
                 // 未上传（图片未变更），尝试复用远端已有的 imageUrl
-                if let remote = remoteMap[item.name],
+                if let remote = remoteMap[item.itemId],
                    let existingUrl = remote.record.item_info?.imageUrl,
                    !existingUrl.isEmpty {
                     finalImageUrlMap[itemIdStr] = existingUrl
@@ -897,7 +931,7 @@ class CloudBaseClient {
             print("[同步] 开始更新 \(itemsToUpdate.count) 个远端物品...")
             
             for item in itemsToUpdate {
-                let itemId = "\(sub)_\(item.name)"
+                let itemId = item.itemId
                 let dict = itemToDict(item, sub: sub, imageUrl: imageUrlMap[item.id.uuidString])
                 // 只更新 item_info 部分
                 let itemInfoDict = dict["item_info"] as? [String: Any] ?? [:]
@@ -939,8 +973,48 @@ class CloudBaseClient {
             }
         }
         
-        print("[同步] 同步完成: 创建 \(uploadedCount) 个, 更新 \(updatedCount) 个, 删除本地 \(deletedLocalNames.count) 个, 远端独有 \(remoteOnlyItems.count) 个, 失败 \(failedIds.count) 个")
-        return SyncResult(uploadedCount: uploadedCount, updatedCount: updatedCount, deletedLocalNames: deletedLocalNames, remoteOnlyItems: remoteOnlyItems, failedIds: failedIds)
+        // Step 5: 删除远端物品（本地已删除且删除时间 >= 远端更新时间）
+        var deletedRemoteItemIds: [String] = []
+        if !itemsToDeleteRemote.isEmpty {
+            print("[同步] 开始删除远端 \(itemsToDeleteRemote.count) 个物品...")
+            var imageObjectIdsToDelete: [String] = []
+            for remoteItemId in itemsToDeleteRemote {
+                // 收集需要删除的 COS 图片
+                if let remote = remoteMap[remoteItemId],
+                   let imageUrl = remote.record.item_info?.imageUrl, !imageUrl.isEmpty,
+                   let itemUUID = remote.record.item_info?.id {
+                    imageObjectIdsToDelete.append("items/\(itemUUID).jpg")
+                }
+                
+                let path = "/v1/model/\(envType)/\(modelName)/delete"
+                let payload: [String: Any] = [
+                    "filter": [
+                        "where": [
+                            "item_id": ["$eq": remoteItemId]
+                        ]
+                    ]
+                ]
+                let result: DeleteResponse? = await request(method: "POST", path: path, body: payload)
+                if result?.code?.stringValue == "SUCCESS" || result?.code?.stringValue == "0" || (result?.data?.count ?? 0) > 0 {
+                    print("[同步] 远端删除成功: \(remoteItemId)")
+                    deletedRemoteItemIds.append(remoteItemId)
+                } else {
+                    print("[同步] 远端删除失败: \(remoteItemId)")
+                    failedIds.append("delete_remote_\(remoteItemId)")
+                }
+            }
+            // 批量删除 COS 图片
+            if !imageObjectIdsToDelete.isEmpty {
+                let cloudIdMap = await getCloudObjectIds(objectIds: imageObjectIdsToDelete)
+                let cloudIds = Array(cloudIdMap.values)
+                if !cloudIds.isEmpty {
+                    let _ = await deleteStorageObjects(cloudObjectIds: cloudIds)
+                }
+            }
+        }
+        
+        print("[同步] 同步完成: 创建 \(uploadedCount) 个, 更新 \(updatedCount) 个, 删除本地 \(deletedLocalItemIds.count) 个, 删除远端 \(deletedRemoteItemIds.count) 个, 远端独有 \(remoteOnlyItems.count) 个, 失败 \(failedIds.count) 个")
+        return SyncResult(uploadedCount: uploadedCount, updatedCount: updatedCount, deletedLocalItemIds: deletedLocalItemIds, deletedRemoteItemIds: deletedRemoteItemIds, remoteOnlyItems: remoteOnlyItems, failedIds: failedIds)
     }
     
     // MARK: - 远端数据获取
@@ -965,6 +1039,7 @@ class CloudBaseClient {
         
         struct RemoteItemInfo: Codable {
             let id: String?
+            let itemId: String?
             let name: String?
             let details: String?
             let purchaseLink: String?
@@ -973,6 +1048,10 @@ class CloudBaseClient {
             let listType: String?
             let isSelected: Bool?
             let isArchived: Bool?
+            let isPriceless: Bool?
+            let ownedDate: String?
+            let soldPrice: Double?
+            let soldDate: String?
             let groupId: String?
             let displayType: String?
             let targetType: String?
@@ -1081,8 +1160,9 @@ class CloudBaseClient {
     struct WishSyncResult {
         let uploadedCount: Int
         let updatedCount: Int
-        let deletedLocalNames: [String]
-        let remoteOnlyItems: [Item]      // 远端独有、需添加到本地的心愿
+        let deletedLocalItemIds: [String]
+        let deletedRemoteItemIds: [String]
+        let remoteOnlyItems: [Item]
         let failedIds: [String]
     }
     
@@ -1096,6 +1176,7 @@ class CloudBaseClient {
         let isoFormatter = ISO8601DateFormatter()
         var wishInfo: [String: Any] = [
             "id": item.id.uuidString,
+            "itemId": item.itemId,
             "name": item.name,
             "details": item.details,
             "purchaseLink": item.purchaseLink,
@@ -1125,7 +1206,7 @@ class CloudBaseClient {
         }
         
         return [
-            "wishname": "\(sub)_\(item.name)",
+            "wishname": item.itemId,
             "wishinfo": wishInfo
         ]
     }
@@ -1182,6 +1263,7 @@ class CloudBaseClient {
         
         struct RemoteWishInfo: Codable {
             let id: String?
+            let itemId: String?
             let name: String?
             let details: String?
             let purchaseLink: String?
@@ -1247,6 +1329,7 @@ class CloudBaseClient {
     @available(iOS 13.0, *)
     func syncWishes(
         items: [Item],
+        deletedItemRecords: [String: Date] = [:],
         envType: String = "prod",
         modelName: String = "wewish"
     ) async -> WishSyncResult? {
@@ -1265,7 +1348,7 @@ class CloudBaseClient {
         let isoFormatter = ISO8601DateFormatter()
         var remoteMap: [String: (date: Date, record: FetchWishesResponse.RemoteWishRecord)] = [:]
         for record in remoteRecords {
-            if let info = record.wishinfo, let name = info.name {
+            if let info = record.wishinfo, let itemId = info.itemId, !itemId.isEmpty {
                 let date: Date
                 if let updatedAtStr = info.updatedAt, let parsed = isoFormatter.date(from: updatedAtStr) {
                     date = parsed
@@ -1274,7 +1357,7 @@ class CloudBaseClient {
                 } else {
                     date = Date.distantPast
                 }
-                remoteMap[name] = (date: date, record: record)
+                remoteMap[itemId] = (date: date, record: record)
             }
         }
         
@@ -1283,14 +1366,15 @@ class CloudBaseClient {
         // Step 2: Merge 逻辑
         var wishesToCreate: [Item] = []
         var wishesToUpdate: [Item] = []
-        var deletedLocalNames: [String] = []
+        var deletedLocalItemIds: [String] = []
+        var wishesToDeleteRemote: [String] = []
         var remoteOnlyItems: [Item] = []      // 远端独有、需添加到本地的心愿
         
-        // 构建本地心愿名集合，用于检测远端独有
-        let localNameSet = Set(myWishes.map { $0.name })
+        // 构建本地心愿 itemId 集合，用于检测远端独有
+        let localItemIdSet = Set(myWishes.map { $0.itemId })
         
         for localWish in myWishes {
-            if let remote = remoteMap[localWish.name] {
+            if let remote = remoteMap[localWish.itemId] {
                 let localTimestamp = floor(localWish.updatedAt.timeIntervalSince1970)
                 let remoteTimestamp = floor(remote.date.timeIntervalSince1970)
                 
@@ -1298,11 +1382,12 @@ class CloudBaseClient {
                     print("[心愿同步] 无变化: \(localWish.name)")
                 } else if remoteTimestamp > localTimestamp {
                     print("[心愿同步] 远端更新: \(localWish.name)")
-                    deletedLocalNames.append(localWish.name)
+                    deletedLocalItemIds.append(localWish.itemId)
                     // 将远端版本加入待下载列表
                     let info = remote.record.wishinfo
                     let remoteItem = Item(
                         id: UUID(uuidString: info?.id ?? "") ?? UUID(),
+                        itemId: info?.itemId ?? localWish.itemId,
                         name: info?.name ?? localWish.name,
                         details: info?.details ?? "",
                         purchaseLink: info?.purchaseLink ?? "",
@@ -1331,13 +1416,14 @@ class CloudBaseClient {
         }
         
         // 2b: 遍历远端，找出远端独有的心愿（本地没有的）
-        for (name, remote) in remoteMap {
-            guard !localNameSet.contains(name) else { continue }
+        for (remoteItemId, remote) in remoteMap {
+            guard !localItemIdSet.contains(remoteItemId) else { continue }
             // 远端独有，需要下载到本地
             let info = remote.record.wishinfo
             let newItem = Item(
                 id: UUID(uuidString: info?.id ?? "") ?? UUID(),
-                name: info?.name ?? name,
+                itemId: info?.itemId ?? remoteItemId,
+                name: info?.name ?? "",
                 details: info?.details ?? "",
                 purchaseLink: info?.purchaseLink ?? "",
                 price: info?.price ?? 0,
@@ -1353,11 +1439,24 @@ class CloudBaseClient {
                 wishlistGroupId: info?.wishlistGroupId != nil ? UUID(uuidString: info!.wishlistGroupId!) : nil,
                 imageUrl: info?.imageUrl
             )
-            print("[心愿同步] 远端独有: \(name)")
+            print("[心愿同步] 远端独有: \(info?.name ?? remoteItemId)")
+            
+            // 检查本地是否有删除记录
+            if let deletedAt = deletedItemRecords[remoteItemId] {
+                let remoteTimestamp = floor(remote.date.timeIntervalSince1970)
+                let deletedTimestamp = floor(deletedAt.timeIntervalSince1970)
+                if deletedTimestamp >= remoteTimestamp {
+                    print("[心愿同步] 本地已删除且更新，标记远端待删: \(info?.name ?? remoteItemId)")
+                    wishesToDeleteRemote.append(remoteItemId)
+                    continue
+                }
+                print("[心愿同步] 远端在删除后又更新了，保留远端: \(info?.name ?? remoteItemId)")
+            }
+            
             remoteOnlyItems.append(newItem)
         }
         
-        print("[心愿同步] 需创建 \(wishesToCreate.count) 个，需更新 \(wishesToUpdate.count) 个，需删除本地 \(deletedLocalNames.count) 个，远端独有 \(remoteOnlyItems.count) 个")
+        print("[心愿同步] 需创建 \(wishesToCreate.count) 个，需更新 \(wishesToUpdate.count) 个，需删除本地 \(deletedLocalItemIds.count) 个，远端独有 \(remoteOnlyItems.count) 个")
         
         var uploadedCount = 0
         var updatedCount = 0
@@ -1377,7 +1476,7 @@ class CloudBaseClient {
             let wishIdStr = wish.id.uuidString
             if finalImageUrlMap[wishIdStr] == nil {
                 // 未上传（图片未变更），尝试复用远端已有的 imageUrl
-                if let remote = remoteMap[wish.name],
+                if let remote = remoteMap[wish.itemId],
                    let existingUrl = remote.record.wishinfo?.imageUrl,
                    !existingUrl.isEmpty {
                     finalImageUrlMap[wishIdStr] = existingUrl
@@ -1427,7 +1526,7 @@ class CloudBaseClient {
             print("[心愿同步] 开始更新 \(wishesToUpdate.count) 个远端心愿...")
             
             for wish in wishesToUpdate {
-                let wishId = "\(sub)_\(wish.name)"
+                let wishId = wish.itemId
                 let dict = wishToDict(wish, sub: sub, imageUrl: imageUrlMap[wish.id.uuidString])
                 let wishInfoDict = dict["wishinfo"] as? [String: Any] ?? [:]
                 
@@ -1468,8 +1567,48 @@ class CloudBaseClient {
             }
         }
         
-        print("[心愿同步] 同步完成: 创建 \(uploadedCount) 个, 更新 \(updatedCount) 个, 删除本地 \(deletedLocalNames.count) 个, 远端独有 \(remoteOnlyItems.count) 个, 失败 \(failedIds.count) 个")
-        return WishSyncResult(uploadedCount: uploadedCount, updatedCount: updatedCount, deletedLocalNames: deletedLocalNames, remoteOnlyItems: remoteOnlyItems, failedIds: failedIds)
+        // Step 5: 删除远端心愿（本地已删除）
+        var deletedRemoteItemIds: [String] = []
+        if !wishesToDeleteRemote.isEmpty {
+            print("[心愿同步] 开始删除远端 \(wishesToDeleteRemote.count) 个心愿...")
+            var imageObjectIdsToDelete: [String] = []
+            for remoteItemId in wishesToDeleteRemote {
+                // 收集需要删除的 COS 图片
+                if let remote = remoteMap[remoteItemId],
+                   let imageUrl = remote.record.wishinfo?.imageUrl, !imageUrl.isEmpty,
+                   let itemUUID = remote.record.wishinfo?.id {
+                    imageObjectIdsToDelete.append("wishes/\(itemUUID).jpg")
+                }
+                
+                let path = "/v1/model/\(envType)/\(modelName)/delete"
+                let payload: [String: Any] = [
+                    "filter": [
+                        "where": [
+                            "wishname": ["$eq": remoteItemId]
+                        ]
+                    ]
+                ]
+                let result: DeleteResponse? = await request(method: "POST", path: path, body: payload)
+                if result?.code?.stringValue == "SUCCESS" || result?.code?.stringValue == "0" || (result?.data?.count ?? 0) > 0 {
+                    print("[心愿同步] 远端删除成功: \(remoteItemId)")
+                    deletedRemoteItemIds.append(remoteItemId)
+                } else {
+                    print("[心愿同步] 远端删除失败: \(remoteItemId)")
+                    failedIds.append("wish_delete_remote_\(remoteItemId)")
+                }
+            }
+            // 批量删除 COS 图片
+            if !imageObjectIdsToDelete.isEmpty {
+                let cloudIdMap = await getCloudObjectIds(objectIds: imageObjectIdsToDelete)
+                let cloudIds = Array(cloudIdMap.values)
+                if !cloudIds.isEmpty {
+                    let _ = await deleteStorageObjects(cloudObjectIds: cloudIds)
+                }
+            }
+        }
+        
+        print("[心愿同步] 同步完成: 创建 \(uploadedCount) 个, 更新 \(updatedCount) 个, 删除本地 \(deletedLocalItemIds.count) 个, 删除远端 \(deletedRemoteItemIds.count) 个, 远端独有 \(remoteOnlyItems.count) 个, 失败 \(failedIds.count) 个")
+        return WishSyncResult(uploadedCount: uploadedCount, updatedCount: updatedCount, deletedLocalItemIds: deletedLocalItemIds, deletedRemoteItemIds: deletedRemoteItemIds, remoteOnlyItems: remoteOnlyItems, failedIds: failedIds)
     }
     
     // MARK: - 共享心愿清单
@@ -1752,6 +1891,26 @@ class CloudBaseClient {
         struct UserInfoRecord: Codable {
             let _id: String?
             let share_wish_list: [String]?
+            let vip_type: VIPTypeInfo?
+            let third_info: ThirdInfoData?
+        }
+        
+        struct ThirdInfoData: Codable {
+            let provider: String?
+            let userId: String?
+            let email: String?
+            let name: String?
+            let identityToken: String?
+            let authorizationCode: String?
+            let loginTime: String?
+        }
+        
+        /// VIP 信息 JSON 结构
+        /// vip_type: 0=免费用户, 1=VIP, 2=MasterVIP
+        struct VIPTypeInfo: Codable {
+            let type: Int?           // 0: 免费用户, 1: VIP, 2: MasterVIP
+            let startDate: String?   // 开启时间 ISO8601
+            let expireDate: String?  // 到期时间 ISO8601
         }
     }
     
@@ -1889,6 +2048,185 @@ class CloudBaseClient {
                 let _ = await createUserInfo(shareWishList: [wishGroupId])
             }
         }
+    }
+    
+    // MARK: - 第三方登录信息同步
+    
+    /// 更新 userinfo 的 third_info 字段（保存第三方登录信息）
+    @available(iOS 13.0, *)
+    func updateUserInfoThirdInfo(
+        thirdInfo: [String: Any],
+        envType: String = "prod",
+        modelName: String = "userinfo"
+    ) async {
+        // 先获取 userinfo 记录
+        let response = await fetchUserInfo(envType: envType, modelName: modelName)
+        
+        if let records = response?.data?.records, let record = records.first, let dataId = record._id {
+            // 记录存在，更新 third_info
+            let path = "/v1/model/\(envType)/\(modelName)/update"
+            let payload: [String: Any] = [
+                "data": [
+                    "third_info": thirdInfo
+                ],
+                "filter": [
+                    "where": [
+                        "_id": ["$eq": dataId]
+                    ]
+                ]
+            ]
+            
+            print("[userinfo] 更新 third_info: \(thirdInfo)")
+            
+            let result: UpdateManyResponse? = await request(
+                method: "POST",
+                path: path,
+                body: payload
+            )
+            
+            if let result = result {
+                print("[userinfo] third_info 更新结果: code=\(result.code?.stringValue ?? "nil")")
+            } else {
+                print("[userinfo] third_info 更新失败")
+            }
+        } else {
+            // 记录不存在，创建新记录并带上 third_info
+            let path = "/v1/model/\(envType)/\(modelName)/create"
+            let payload: [String: Any] = [
+                "data": [
+                    "share_wish_list": [String](),
+                    "third_info": thirdInfo
+                ]
+            ]
+            
+            print("[userinfo] 创建用户信息（含 third_info）")
+            
+            let result: CreateResponse? = await request(
+                method: "POST",
+                path: path,
+                body: payload
+            )
+            
+            if let result = result {
+                print("[userinfo] 创建响应: code=\(result.code?.stringValue ?? "nil"), id=\(result.data?.id ?? "nil")")
+            }
+        }
+    }
+    
+    // MARK: - VIP 信息同步
+    
+    /// 更新 userinfo 的 vip_type 字段
+    @available(iOS 13.0, *)
+    func updateUserInfoVIPType(
+        dataId: String,
+        vipType: Int,
+        startDate: String,
+        expireDate: String,
+        envType: String = "prod",
+        modelName: String = "userinfo"
+    ) async -> UpdateManyResponse? {
+        let path = "/v1/model/\(envType)/\(modelName)/update"
+        let vipInfo: [String: Any] = [
+            "type": vipType,
+            "startDate": startDate,
+            "expireDate": expireDate
+        ]
+        let payload: [String: Any] = [
+            "data": [
+                "vip_type": vipInfo
+            ],
+            "filter": [
+                "where": [
+                    "_id": ["$eq": dataId]
+                ]
+            ]
+        ]
+        
+        print("[userinfo] 更新 vip_type: dataId=\(dataId), type=\(vipType)")
+        
+        let result: UpdateManyResponse? = await request(
+            method: "PUT",
+            path: path,
+            body: payload
+        )
+        
+        if let result = result {
+            print("[userinfo] VIP 更新响应: code=\(result.code?.stringValue ?? "nil"), count=\(result.data?.count ?? 0)")
+        } else {
+            print("[userinfo] VIP 更新失败, 无响应")
+        }
+        
+        return result
+    }
+    
+    /// 同步 VIP 信息到 userinfo：查询 userinfo，存在则更新 vip_type，不存在则创建
+    @available(iOS 13.0, *)
+    func syncVIPInfo(
+        vipType: Int,
+        startDate: Date,
+        expireDate: Date
+    ) async {
+        let isoFormatter = ISO8601DateFormatter()
+        let startStr = isoFormatter.string(from: startDate)
+        let expireStr = isoFormatter.string(from: expireDate)
+        
+        let response = await fetchUserInfo()
+        
+        if let records = response?.data?.records, let record = records.first,
+           let dataId = record._id {
+            let _ = await updateUserInfoVIPType(
+                dataId: dataId,
+                vipType: vipType,
+                startDate: startStr,
+                expireDate: expireStr
+            )
+        } else {
+            // 记录不存在，创建新记录并带上 vip_type
+            let _ = await createUserInfoWithVIP(
+                vipType: vipType,
+                startDate: startStr,
+                expireDate: expireStr
+            )
+        }
+    }
+    
+    /// 创建 userinfo 记录（包含 vip_type）
+    @available(iOS 13.0, *)
+    func createUserInfoWithVIP(
+        vipType: Int,
+        startDate: String,
+        expireDate: String,
+        envType: String = "prod",
+        modelName: String = "userinfo"
+    ) async -> CreateResponse? {
+        let path = "/v1/model/\(envType)/\(modelName)/create"
+        let vipInfo: [String: Any] = [
+            "type": vipType,
+            "startDate": startDate,
+            "expireDate": expireDate
+        ]
+        let payload: [String: Any] = [
+            "data": [
+                "share_wish_list": [String](),
+                "vip_type": vipInfo
+            ]
+        ]
+        
+        print("[userinfo] 创建用户信息(含VIP), type=\(vipType)")
+        
+        let result: CreateResponse? = await request(
+            method: "POST",
+            path: path,
+            body: payload
+        )
+        
+        if let result = result {
+            print("[userinfo] 创建响应: code=\(result.code?.stringValue ?? "nil"), id=\(result.data?.id ?? "nil")")
+        } else {
+            print("[userinfo] 创建失败, 无响应")
+        }
+        
+        return result
     }
     
     /// 按 wish_group_id 查询共享心愿清单
@@ -2827,6 +3165,81 @@ class CloudBaseClient {
         }
     }
     
+    // MARK: - 云存储删除
+    
+    /// 删除云存储中的对象
+    /// - Parameter cloudObjectIds: 云端对象 ID 数组，格式为 cloud://envId.bucket/path
+    @available(iOS 13.0, *)
+    func deleteStorageObjects(cloudObjectIds: [String]) async -> Bool {
+        guard !cloudObjectIds.isEmpty else { return true }
+        
+        guard let url = URL(string: "\(baseUrl)/v1/storages/delete-objects") else {
+            print("[云存储] 删除：无效的URL")
+            return false
+        }
+        
+        let bodyArray = cloudObjectIds.map { ["cloudObjectId": $0] }
+        
+        guard let bodyData = try? JSONSerialization.data(withJSONObject: bodyArray) else {
+            print("[云存储] 删除：JSON序列化失败")
+            return false
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.httpBody = bodyData
+        
+        print("[云存储] 删除 \(cloudObjectIds.count) 个对象: \(cloudObjectIds)")
+        
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+            let success = (200...299).contains(statusCode)
+            print("[云存储] 删除结果: \(success ? "成功" : "失败(HTTP \(statusCode))")")
+            return success
+        } catch {
+            print("[云存储] 删除失败: \(error.localizedDescription)")
+            return false
+        }
+    }
+    
+    /// 通过 objectId 获取对应的 cloudObjectId（用于删除）
+    @available(iOS 13.0, *)
+    func getCloudObjectIds(objectIds: [String]) async -> [String: String] {
+        guard !objectIds.isEmpty else { return [:] }
+        guard let url = URL(string: "\(baseUrl)/v1/storages/get-objects-upload-info") else { return [:] }
+        
+        let bodyArray = objectIds.map { ["objectId": $0] }
+        guard let bodyData = try? JSONSerialization.data(withJSONObject: bodyArray) else { return [:] }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.httpBody = bodyData
+        
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard (200...299).contains((response as? HTTPURLResponse)?.statusCode ?? -1) else { return [:] }
+            guard let infoArray = parseUploadInfoResponse(data: data) else { return [:] }
+            
+            var result: [String: String] = [:]
+            for info in infoArray {
+                if let objectId = info["objectId"] as? String,
+                   let cloudObjectId = info["cloudObjectId"] as? String {
+                    result[objectId] = cloudObjectId
+                }
+            }
+            return result
+        } catch {
+            return [:]
+        }
+    }
+    
     // MARK: - 图片下载
     
     /// 批量获取云存储对象的下载 URL
@@ -2983,5 +3396,185 @@ class CloudBaseClient {
             }
         }
         return record.members ?? []
+    }
+    
+    // MARK: - 储蓄投资同步（savinginfo 模型）
+    
+    /// 同步储蓄投资数据到云端
+    /// savinginfo 模型字段：iteminfo(Json), salaryinfo(Json), anotherinfo(Json), assetsinfo(Json)
+    /// - iteminfo: 非工资的 FinanceRecord 数组 JSON
+    /// - salaryinfo: 工资配置的 FinanceRecord JSON
+    /// - anotherinfo: SavingsGoal JSON
+    /// - assetsinfo: 资产汇总信息 JSON (totalAssets等)
+    @available(iOS 13.0, *)
+    func syncSavingInfo(
+        records: [FinanceRecord],
+        salaryRecord: FinanceRecord?,
+        goal: SavingsGoal,
+        totalAssets: Double,
+        envType: String = "prod",
+        modelName: String = "savinginfo"
+    ) async -> Bool {
+        guard let sub = TokenStorage.shared.getSub(), !sub.isEmpty else {
+            print("[储蓄同步] 无法获取用户 sub，取消同步")
+            return false
+        }
+        
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        
+        // 编码各字段为 JSON 字典
+        var itemInfoValue: Any = NSNull()
+        var salaryInfoValue: Any = NSNull()
+        var anotherInfoValue: Any = NSNull()
+        let assetsInfoValue: Any = ["totalAssets": totalAssets]
+        
+        if let data = try? encoder.encode(records),
+           let json = try? JSONSerialization.jsonObject(with: data) {
+            itemInfoValue = ["items": json]
+        }
+        
+        if let salary = salaryRecord,
+           let data = try? encoder.encode(salary),
+           let json = try? JSONSerialization.jsonObject(with: data) {
+            salaryInfoValue = json
+        }
+        
+        if let data = try? encoder.encode(goal),
+           let json = try? JSONSerialization.jsonObject(with: data) {
+            anotherInfoValue = json
+        }
+        
+        // 先查询是否已有记录
+        let listPath = "/v1/model/\(envType)/\(modelName)/list"
+        let listPayload: [String: Any] = [
+            "pageSize": 1,
+            "pageNumber": 1,
+            "getCount": true
+        ]
+        
+        let listResponse: FetchItemsResponse? = await request(
+            method: "POST",
+            path: listPath,
+            body: listPayload
+        )
+        
+        let existingId = listResponse?.data?.records?.first?._id
+        
+        let saveData: [String: Any] = [
+            "iteminfo": itemInfoValue,
+            "salaryinfo": salaryInfoValue,
+            "anotherinfo": anotherInfoValue,
+            "assetsinfo": assetsInfoValue
+        ]
+        
+        if let docId = existingId {
+            // 更新已有记录
+            let updatePath = "/v1/model/\(envType)/\(modelName)/update"
+            let payload: [String: Any] = [
+                "data": saveData,
+                "filter": [
+                    "where": [
+                        "_id": ["$eq": docId]
+                    ]
+                ]
+            ]
+            
+            print("[储蓄同步] 更新远端记录: \(docId)")
+            let result: UpdateManyResponse? = await request(method: "PUT", path: updatePath, body: payload)
+            let success = result?.code?.stringValue == "SUCCESS" || result?.code?.stringValue == "0" || (result?.data?.count ?? 0) > 0
+            print("[储蓄同步] 更新结果: \(success ? "成功" : "失败")")
+            return success
+        } else {
+            // 创建新记录
+            let createPath = "/v1/model/\(envType)/\(modelName)/create"
+            let payload: [String: Any] = ["data": saveData]
+            
+            print("[储蓄同步] 创建远端记录")
+            let result: CreateResponse? = await request(method: "POST", path: createPath, body: payload)
+            let success = result?.code?.stringValue == "SUCCESS" || result?.code?.stringValue == "0" || result?.data?.id != nil
+            print("[储蓄同步] 创建结果: \(success ? "成功" : "失败")")
+            return success
+        }
+    }
+    
+    /// 从远端拉取储蓄投资数据
+    @available(iOS 13.0, *)
+    func fetchSavingInfo(
+        envType: String = "prod",
+        modelName: String = "savinginfo"
+    ) async -> (records: [FinanceRecord], salaryRecord: FinanceRecord?, goal: SavingsGoal?, totalAssets: Double?)? {
+        let listPath = "/v1/model/\(envType)/\(modelName)/list"
+        let listPayload: [String: Any] = [
+            "pageSize": 1,
+            "pageNumber": 1,
+            "getCount": true
+        ]
+        
+        print("[储蓄同步] 拉取远端数据...")
+        
+        guard let url = URL(string: "\(baseUrl)\(listPath)") else { return nil }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        
+        if let bodyData = try? JSONSerialization.data(withJSONObject: listPayload) {
+            request.httpBody = bodyData
+        }
+        
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+            guard (200...299).contains(statusCode) else {
+                print("[储蓄同步] 拉取失败, 状态码: \(statusCode)")
+                return nil
+            }
+            
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let dataDict = json["data"] as? [String: Any],
+                  let records = dataDict["records"] as? [[String: Any]],
+                  let first = records.first else {
+                print("[储蓄同步] 无远端数据")
+                return nil
+            }
+            
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            
+            var financeRecords: [FinanceRecord] = []
+            var salaryRecord: FinanceRecord? = nil
+            var goal: SavingsGoal? = nil
+            var totalAssets: Double? = nil
+            
+            if let itemInfo = first["iteminfo"] as? [String: Any],
+               let itemsArray = itemInfo["items"],
+               let itemData = try? JSONSerialization.data(withJSONObject: itemsArray) {
+                financeRecords = (try? decoder.decode([FinanceRecord].self, from: itemData)) ?? []
+            }
+            
+            if let salaryInfo = first["salaryinfo"], !(salaryInfo is NSNull),
+               let salaryData = try? JSONSerialization.data(withJSONObject: salaryInfo) {
+                salaryRecord = try? decoder.decode(FinanceRecord.self, from: salaryData)
+            }
+            
+            if let anotherInfo = first["anotherinfo"], !(anotherInfo is NSNull),
+               let goalData = try? JSONSerialization.data(withJSONObject: anotherInfo) {
+                goal = try? decoder.decode(SavingsGoal.self, from: goalData)
+            }
+            
+            if let assetsInfo = first["assetsinfo"] as? [String: Any],
+               let assets = assetsInfo["totalAssets"] as? Double {
+                totalAssets = assets
+            }
+            
+            print("[储蓄同步] 拉取成功: \(financeRecords.count) 条记录, 工资配置: \(salaryRecord != nil ? "有" : "无"), 目标: \(goal != nil ? "有" : "无"), 资产: \(totalAssets != nil ? "有" : "无")")
+            return (financeRecords, salaryRecord, goal, totalAssets)
+        } catch {
+            print("[储蓄同步] 拉取异常: \(error.localizedDescription)")
+            return nil
+        }
     }
 }

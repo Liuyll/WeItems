@@ -69,10 +69,9 @@ class LoginManager {
         password: String
     ) async throws -> SignupResponse {
         
-        // username 格式: user_手机号
         let username = "user_\(phoneNumber)"
         
-        let url = URL(string: "\(baseUrl)/auth/v1/token")!
+        let url = URL(string: "\(baseUrl)/auth/v1/signin")!
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -80,10 +79,8 @@ class LoginManager {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         
         let body: [String: Any] = [
-            "grant_type": "password",
             "username": username,
-            "password": password,
-            "client_id": envId
+            "password": password
         ]
         
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -139,10 +136,7 @@ class LoginManager {
         verificationToken: String
     ) async throws -> SignupResponse {
         
-        // username 格式: user_手机号
-        let username = "user_\(phoneNumber)"
-        
-        let url = URL(string: "\(baseUrl)/auth/v1/token")!
+        let url = URL(string: "\(baseUrl)/auth/v1/signin")!
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -150,10 +144,7 @@ class LoginManager {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         
         let body: [String: Any] = [
-            "grant_type": "verification_code",
-            "username": username,
-            "verification_token": verificationToken,
-            "client_id": envId
+            "verification_token": verificationToken
         ]
         
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -206,7 +197,7 @@ class LoginManager {
         switch errorResponse.error {
         case "invalid_grant", "invalid_credentials", "invalid_username_or_password":
             return .invalidCredentials
-        case "user_not_found":
+        case "user_not_found", "not_found":
             return .userNotFound
         case "invalid_phone_number":
             return .invalidPhoneNumber

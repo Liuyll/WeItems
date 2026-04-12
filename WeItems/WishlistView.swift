@@ -113,7 +113,7 @@ struct WishlistView: View {
                         NavigationLink(destination: SharedWishlistListView(sharedStore: sharedWishlistStore, itemStore: store, wishlistGroupStore: wishlistGroupStore)) {
                             HStack {
                                 Text("让朋友们一起来实现心愿")
-                                    .font(.subheadline)
+                                    .font(.system(.subheadline, design: .rounded))
                                     .fontWeight(.bold)
                                     .foregroundStyle(.white)
                                 
@@ -144,7 +144,7 @@ struct WishlistView: View {
                         } label: {
                             HStack {
                                 Text("登录分享心愿")
-                                    .font(.subheadline)
+                                    .font(.system(.subheadline, design: .rounded))
                                     .fontWeight(.bold)
                                     .foregroundStyle(.white)
                                 
@@ -160,7 +160,7 @@ struct WishlistView: View {
                                 RoundedRectangle(cornerRadius: 12)
                                     .fill(
                                         LinearGradient(
-                                            colors: [Color.blue, Color.blue.opacity(0.8)],
+                                            colors: [Color.pink, Color.pink.opacity(0.8)],
                                             startPoint: .leading,
                                             endPoint: .trailing
                                         )
@@ -331,18 +331,18 @@ struct WishlistTotalCard: View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
                 Text("心愿清单 - 预计花费")
-                    .font(.subheadline)
+                    .font(.system(.subheadline, design: .rounded))
                     .foregroundStyle(.secondary)
                 Text("¥\(String(format: "%.2f", totalPrice))")
                     .font(.system(size: 28, weight: .bold))
-                    .foregroundStyle(.pink)
+                    .foregroundStyle(.primary)
             }
             
             Spacer()
             
             VStack(alignment: .trailing, spacing: 4) {
                 Text("心愿数量")
-                    .font(.subheadline)
+                    .font(.system(.subheadline, design: .rounded))
                     .foregroundStyle(.secondary)
                 Text("\(itemCount) 个")
                     .font(.title2)
@@ -388,7 +388,7 @@ struct TypeSection: View {
                     .font(.title3)
                     .fontWeight(.bold)
                 Text("(\(items.count))")
-                    .font(.subheadline)
+                    .font(.system(.subheadline, design: .rounded))
                     .foregroundStyle(.secondary)
                 Spacer()
             }
@@ -430,7 +430,7 @@ struct WishlistCard: View {
                 
                 Text("¥\(String(format: "%.0f", item.price))")
                     .font(.system(size: 12))
-                    .foregroundStyle(.pink)
+                    .foregroundStyle(.orange)
                     .fontWeight(.semibold)
                     .lineLimit(1)
             }
@@ -478,10 +478,6 @@ struct CartoonCardModifier: ViewModifier {
                 RoundedRectangle(cornerRadius: 18)
                     .fill(Color(.secondarySystemGroupedBackground))
             )
-            .overlay(
-                RoundedRectangle(cornerRadius: 18)
-                    .stroke(Color.pink.opacity(0.10), lineWidth: 1)
-            )
             .shadow(color: Color.pink.opacity(0.06), radius: 6, x: 0, y: 3)
     }
 }
@@ -499,15 +495,11 @@ struct CartoonSectionHeader: View {
     let color: Color
     
     var body: some View {
-        HStack(spacing: 6) {
-            Text(emoji)
-                .font(.title3)
-            Text(title)
-                .font(.subheadline)
-                .fontWeight(.bold)
-                .foregroundStyle(color)
-        }
-        .padding(.bottom, 2)
+        Text(title)
+            .font(.system(.subheadline, design: .rounded))
+            .fontWeight(.bold)
+            .foregroundStyle(color)
+            .padding(.bottom, 2)
     }
 }
 
@@ -518,6 +510,8 @@ struct CartoonTextField: View {
     var keyboardType: UIKeyboardType = .default
     var leadingIcon: String? = nil
     var iconColor: Color = .pink
+    var showDivider: Bool = true
+    @FocusState private var isFocused: Bool
     
     var body: some View {
         HStack(spacing: 10) {
@@ -525,18 +519,29 @@ struct CartoonTextField: View {
                 Text(icon)
                     .font(.body)
             }
-            TextField(placeholder, text: $text)
+            Text(placeholder)
+                .font(.system(.subheadline, design: .rounded))
+                .fontWeight(.heavy)
+                .foregroundStyle(.cyan.opacity(0.8))
+            
+            Spacer()
+            
+            TextField("", text: $text)
                 .keyboardType(keyboardType)
                 .autocorrectionDisabled()
+                .submitLabel(.done)
+                .focused($isFocused)
+                .onSubmit { isFocused = false }
+                .font(.system(.body, design: .rounded))
+                .fontWeight(.semibold)
+                .multilineTextAlignment(.trailing)
+                .foregroundStyle(.secondary)
         }
-        .padding(12)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
         .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color(.tertiarySystemGroupedBackground))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.pink.opacity(0.12), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color(.secondarySystemGroupedBackground))
         )
     }
 }
@@ -559,6 +564,8 @@ struct AddWishlistItemView: View {
     @State private var isEasterEgg = false
     @State private var showTitle = false
     @State private var showFireworks = false
+    @State private var showingNewTypeInput = false
+    @State private var newTypeInput = ""
     
     init(store: ItemStore, wishlistGroupStore: WishlistGroupStore, defaultGroupId: UUID? = nil) {
         self.store = store
@@ -592,33 +599,27 @@ struct AddWishlistItemView: View {
             ZStack {
             ScrollView {
                 VStack(spacing: 18) {
-                    // 📝 基本信息卡片
+                    // 📝 基本信息
+                    VStack(alignment: .leading, spacing: 10) {
+                        CartoonTextField(placeholder: "心愿名字", text: $name)
+                        CartoonTextField(placeholder: "价格", text: $price, keyboardType: .decimalPad)
+                        CartoonTextField(placeholder: "购买链接", text: $purchaseLink, keyboardType: .URL)
+                    }
+                    
+                    // 🏷️ 展示类型卡片
                     VStack(alignment: .leading, spacing: 14) {
-                        CartoonSectionHeader(emoji: "📝", title: "基本信息", color: Color(red: 0.3, green: 0.5, blue: 0.8))
-                        
-                        CartoonTextField(placeholder: "给心愿起个名字吧~", text: $name)
-                        
-                        CartoonTextField(placeholder: "大概要花多少钱？", text: $price, keyboardType: .decimalPad)
+                        CartoonSectionHeader(emoji: "🏷️", title: "展示类型", color: .secondary)
                         
                         // 分组选择
                         if !wishlistGroupStore.groups.isEmpty {
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack(spacing: 4) {
-                                    Text("📂")
-                                    Text("选个分组")
-                                        .font(.subheadline)
-                                        .foregroundStyle(.secondary)
-                                }
-                                
-                                ScrollView(.horizontal, showsIndicators: false) {
+                            ScrollView(.horizontal, showsIndicators: false) {
                                     HStack(spacing: 8) {
-                                        // 无分组
                                         Button {
                                             selectedGroupId = nil
                                         } label: {
-                                            Text("🌈 无分组")
-                                                .font(.subheadline)
-                                                .fontWeight(selectedGroupId == nil ? .bold : .regular)
+                                            Text("无分组")
+                                                .font(.system(.subheadline, design: .rounded))
+                                                .fontWeight(selectedGroupId == nil ? .bold : .medium)
                                                 .padding(.horizontal, 14)
                                                 .padding(.vertical, 8)
                                                 .background(
@@ -641,8 +642,8 @@ struct AddWishlistItemView: View {
                                                     Image(systemName: group.icon)
                                                         .font(.caption)
                                                     Text(group.name)
-                                                        .font(.subheadline)
-                                                        .fontWeight(selectedGroupId == group.id ? .bold : .regular)
+                                                        .font(.system(.subheadline, design: .rounded))
+                                                        .fontWeight(selectedGroupId == group.id ? .bold : .medium)
                                                 }
                                                 .padding(.horizontal, 14)
                                                 .padding(.vertical, 8)
@@ -660,19 +661,13 @@ struct AddWishlistItemView: View {
                                         }
                                     }
                                 }
-                            }
                         }
-                    }
-                    .cartoonCard()
-                    
-                    // 🏷️ 展示类型卡片
-                    VStack(alignment: .leading, spacing: 14) {
-                        CartoonSectionHeader(emoji: "🏷️", title: "展示类型", color: Color(red: 0.55, green: 0.4, blue: 0.75))
                         
                         // 自定义切换
                         HStack {
                             Text("自定义类型")
-                                .font(.subheadline)
+                                .font(.system(.subheadline, design: .rounded))
+                                .fontWeight(.semibold)
                                 .foregroundStyle(.primary)
                             Spacer()
                             Toggle("", isOn: $isCustomDisplayType)
@@ -689,7 +684,7 @@ struct AddWishlistItemView: View {
                             // 历史自定义类型
                             if !store.customDisplayTypes.isEmpty {
                                 VStack(alignment: .leading, spacing: 8) {
-                                    Text("💫 历史类型（点击选择）")
+                                    Text("历史类型")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                     
@@ -699,8 +694,8 @@ struct AddWishlistItemView: View {
                                                 customDisplayType = type
                                             } label: {
                                                 Text(type)
-                                                    .font(.subheadline)
-                                                    .fontWeight(customDisplayType == type ? .bold : .regular)
+                                                    .font(.system(.subheadline, design: .rounded))
+                                                    .fontWeight(customDisplayType == type ? .bold : .medium)
                                                     .padding(.horizontal, 14)
                                                     .padding(.vertical, 7)
                                                     .background(
@@ -721,7 +716,33 @@ struct AddWishlistItemView: View {
                                 }
                             }
                             
-                            CartoonTextField(placeholder: "输入新的展示类型名称", text: $customDisplayType)
+                            // 新增自定义类型 tag
+                            Button {
+                                newTypeInput = ""
+                                showingNewTypeInput = true
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "plus")
+                                        .font(.caption)
+                                    Text("新增")
+                                        .font(.system(.subheadline, design: .rounded))
+                                        .fontWeight(.medium)
+                                }
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 8)
+                                .background(
+                                    Capsule()
+                                        .stroke(Color.purple.opacity(0.4), lineWidth: 1)
+                                )
+                                .foregroundStyle(.purple)
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                            
+                            if !customDisplayType.isEmpty {
+                                Text("当前：\(customDisplayType)")
+                                    .font(.system(.caption, design: .rounded))
+                                    .foregroundStyle(.purple)
+                            }
                             
                             // 归属类型
                             Menu {
@@ -741,7 +762,7 @@ struct AddWishlistItemView: View {
                             } label: {
                                 HStack {
                                     Text("归属类型")
-                                        .font(.subheadline)
+                                        .font(.system(.subheadline, design: .rounded))
                                         .foregroundStyle(.primary)
                                     Spacer()
                                     HStack(spacing: 4) {
@@ -750,7 +771,7 @@ struct AddWishlistItemView: View {
                                         Text(selectedTargetType.rawValue)
                                             .foregroundStyle(Color(red: 0.55, green: 0.4, blue: 0.75))
                                     }
-                                    .font(.subheadline)
+                                    .font(.system(.subheadline, design: .rounded))
                                     .fontWeight(.semibold)
                                     Image(systemName: "chevron.up.chevron.down")
                                         .font(.caption2)
@@ -777,21 +798,19 @@ struct AddWishlistItemView: View {
                                             Image(systemName: type.icon)
                                                 .font(.caption)
                                             Text(type.rawValue)
-                                                .font(.subheadline)
-                                                .fontWeight(selectedDisplayType == type ? .bold : .regular)
+                                                .font(.system(.subheadline, design: .rounded))
+                                                .fontWeight(selectedDisplayType == type ? .bold : .medium)
                                         }
                                         .padding(.horizontal, 14)
                                         .padding(.vertical, 8)
                                         .background(
                                             Capsule()
-                                                .fill(selectedDisplayType == type
-                                                      ? Color.pink.opacity(0.18)
-                                                      : Color(.tertiarySystemGroupedBackground))
+                                                .fill(type.color.opacity(selectedDisplayType == type ? 0.2 : 0.08))
                                         )
-                                        .foregroundStyle(selectedDisplayType == type ? .pink : .primary)
+                                        .foregroundStyle(selectedDisplayType == type ? type.color : type.color.opacity(0.7))
                                         .overlay(
                                             Capsule()
-                                                .stroke(selectedDisplayType == type ? Color.pink.opacity(0.3) : Color.clear, lineWidth: 1)
+                                                .stroke(selectedDisplayType == type ? type.color.opacity(0.3) : Color.clear, lineWidth: 1)
                                         )
                                     }
                                     .buttonStyle(PlainButtonStyle())
@@ -803,7 +822,7 @@ struct AddWishlistItemView: View {
                     
                     // 📷 图片卡片
                     VStack(alignment: .leading, spacing: 14) {
-                        CartoonSectionHeader(emoji: "📷", title: "心愿美照", color: Color(red: 0.2, green: 0.6, blue: 0.65))
+                        CartoonSectionHeader(emoji: "📷", title: "心愿美照", color: .secondary)
                         
                         ZStack {
                             if let imageData = selectedImageData,
@@ -862,15 +881,9 @@ struct AddWishlistItemView: View {
                                         .fill(Color(.tertiarySystemGroupedBackground))
                                         .frame(height: 140)
                                         .overlay(
-                                            VStack(spacing: 8) {
-                                                Image(systemName: "photo.badge.plus")
-                                                    .font(.system(size: 32))
-                                                    .foregroundStyle(Color(red: 0.2, green: 0.6, blue: 0.65))
-                                                Text("点击选择图片")
-                                                    .font(.subheadline)
-                                                    .fontWeight(.medium)
-                                                    .foregroundStyle(Color(red: 0.2, green: 0.6, blue: 0.65))
-                                            }
+                                            Image(systemName: "photo.badge.plus")
+                                                .font(.system(size: 32))
+                                                .foregroundStyle(.secondary)
                                         )
                                 }
                                 .buttonStyle(PlainButtonStyle())
@@ -890,39 +903,25 @@ struct AddWishlistItemView: View {
                     }
                     .cartoonCard()
                     
-                    // 🔗 购买链接卡片
-                    VStack(alignment: .leading, spacing: 14) {
-                        CartoonSectionHeader(emoji: "🔗", title: "购买链接", color: Color(red: 0.3, green: 0.55, blue: 0.85))
-                        
-                        CartoonTextField(placeholder: "在哪里可以买到呢？", text: $purchaseLink, keyboardType: .URL)
-                    }
-                    .cartoonCard()
-                    
-                    // 📖 心愿描述卡片
-                    VStack(alignment: .leading, spacing: 14) {
-                        CartoonSectionHeader(emoji: "📖", title: "心愿描述", color: Color(red: 0.6, green: 0.45, blue: 0.3))
-                        
+                    // 📝 心愿描述
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("心愿描述")
+                            .font(.system(.subheadline, design: .rounded))
+                            .fontWeight(.heavy)
+                            .foregroundStyle(.cyan.opacity(0.8))
                         TextEditor(text: $details)
-                            .frame(minHeight: 80)
+                            .font(.system(.body, design: .rounded))
+                            .fontWeight(.semibold)
+                            .frame(minHeight: 60)
                             .scrollContentBackground(.hidden)
                             .autocorrectionDisabled()
-                            .padding(12)
-                            .background(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .fill(Color(.tertiarySystemGroupedBackground))
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .stroke(Color.pink.opacity(0.12), lineWidth: 1)
-                            )
-                        
-                        if details.isEmpty {
-                            Text("写点什么来记录这个心愿的故事吧~")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        }
                     }
-                    .cartoonCard()
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
+                    .background(
+                        RoundedRectangle(cornerRadius: 14)
+                            .fill(Color(.secondarySystemGroupedBackground))
+                    )
                     
                     Spacer(minLength: 30)
                 }
@@ -975,6 +974,19 @@ struct AddWishlistItemView: View {
                         }
                 }
             } // ZStack
+            .customInputAlert(
+                isPresented: $showingNewTypeInput,
+                title: "新增展示类型",
+                message: "输入新的展示类型名称",
+                placeholder: "类型名称",
+                text: $newTypeInput,
+                onConfirm: {
+                    let trimmed = newTypeInput.trimmingCharacters(in: .whitespaces)
+                    if !trimmed.isEmpty {
+                        customDisplayType = trimmed
+                    }
+                }
+            )
         }
     }
     
@@ -1037,6 +1049,8 @@ struct EditWishlistItemView: View {
     @State private var selectedGroupId: UUID?
     
     @State private var showDeleteConfirm = false
+    @State private var showingNewTypeInput = false
+    @State private var newTypeInput = ""
     
     init(item: Item, store: ItemStore, wishlistGroupStore: WishlistGroupStore) {
         self.originalItem = item
@@ -1071,35 +1085,30 @@ struct EditWishlistItemView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 18) {
-                    // 📝 基本信息卡片
-                    VStack(alignment: .leading, spacing: 14) {
-                        CartoonSectionHeader(emoji: "📝", title: "基本信息", color: Color(red: 0.3, green: 0.5, blue: 0.8))
-                        
-                        CartoonTextField(placeholder: "给心愿起个名字吧~", text: $name)
-                        
-                        CartoonTextField(placeholder: "大概要花多少钱？", text: $priceText, keyboardType: .decimalPad)
+                    // 📝 基本信息
+                    VStack(alignment: .leading, spacing: 10) {
+                        CartoonTextField(placeholder: "心愿名字", text: $name)
+                        CartoonTextField(placeholder: "价格", text: $priceText, keyboardType: .decimalPad)
                             .onChange(of: priceText) { _, newValue in
                                 price = Double(newValue) ?? 0
                             }
+                        CartoonTextField(placeholder: "购买链接", text: $purchaseLink, keyboardType: .URL)
+                    }
+                    
+                    // 🏷️ 展示类型卡片
+                    VStack(alignment: .leading, spacing: 14) {
+                        CartoonSectionHeader(emoji: "🏷️", title: "展示类型", color: .secondary)
                         
                         // 分组选择
                         if !wishlistGroupStore.groups.isEmpty {
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack(spacing: 4) {
-                                    Text("📂")
-                                    Text("选个分组")
-                                        .font(.subheadline)
-                                        .foregroundStyle(.secondary)
-                                }
-                                
-                                ScrollView(.horizontal, showsIndicators: false) {
+                            ScrollView(.horizontal, showsIndicators: false) {
                                     HStack(spacing: 8) {
                                         Button {
                                             selectedGroupId = nil
                                         } label: {
-                                            Text("🌈 无分组")
-                                                .font(.subheadline)
-                                                .fontWeight(selectedGroupId == nil ? .bold : .regular)
+                                            Text("无分组")
+                                                .font(.system(.subheadline, design: .rounded))
+                                                .fontWeight(selectedGroupId == nil ? .bold : .medium)
                                                 .padding(.horizontal, 14)
                                                 .padding(.vertical, 8)
                                                 .background(
@@ -1122,8 +1131,8 @@ struct EditWishlistItemView: View {
                                                     Image(systemName: group.icon)
                                                         .font(.caption)
                                                     Text(group.name)
-                                                        .font(.subheadline)
-                                                        .fontWeight(selectedGroupId == group.id ? .bold : .regular)
+                                                        .font(.system(.subheadline, design: .rounded))
+                                                        .fontWeight(selectedGroupId == group.id ? .bold : .medium)
                                                 }
                                                 .padding(.horizontal, 14)
                                                 .padding(.vertical, 8)
@@ -1141,18 +1150,12 @@ struct EditWishlistItemView: View {
                                         }
                                     }
                                 }
-                            }
                         }
-                    }
-                    .cartoonCard()
-                    
-                    // 🏷️ 展示类型卡片
-                    VStack(alignment: .leading, spacing: 14) {
-                        CartoonSectionHeader(emoji: "🏷️", title: "展示类型", color: Color(red: 0.55, green: 0.4, blue: 0.75))
                         
                         HStack {
                             Text("自定义类型")
-                                .font(.subheadline)
+                                .font(.system(.subheadline, design: .rounded))
+                                .fontWeight(.semibold)
                                 .foregroundStyle(.primary)
                             Spacer()
                             Toggle("", isOn: $isCustomDisplayType)
@@ -1168,7 +1171,7 @@ struct EditWishlistItemView: View {
                         if isCustomDisplayType {
                             if !store.customDisplayTypes.isEmpty {
                                 VStack(alignment: .leading, spacing: 8) {
-                                    Text("💫 历史类型（点击选择）")
+                                    Text("历史类型")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                     
@@ -1178,8 +1181,8 @@ struct EditWishlistItemView: View {
                                                 customDisplayType = type
                                             } label: {
                                                 Text(type)
-                                                    .font(.subheadline)
-                                                    .fontWeight(customDisplayType == type ? .bold : .regular)
+                                                    .font(.system(.subheadline, design: .rounded))
+                                                    .fontWeight(customDisplayType == type ? .bold : .medium)
                                                     .padding(.horizontal, 14)
                                                     .padding(.vertical, 7)
                                                     .background(
@@ -1200,7 +1203,33 @@ struct EditWishlistItemView: View {
                                 }
                             }
                             
-                            CartoonTextField(placeholder: "输入新的展示类型名称", text: $customDisplayType)
+                            // 新增自定义类型 tag
+                            Button {
+                                newTypeInput = ""
+                                showingNewTypeInput = true
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "plus")
+                                        .font(.caption)
+                                    Text("新增")
+                                        .font(.system(.subheadline, design: .rounded))
+                                        .fontWeight(.medium)
+                                }
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 8)
+                                .background(
+                                    Capsule()
+                                        .stroke(Color.purple.opacity(0.4), lineWidth: 1)
+                                )
+                                .foregroundStyle(.purple)
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                            
+                            if !customDisplayType.isEmpty {
+                                Text("当前：\(customDisplayType)")
+                                    .font(.system(.caption, design: .rounded))
+                                    .foregroundStyle(.purple)
+                            }
                             
                             Menu {
                                 ForEach(ItemType.allCases, id: \.self) { type in
@@ -1219,7 +1248,7 @@ struct EditWishlistItemView: View {
                             } label: {
                                 HStack {
                                     Text("归属类型")
-                                        .font(.subheadline)
+                                        .font(.system(.subheadline, design: .rounded))
                                         .foregroundStyle(.primary)
                                     Spacer()
                                     HStack(spacing: 4) {
@@ -1228,7 +1257,7 @@ struct EditWishlistItemView: View {
                                         Text(selectedTargetType.rawValue)
                                             .foregroundStyle(Color(red: 0.55, green: 0.4, blue: 0.75))
                                     }
-                                    .font(.subheadline)
+                                    .font(.system(.subheadline, design: .rounded))
                                     .fontWeight(.semibold)
                                     Image(systemName: "chevron.up.chevron.down")
                                         .font(.caption2)
@@ -1254,21 +1283,19 @@ struct EditWishlistItemView: View {
                                             Image(systemName: type.icon)
                                                 .font(.caption)
                                             Text(type.rawValue)
-                                                .font(.subheadline)
-                                                .fontWeight(selectedDisplayType == type ? .bold : .regular)
+                                                .font(.system(.subheadline, design: .rounded))
+                                                .fontWeight(selectedDisplayType == type ? .bold : .medium)
                                         }
                                         .padding(.horizontal, 14)
                                         .padding(.vertical, 8)
                                         .background(
                                             Capsule()
-                                                .fill(selectedDisplayType == type
-                                                      ? Color.pink.opacity(0.18)
-                                                      : Color(.tertiarySystemGroupedBackground))
+                                                .fill(type.color.opacity(selectedDisplayType == type ? 0.2 : 0.08))
                                         )
-                                        .foregroundStyle(selectedDisplayType == type ? .pink : .primary)
+                                        .foregroundStyle(selectedDisplayType == type ? type.color : type.color.opacity(0.7))
                                         .overlay(
                                             Capsule()
-                                                .stroke(selectedDisplayType == type ? Color.pink.opacity(0.3) : Color.clear, lineWidth: 1)
+                                                .stroke(selectedDisplayType == type ? type.color.opacity(0.3) : Color.clear, lineWidth: 1)
                                         )
                                     }
                                     .buttonStyle(PlainButtonStyle())
@@ -1280,7 +1307,7 @@ struct EditWishlistItemView: View {
                     
                     // 📷 图片卡片
                     VStack(alignment: .leading, spacing: 14) {
-                        CartoonSectionHeader(emoji: "📷", title: "心愿美照", color: Color(red: 0.2, green: 0.6, blue: 0.65))
+                        CartoonSectionHeader(emoji: "📷", title: "心愿美照", color: .secondary)
                         
                         ZStack {
                             if let imageData = selectedImageData,
@@ -1340,15 +1367,9 @@ struct EditWishlistItemView: View {
                                         .fill(Color(.tertiarySystemGroupedBackground))
                                         .frame(height: 140)
                                         .overlay(
-                                            VStack(spacing: 8) {
-                                                Image(systemName: "photo.badge.plus")
-                                                    .font(.system(size: 32))
-                                                    .foregroundStyle(Color(red: 0.2, green: 0.6, blue: 0.65))
-                                                Text("点击选择图片")
-                                                    .font(.subheadline)
-                                                    .fontWeight(.medium)
-                                                    .foregroundStyle(Color(red: 0.2, green: 0.6, blue: 0.65))
-                                            }
+                                            Image(systemName: "photo.badge.plus")
+                                                .font(.system(size: 32))
+                                                .foregroundStyle(.secondary)
                                         )
                                 }
                                 .buttonStyle(PlainButtonStyle())
@@ -1369,39 +1390,25 @@ struct EditWishlistItemView: View {
                     }
                     .cartoonCard()
                     
-                    // 🔗 购买链接卡片
-                    VStack(alignment: .leading, spacing: 14) {
-                        CartoonSectionHeader(emoji: "🔗", title: "购买链接", color: Color(red: 0.3, green: 0.55, blue: 0.85))
-                        
-                        CartoonTextField(placeholder: "在哪里可以买到呢？", text: $purchaseLink, keyboardType: .URL)
-                    }
-                    .cartoonCard()
-                    
-                    // 📖 心愿描述卡片
-                    VStack(alignment: .leading, spacing: 14) {
-                        CartoonSectionHeader(emoji: "📖", title: "心愿描述", color: Color(red: 0.6, green: 0.45, blue: 0.3))
-                        
+                    // 📝 心愿描述
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("心愿描述")
+                            .font(.system(.subheadline, design: .rounded))
+                            .fontWeight(.heavy)
+                            .foregroundStyle(.cyan.opacity(0.8))
                         TextEditor(text: $details)
-                            .frame(minHeight: 80)
+                            .font(.system(.body, design: .rounded))
+                            .fontWeight(.semibold)
+                            .frame(minHeight: 60)
                             .scrollContentBackground(.hidden)
                             .autocorrectionDisabled()
-                            .padding(12)
-                            .background(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .fill(Color(.tertiarySystemGroupedBackground))
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .stroke(Color.pink.opacity(0.12), lineWidth: 1)
-                            )
-                        
-                        if details.isEmpty {
-                            Text("写点什么来记录这个心愿的故事吧~")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        }
                     }
-                    .cartoonCard()
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
+                    .background(
+                        RoundedRectangle(cornerRadius: 14)
+                            .fill(Color(.secondarySystemGroupedBackground))
+                    )
                     
                     // 🗑️ 删除按钮
                     Button {
@@ -1410,7 +1417,7 @@ struct EditWishlistItemView: View {
                         HStack(spacing: 6) {
                             Text("🗑️")
                             Text("删除这个心愿")
-                                .font(.subheadline)
+                                .font(.system(.subheadline, design: .rounded))
                                 .fontWeight(.medium)
                         }
                         .foregroundStyle(.red.opacity(0.7))
@@ -1426,15 +1433,17 @@ struct EditWishlistItemView: View {
                         )
                     }
                     .buttonStyle(PlainButtonStyle())
-                    .alert("确定删除？", isPresented: $showDeleteConfirm) {
-                        Button("取消", role: .cancel) { }
-                        Button("删除", role: .destructive) {
+                    .customConfirmAlert(
+                        isPresented: $showDeleteConfirm,
+                        title: "确定删除？",
+                        message: "删除后无法恢复，确定要删除「\(name)」吗？",
+                        confirmText: "删除",
+                        isDestructive: true,
+                        onConfirm: {
                             store.delete(originalItem)
                             dismiss()
                         }
-                    } message: {
-                        Text("删除后无法恢复，确定要删除「\(name)」吗？")
-                    }
+                    )
                     
                     Spacer(minLength: 30)
                 }
@@ -1464,6 +1473,19 @@ struct EditWishlistItemView: View {
                     }
                 }
             }
+            .customInputAlert(
+                isPresented: $showingNewTypeInput,
+                title: "新增展示类型",
+                message: "输入新的展示类型名称",
+                placeholder: "类型名称",
+                text: $newTypeInput,
+                onConfirm: {
+                    let trimmed = newTypeInput.trimmingCharacters(in: .whitespaces)
+                    if !trimmed.isEmpty {
+                        customDisplayType = trimmed
+                    }
+                }
+            )
         }
     }
     

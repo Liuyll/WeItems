@@ -177,7 +177,9 @@ class SharedWishlistStore: ObservableObject {
            let ii = lists[li].items.firstIndex(where: { $0.id == itemId }) {
             lists[li].items[ii].isCompleted.toggle()
             if lists[li].items[ii].isCompleted {
-                lists[li].items[ii].completedBy = lists[li].myNickname ?? "未知用户"
+                // 优先用 myNickname（自己在清单中的昵称），没有则显示"我"
+                let nickname = lists[li].myNickname ?? "我"
+                lists[li].items[ii].completedBy = nickname
             } else {
                 lists[li].items[ii].completedBy = nil
             }

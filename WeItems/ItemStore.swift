@@ -17,6 +17,10 @@ class ItemStore: ObservableObject {
     private let fileName = "items.json"
     private let customTypesFileName = "custom_display_types.json"
     private let unsyncedFlagFileName = "unsynced_flag"
+    private let deletedItemsFileName = "deleted_items.json"
+    
+    /// 已删除物品的记录：[itemId: 删除时间戳]
+    private(set) var deletedItemRecords: [String: Date] = [:]
     
     // MARK: - 同步时间管理
     
@@ -56,6 +60,28 @@ class ItemStore: ObservableObject {
         print("[ItemStore] 同步完成标记已更新")
     }
     
+    /// 将指定物品标记为已同步到远端
+    func markItemsSynced(itemIds: [String]) {
+        var changed = false
+        for itemId in itemIds {
+            if let index = items.firstIndex(where: { $0.itemId == itemId && !$0.isSynced }) {
+                items[index].isSynced = true
+                changed = true
+            }
+        }
+        if changed { saveItems() }
+    }
+    
+    /// 将所有物品标记为已同步
+    func markAllItemsSynced() {
+        var changed = false
+        for i in items.indices where !items[i].isSynced {
+            items[i].isSynced = true
+            changed = true
+        }
+        if changed { saveItems() }
+    }
+    
     /// 当前用户的存储目录
     private var userDir: URL {
         UserStorageHelper.shared.currentUserDirectory
@@ -72,6 +98,7 @@ class ItemStore: ObservableObject {
         loadItems()
         loadCustomDisplayTypes()
         loadUnsyncedFlag()
+        loadDeletedItemRecords()
     }
     
     /// 切换用户后重新加载数据
@@ -79,15 +106,16 @@ class ItemStore: ObservableObject {
         loadItems()
         loadCustomDisplayTypes()
         loadUnsyncedFlag()
+        loadDeletedItemRecords()
         print("[ItemStore] 已切换到用户: \(UserStorageHelper.shared.currentUserKey), 共 \(items.count) 个物品")
     }
     
     var totalPrice: Double {
-        items.reduce(0) { $0 + $1.price }
+        items.filter { !$0.isPriceless }.reduce(0) { $0 + $1.price }
     }
     
     func totalPrice(forGroup groupId: UUID?, listType: ListType) -> Double {
-        itemsForGroup(groupId, listType: listType).reduce(0) { $0 + $1.price }
+        itemsForGroup(groupId, listType: listType).filter { !$0.isPriceless }.reduce(0) { $0 + $1.price }
     }
     
     func itemsForGroup(_ groupId: UUID?, listType: ListType) -> [Item] {
@@ -113,18 +141,22 @@ class ItemStore: ObservableObject {
     }
     
     func update(_ item: Item) {
-        if let index = items.firstIndex(where: { $0.id == item.id }) {
+        if let index = items.firstIndex(where: { $0.itemId == item.itemId }) {
             var updated = item
             updated.updatedAt = Date()
+            objectWillChange.send()
             items[index] = updated
             saveItems()
         }
     }
     
     func delete(at offsets: IndexSet) {
-        // 删除关联的图片
         for index in offsets {
-            deleteImage(for: items[index])
+            let item = items[index]
+            deleteImage(for: item)
+            if item.isSynced {
+                recordDeletion(itemId: item.itemId)
+            }
         }
         items.remove(atOffsets: offsets)
         saveItems()
@@ -132,7 +164,10 @@ class ItemStore: ObservableObject {
     
     func delete(_ item: Item) {
         deleteImage(for: item)
-        if let index = items.firstIndex(where: { $0.id == item.id }) {
+        if item.isSynced {
+            recordDeletion(itemId: item.itemId)
+        }
+        if let index = items.firstIndex(where: { $0.itemId == item.itemId }) {
             items.remove(at: index)
             saveItems()
         }
@@ -168,19 +203,34 @@ class ItemStore: ObservableObject {
     func toggleArchiveItem(itemId: UUID) {
         if let index = items.firstIndex(where: { $0.id == itemId }) {
             items[index].isArchived.toggle()
+            if !items[index].isArchived {
+                // 取消售出时清除售出信息
+                items[index].soldPrice = nil
+                items[index].soldDate = nil
+            }
+            saveItems()
+        }
+    }
+    
+    /// 标记物品为已售出
+    func markAsSold(itemId: UUID, soldPrice: Double) {
+        if let index = items.firstIndex(where: { $0.id == itemId }) {
+            items[index].isArchived = true
+            items[index].soldPrice = soldPrice
+            items[index].soldDate = Date()
             saveItems()
         }
     }
     
     func archiveItem(_ item: Item) {
-        if let index = items.firstIndex(where: { $0.id == item.id }) {
+        if let index = items.firstIndex(where: { $0.itemId == item.itemId }) {
             items[index].isArchived = true
             saveItems()
         }
     }
     
     func unarchiveItem(_ item: Item) {
-        if let index = items.firstIndex(where: { $0.id == item.id }) {
+        if let index = items.firstIndex(where: { $0.itemId == item.itemId }) {
             items[index].isArchived = false
             saveItems()
         }
@@ -405,9 +455,9 @@ class ItemStore: ObservableObject {
             let anonymousFile = UserStorageHelper.shared.anonymousDirectory
                 .appendingPathComponent(fileName)
             let anonymousItems = loadItemsFromFile(anonymousFile)
-            // 去重：以 id 为准，当前用户数据优先
-            let existingIds = Set(allItems.map { $0.id })
-            for item in anonymousItems where !existingIds.contains(item.id) {
+            // 去重：以 itemId 为准，当前用户数据优先
+            let existingIds = Set(allItems.map { $0.itemId })
+            for item in anonymousItems where !existingIds.contains(item.itemId) {
                 allItems.append(item)
             }
         }
@@ -469,6 +519,58 @@ class ItemStore: ObservableObject {
             print("[ItemStore] 未同步标记: \(hasUnsyncedChanges)")
         } catch {
             hasUnsyncedChanges = false
+        }
+    }
+    
+    // MARK: - 删除记录管理
+    
+    private var deletedItemsFileURL: URL {
+        userDir.appendingPathComponent(deletedItemsFileName)
+    }
+    
+    /// 记录一条删除
+    private func recordDeletion(itemId: String) {
+        deletedItemRecords[itemId] = Date()
+        saveDeletedItemRecords()
+    }
+    
+    /// 同步完成后清理已同步的删除记录
+    func clearDeletedRecords(itemIds: [String]) {
+        for id in itemIds {
+            deletedItemRecords.removeValue(forKey: id)
+        }
+        saveDeletedItemRecords()
+    }
+    
+    /// 清空所有删除记录（同步全部完成后调用）
+    func clearAllDeletedRecords() {
+        deletedItemRecords.removeAll()
+        saveDeletedItemRecords()
+    }
+    
+    private func saveDeletedItemRecords() {
+        do {
+            // 转换为 [String: TimeInterval] 方便 JSON 编码
+            let dict = deletedItemRecords.mapValues { $0.timeIntervalSince1970 }
+            let data = try JSONEncoder().encode(dict)
+            try data.write(to: deletedItemsFileURL, options: .atomic)
+        } catch {
+            print("[ItemStore] 保存删除记录失败: \(error)")
+        }
+    }
+    
+    private func loadDeletedItemRecords() {
+        guard FileManager.default.fileExists(atPath: deletedItemsFileURL.path) else {
+            deletedItemRecords = [:]
+            return
+        }
+        do {
+            let data = try Data(contentsOf: deletedItemsFileURL)
+            let dict = try JSONDecoder().decode([String: TimeInterval].self, from: data)
+            deletedItemRecords = dict.mapValues { Date(timeIntervalSince1970: $0) }
+            print("[ItemStore] 加载删除记录: \(deletedItemRecords.count) 条")
+        } catch {
+            deletedItemRecords = [:]
         }
     }
 }

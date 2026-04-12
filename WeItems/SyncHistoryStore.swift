@@ -10,22 +10,24 @@ import Combine
 struct SyncRecord: Codable, Identifiable {
     let id: UUID
     let date: Date
-    let trigger: SyncTrigger          // 触发方式
-    let itemsUploaded: Int            // 物品：新上传数
-    let itemsUpdated: Int             // 物品：更新数
-    let itemsDeletedLocal: Int        // 物品：删除本地数
-    let itemsFailed: Int              // 物品：失败数
-    let wishesUploaded: Int           // 心愿：新上传数
-    let wishesUpdated: Int            // 心愿：更新数
-    let wishesDeletedLocal: Int       // 心愿：删除本地数
-    let wishesFailed: Int             // 心愿：失败数
-    let success: Bool                 // 整体是否成功
-    let message: String               // 结果描述
+    let trigger: SyncTrigger
+    let itemsUploaded: Int
+    let itemsUpdated: Int
+    let itemsDeletedLocal: Int
+    let itemsFailed: Int
+    let wishesUploaded: Int
+    let wishesUpdated: Int
+    let wishesDeletedLocal: Int
+    let wishesFailed: Int
+    let savingInfoSynced: Bool?       // 收入储蓄：是否同步成功（nil 表示旧记录无此字段）
+    let success: Bool
+    let message: String
     
     /// 触发方式
     enum SyncTrigger: String, Codable {
-        case manual = "手动同步"
+        case manual = "远端同步"
         case auto   = "自动同步"
+        case icloud = "iCloud 同步"
     }
     
     /// 总操作数

@@ -8,28 +8,67 @@ import SwiftUI
 struct SyncHistoryView: View {
     @ObservedObject private var historyStore = SyncHistoryStore.shared
     @State private var showingClearConfirm = false
+    @State private var expandedIds: Set<UUID> = []
     
     var body: some View {
-        Group {
-            if historyStore.records.isEmpty {
-                VStack(spacing: 12) {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(.system(size: 50))
-                        .foregroundStyle(.gray.opacity(0.4))
-                    Text("暂无同步记录")
-                        .font(.headline)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List {
-                    ForEach(historyStore.records) { record in
-                        SyncRecordRow(record: record)
+        List {
+            // 查看 iCloud 数据入口
+            Section {
+                NavigationLink(destination: ICloudDataView()) {
+                    Label {
+                        Text("查看 iCloud 数据")
+                            .font(.subheadline)
+                    } icon: {
+                        Image(systemName: "externaldrive.fill.badge.icloud")
+                            .foregroundStyle(.cyan)
                     }
                 }
-                .listStyle(.insetGrouped)
+                NavigationLink(destination: RemoteDataView()) {
+                    Label {
+                        Text("查看远端数据")
+                            .font(.subheadline)
+                    } icon: {
+                        Image(systemName: "cloud.fill")
+                            .foregroundStyle(.green)
+                    }
+                }
+            }
+            
+            // 同步记录
+            if historyStore.records.isEmpty {
+                Section {
+                    HStack {
+                        Spacer()
+                        VStack(spacing: 8) {
+                            Image(systemName: "clock.arrow.circlepath")
+                                .font(.system(size: 36))
+                                .foregroundStyle(.gray.opacity(0.4))
+                            Text("暂无同步记录")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 30)
+                        Spacer()
+                    }
+                }
+            } else {
+                Section {
+                    ForEach(historyStore.records) { record in
+                        SyncRecordRow(record: record, isExpanded: Binding(
+                            get: { expandedIds.contains(record.id) },
+                            set: { newValue in
+                                if newValue {
+                                    expandedIds.insert(record.id)
+                                } else {
+                                    expandedIds.remove(record.id)
+                                }
+                            }
+                        ))
+                    }
+                }
             }
         }
+        .listStyle(.insetGrouped)
         .navigationTitle("同步历史")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -42,14 +81,16 @@ struct SyncHistoryView: View {
                 }
             }
         }
-        .alert("清空同步历史", isPresented: $showingClearConfirm) {
-            Button("取消", role: .cancel) {}
-            Button("清空", role: .destructive) {
+        .customConfirmAlert(
+            isPresented: $showingClearConfirm,
+            title: "清空同步历史",
+            message: "确定要清空所有同步历史记录吗？",
+            confirmText: "清空",
+            isDestructive: true,
+            onConfirm: {
                 historyStore.clearAll()
             }
-        } message: {
-            Text("确定要清空所有同步历史记录吗？")
-        }
+        )
     }
 }
 
@@ -57,21 +98,19 @@ struct SyncHistoryView: View {
 
 struct SyncRecordRow: View {
     let record: SyncRecord
-    @State private var isExpanded = false
+    @Binding var isExpanded: Bool
     
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // 摘要行
             Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    isExpanded.toggle()
-                }
+                isExpanded.toggle()
             } label: {
                 HStack(spacing: 12) {
                     // 状态图标
-                    Image(systemName: record.success ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    Image(systemName: record.success ? (record.trigger == .icloud ? "icloud.circle.fill" : "checkmark.circle.fill") : "exclamationmark.triangle.fill")
                         .font(.title3)
-                        .foregroundStyle(record.success ? .green : .orange)
+                        .foregroundStyle(record.success ? (record.trigger == .icloud ? .cyan : .green) : .orange)
                     
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
@@ -126,9 +165,29 @@ struct SyncRecordRow: View {
                         deletedLocal: record.wishesDeletedLocal,
                         failed: record.wishesFailed
                     )
+                    
+                    // 收入储蓄同步状态
+                    if let synced = record.savingInfoSynced {
+                        HStack(spacing: 4) {
+                            Image(systemName: "banknote.fill")
+                                .font(.caption)
+                                .foregroundStyle(.green)
+                            Text("收入储蓄")
+                                .font(.caption)
+                                .fontWeight(.semibold)
+                                .foregroundStyle(.green)
+                            Spacer()
+                            Text(synced ? "已同步" : "同步失败")
+                                .font(.caption)
+                                .foregroundStyle(synced ? .green : .red)
+                            Image(systemName: synced ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                .font(.caption)
+                                .foregroundStyle(synced ? .green : .red)
+                        }
+                        .padding(.leading, 4)
+                    }
                 }
                 .padding(.top, 4)
-                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .padding(.vertical, 4)

@@ -1,0 +1,59 @@
+{
+  "appPolicies" : {
+    "eula" : "",
+    "policies" : [
+      {
+        "locale" : "en_US",
+        "policyText" : "",
+        "policyURL" : ""
+      }
+    ]
+  },
+  "identifier" : "436ED824",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+    {
+      "displayPrice" : "12",
+      "familyShareable" : false,
+      "internalID" : "F0A3967B",
+      "localizations" : [
+        {
+          "description" : "七天试用，一年有效",
+          "displayName" : "一年会员",
+          "locale" : "en_US"
+        },
+        {
+          "description" : "七天试用后开始订阅，一年有效",
+          "displayName" : "一年会员",
+          "locale" : "zh_Hans"
+        }
+      ],
+      "productID" : "lyl.WeItems.pro.yearly",
+      "referenceName" : "vip_year",
+      "type" : "Consumable"
+    }
+  ],
+  "settings" : {
+    "_askToBuyEnabled" : false,
+    "_billingGracePeriodEnabled" : false,
+    "_billingIssuesEnabled" : false,
+    "_disableDialogs" : false,
+    "_failTransactionsEnabled" : false,
+    "_locale" : "zh_Hans",
+    "_renewalBillingIssuesEnabled" : false,
+    "_storefront" : "CHN",
+    "_storeKitErrors" : [
+
+    ],
+    "_timeRate" : 0
+  },
+  "subscriptionGroups" : [
+
+  ],
+  "version" : {
+    "major" : 5,
+    "minor" : 0
+  }
+}

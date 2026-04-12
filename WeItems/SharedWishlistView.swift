@@ -27,8 +27,119 @@ struct SharedWishlistListView: View {
     @State private var pendingDocId: String? = nil
     @State private var pendingNumberList: [[String: String]] = []
     @State private var pendingUserId: String = ""
+    @State private var pendingListId: UUID? = nil  // 导入清单的本地 ID
+    
+    @State private var showingProUpgrade = false
     
     var body: some View {
+        Group {
+            if IAPManager.shared.isVIPActive {
+                vipContentView
+            } else {
+                nonVipView
+            }
+        }
+        .navigationTitle("共享清单")
+        .navigationBarTitleDisplayMode(.large)
+        .toolbar {
+            if IAPManager.shared.isVIPActive {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        showingCreate = true
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showingCreate) {
+            CreateSharedWishlistView(sharedStore: sharedStore, itemStore: itemStore, wishlistGroupStore: wishlistGroupStore)
+        }
+        .sheet(item: $editingList) { list in
+            EditSharedWishlistView(list: list, sharedStore: sharedStore, itemStore: itemStore, wishlistGroupStore: wishlistGroupStore)
+        }
+        .sheet(isPresented: $showingProUpgrade) {
+            ProUpgradeView()
+        }
+        .customInputAlert(
+            isPresented: $showingImportAlert,
+            title: "导入好朋友的清单",
+            message: "请输入好朋友分享的清单 ID",
+            placeholder: "输入清单 ID",
+            text: $importGroupId,
+            confirmText: "导入",
+            onConfirm: {
+                importFriendWishlist()
+            }
+        )
+        .customInfoAlert(
+            isPresented: $showingImportError,
+            title: "导入失败",
+            message: importError ?? "未知错误"
+        )
+        .customInfoAlert(
+            isPresented: $showingImportSuccess,
+            title: "导入成功",
+            message: "已成功导入「\(importedListName)」"
+        )
+        .customInputAlert(
+            isPresented: $showingNicknameInput,
+            title: "在此心愿清单中，希望大家叫你什么？",
+            message: "这个名字会显示给清单中的其他小伙伴",
+            placeholder: "输入你的昵称",
+            text: $nicknameInput,
+            onConfirm: {
+                let nickname = nicknameInput.trimmingCharacters(in: .whitespaces)
+                guard !nickname.isEmpty, let docId = pendingDocId else { return }
+                var numberList = pendingNumberList
+                if let index = numberList.firstIndex(where: { $0["number_id"] == pendingUserId }) {
+                    numberList[index]["number_name"] = nickname
+                }
+                if let listId = pendingListId {
+                    sharedStore.setMyNickname(listId, nickname: nickname)
+                }
+                Task {
+                    guard let client = AuthManager.shared.getCloudBaseClient() else { return }
+                    let result = await client.callFunction(
+                        functionName: "update_sharewish",
+                        data: [
+                            "docId": docId,
+                            "modelName": "sharewish",
+                            "updateData": ["numbers": ["number_list": numberList]]
+                        ]
+                    )
+                    await MainActor.run {
+                        if result != nil {
+                            showingImportSuccess = true
+                        } else {
+                            importError = "云函数调用失败，请重试"
+                            showingImportError = true
+                        }
+                    }
+                }
+            }
+        )
+        .overlay {
+            if isImporting {
+                ZStack {
+                    Color.black.opacity(0.3).ignoresSafeArea()
+                    VStack(spacing: 12) {
+                        ProgressView()
+                            .controlSize(.large)
+                        Text("正在导入...")
+                            .font(.subheadline)
+                            .foregroundStyle(.white)
+                    }
+                    .padding(24)
+                    .background(RoundedRectangle(cornerRadius: 16).fill(.ultraThinMaterial))
+                }
+            }
+        }
+    }
+    
+    // MARK: - VIP 用户视图（正常共享清单）
+    
+    private var vipContentView: some View {
         List {
             // 导入好朋友清单 block
             Section {
@@ -66,7 +177,6 @@ struct SharedWishlistListView: View {
                         Button(role: .destructive) {
                             let wishGroupId = list.wishGroupId
                             sharedStore.delete(list)
-                            // 从 userinfo 的 share_wish_list 中移除
                             if let gid = wishGroupId {
                                 Task {
                                     if let client = AuthManager.shared.getCloudBaseClient() {
@@ -88,98 +198,37 @@ struct SharedWishlistListView: View {
                 }
             }
         }
-        .navigationTitle("共享清单")
-        .navigationBarTitleDisplayMode(.large)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button {
-                    showingCreate = true
-                } label: {
-                    Image(systemName: "plus")
-                }
+    }
+    
+    // MARK: - 非 VIP 用户视图（升级提示）
+    
+    private var nonVipView: some View {
+        VStack(spacing: 24) {
+            Spacer()
+            
+            ProBadge(fontSize: 28, paddingH: 20, paddingV: 8)
+            
+            Text("升级 Pro 版本，与好朋友们共享心愿")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            
+            Button {
+                showingProUpgrade = true
+            } label: {
+                Text("升级 Pro")
+                    .font(.headline)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 40)
+                    .padding(.vertical, 12)
+                    .background(Capsule().fill(.blue))
             }
+            
+            Spacer()
         }
-        .sheet(isPresented: $showingCreate) {
-            CreateSharedWishlistView(sharedStore: sharedStore, itemStore: itemStore, wishlistGroupStore: wishlistGroupStore)
-        }
-        .sheet(item: $editingList) { list in
-            EditSharedWishlistView(list: list, sharedStore: sharedStore, itemStore: itemStore, wishlistGroupStore: wishlistGroupStore)
-        }
-        .alert("导入好朋友的清单", isPresented: $showingImportAlert) {
-            TextField("输入清单 ID", text: $importGroupId)
-                .autocorrectionDisabled()
-            Button("取消", role: .cancel) { }
-            Button("导入") {
-                importFriendWishlist()
-            }
-            .disabled(importGroupId.trimmingCharacters(in: .whitespaces).isEmpty)
-        } message: {
-            Text("请输入好朋友分享的清单 ID")
-        }
-        .alert("导入失败", isPresented: $showingImportError) {
-            Button("好的") { }
-        } message: {
-            Text(importError ?? "未知错误")
-        }
-        .alert("导入成功", isPresented: $showingImportSuccess) {
-            Button("好的") { }
-        } message: {
-            Text("已成功导入「\(importedListName)」")
-        }
-        .alert("在此心愿清单中，希望大家叫你什么？", isPresented: $showingNicknameInput) {
-            TextField("输入你的昵称", text: $nicknameInput)
-                .autocorrectionDisabled()
-            Button("确定") {
-                let nickname = nicknameInput.trimmingCharacters(in: .whitespaces)
-                guard !nickname.isEmpty, let docId = pendingDocId else { return }
-                // 用用户填写的昵称替换 number_name
-                var numberList = pendingNumberList
-                if let index = numberList.firstIndex(where: { $0["number_id"] == pendingUserId }) {
-                    numberList[index]["number_name"] = nickname
-                }
-                // 将昵称保存到本地（与该共享清单关联）
-                if let importedList = sharedStore.lists.first(where: { $0.wishGroupId == importGroupId.trimmingCharacters(in: .whitespaces) }) {
-                    sharedStore.setMyNickname(importedList.id, nickname: nickname)
-                }
-                Task {
-                    guard let client = AuthManager.shared.getCloudBaseClient() else { return }
-                    let result = await client.callFunction(
-                        functionName: "update_sharewish",
-                        data: [
-                            "docId": docId,
-                            "modelName": "sharewish",
-                            "updateData": ["numbers": ["number_list": numberList]]
-                        ]
-                    )
-                    await MainActor.run {
-                        if result != nil {
-                            showingImportSuccess = true
-                        } else {
-                            importError = "云函数调用失败，请重试"
-                            showingImportError = true
-                        }
-                    }
-                }
-            }
-        } message: {
-            Text("这个名字会显示给清单中的其他小伙伴")
-        }
-        .overlay {
-            if isImporting {
-                ZStack {
-                    Color.black.opacity(0.3).ignoresSafeArea()
-                    VStack(spacing: 12) {
-                        ProgressView()
-                            .controlSize(.large)
-                        Text("正在导入...")
-                            .font(.subheadline)
-                            .foregroundStyle(.white)
-                    }
-                    .padding(24)
-                    .background(RoundedRectangle(cornerRadius: 16).fill(.ultraThinMaterial))
-                }
-            }
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemGroupedBackground))
     }
     
     private func importFriendWishlist() {
@@ -251,6 +300,7 @@ struct SharedWishlistListView: View {
                 
                 // 暂存数据，弹出昵称输入框
                 let currentUserId = TokenStorage.shared.getSub() ?? ""
+                pendingListId = newList.id
                 if let docId = record._id {
                     var numberList: [[String: String]] = record.numbers?.number_list?.map { item in
                         ["number_name": item.number_name ?? "", "number_id": item.number_id ?? ""]
@@ -756,19 +806,18 @@ struct SharedWishlistDetailView: View {
         }
         .navigationTitle(currentList.name)
         .navigationBarTitleDisplayMode(.inline)
-        .alert(
-            currentList.isOwner ? "确认移除清单？" : "确认退出分享？",
-            isPresented: $showingDeleteAlert
-        ) {
-            Button("取消", role: .cancel) { }
-            Button(currentList.isOwner ? "移除" : "退出", role: .destructive) {
+        .customConfirmAlert(
+            isPresented: $showingDeleteAlert,
+            title: currentList.isOwner ? "确认移除清单？" : "确认退出分享？",
+            message: currentList.isOwner
+                ? "移除后将同时删除远端数据，此操作不可撤销"
+                : "退出后将从本地移除该清单，远端数据不受影响",
+            confirmText: currentList.isOwner ? "移除" : "退出",
+            isDestructive: true,
+            onConfirm: {
                 performDelete()
             }
-        } message: {
-            Text(currentList.isOwner
-                 ? "移除后将同时删除远端数据，此操作不可撤销"
-                 : "退出后将从本地移除该清单，远端数据不受影响")
-        }
+        )
         .onAppear {
             let l = currentList
             
@@ -804,17 +853,19 @@ struct SharedWishlistDetailView: View {
                 sharedStore: sharedStore
             )
         }
-        .alert("在此心愿清单中，希望大家叫你什么？", isPresented: $showingSyncNicknameInput) {
-            TextField("输入你的昵称", text: $syncNicknameInput)
-                .autocorrectionDisabled()
-            Button("确定") {
+        .customInputAlert(
+            isPresented: $showingSyncNicknameInput,
+            title: "在此心愿清单中，希望大家叫你什么？",
+            message: "这个名字会显示给清单中的其他小伙伴",
+            placeholder: "输入你的昵称",
+            text: $syncNicknameInput,
+            onConfirm: {
                 let nickname = syncNicknameInput.trimmingCharacters(in: .whitespaces)
                 guard !nickname.isEmpty, let docId = syncPendingDocId else { return }
                 var numberList = syncPendingNumberList
                 if let index = numberList.firstIndex(where: { $0["number_id"] == syncPendingUserId }) {
                     numberList[index]["number_name"] = nickname
                 }
-                // 将昵称保存到本地
                 sharedStore.setMyNickname(currentList.id, nickname: nickname)
                 Task {
                     guard let client = AuthManager.shared.getCloudBaseClient() else { return }
@@ -831,21 +882,20 @@ struct SharedWishlistDetailView: View {
                     }
                 }
             }
-            Button("取消", role: .cancel) { }
-        } message: {
-            Text("这个名字会显示给清单中的其他小伙伴")
-        }
-        .alert("修改我在清单中的名字", isPresented: $showingEditNickname) {
-            TextField("输入新的昵称", text: $editNicknameInput)
-                .autocorrectionDisabled()
-            Button("确定") {
+        )
+        .customInputAlert(
+            isPresented: $showingEditNickname,
+            title: "修改我在清单中的名字",
+            message: "修改后其他小伙伴会看到你的新名字",
+            placeholder: "输入新的昵称",
+            text: $editNicknameInput,
+            onConfirm: {
                 let nickname = editNicknameInput.trimmingCharacters(in: .whitespaces)
                 guard !nickname.isEmpty, let docId = editPendingDocId else { return }
                 var numberList = editPendingNumberList
                 if let index = numberList.firstIndex(where: { $0["number_id"] == editPendingUserId }) {
                     numberList[index]["number_name"] = nickname
                 }
-                // 将昵称保存到本地
                 sharedStore.setMyNickname(currentList.id, nickname: nickname)
                 Task {
                     guard let client = AuthManager.shared.getCloudBaseClient() else { return }
@@ -862,10 +912,7 @@ struct SharedWishlistDetailView: View {
                     }
                 }
             }
-            Button("取消", role: .cancel) { }
-        } message: {
-            Text("修改后其他小伙伴会看到你的新名字")
-        }
+        )
     }
     
     private func performDelete() {
@@ -1070,10 +1117,18 @@ struct SharedWishlistDetailView: View {
                 let latestResponse = await client.fetchSharedWishlistByGroupId(wishGroupId: wishGroupId)
                 if let record = latestResponse?.data?.records?.first, let docId = record._id {
                     // 确保自己在 number_list 中
-                    if !currentUserId.isEmpty, let nickname = savedNickname, !nickname.isEmpty {
-                        let numberList = record.numbers?.number_list ?? []
+                    let numberList = record.numbers?.number_list ?? []
+                    if !currentUserId.isEmpty {
                         let isMember = numberList.contains { $0.number_id == currentUserId }
-                        if !isMember {
+                        if isMember {
+                            // 已在列表中，从远端提取自己的昵称确保本地 myNickname 最新
+                            if let myEntry = numberList.first(where: { $0.number_id == currentUserId }),
+                               let remoteName = myEntry.number_name, !remoteName.isEmpty {
+                                await MainActor.run {
+                                    sharedStore.setMyNickname(listId, nickname: remoteName)
+                                }
+                            }
+                        } else if let nickname = savedNickname, !nickname.isEmpty {
                             var newNumberList: [[String: String]] = numberList.map { item in
                                 ["number_name": item.number_name ?? "", "number_id": item.number_id ?? ""]
                             }
@@ -1205,7 +1260,15 @@ struct SharedWishlistDetailView: View {
                     if let docId = record._id, !currentUserId.isEmpty {
                         let numberList = record.numbers?.number_list ?? []
                         let isMember = numberList.contains { $0.number_id == currentUserId }
-                        if !isMember {
+                        if isMember {
+                            // 已在列表中，从远端 number_list 提取自己的昵称，确保本地 myNickname 是最新的
+                            if let myEntry = numberList.first(where: { $0.number_id == currentUserId }),
+                               let remoteName = myEntry.number_name, !remoteName.isEmpty {
+                                await MainActor.run {
+                                    sharedStore.setMyNickname(listId, nickname: remoteName)
+                                }
+                            }
+                        } else {
                             var newNumberList: [[String: String]] = numberList.map { item in
                                 ["number_name": item.number_name ?? "", "number_id": item.number_id ?? ""]
                             }
@@ -1720,9 +1783,9 @@ struct EditSharedWishItemView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     CartoonSectionHeader(emoji: "📝", title: "基本信息", color: Color(red: 0.3, green: 0.5, blue: 0.8))
                     
-                    CartoonTextField(placeholder: "给心愿起个名字吧~", text: $name, leadingIcon: "✏️")
+                    CartoonTextField(placeholder: "心愿名字", text: $name, leadingIcon: "✏️")
                     
-                    CartoonTextField(placeholder: "大概要花多少钱？", text: $priceText, keyboardType: .decimalPad, leadingIcon: "💰")
+                    CartoonTextField(placeholder: "价格", text: $priceText, keyboardType: .decimalPad, leadingIcon: "💰")
                 }
                 .cartoonCard()
                 

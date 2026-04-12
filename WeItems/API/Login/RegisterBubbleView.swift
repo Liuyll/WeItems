@@ -280,11 +280,11 @@ struct RegisterBubbleView: View {
                 }
             }
         }
-        .alert("提示", isPresented: $showingError) {
-            Button("确定", role: .cancel) {}
-        } message: {
-            Text(errorMessage ?? "")
-        }
+        .customInfoAlert(
+            isPresented: $showingError,
+            title: "提示",
+            message: errorMessage ?? ""
+        )
         .onDisappear {
             timer?.invalidate()
         }

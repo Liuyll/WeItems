@@ -72,6 +72,21 @@ enum IncomePeriod: String, Codable, CaseIterable {
     case savings = "储蓄"
 }
 
+/// 负债类型
+enum DebtType: String, Codable, CaseIterable {
+    case mortgage = "房贷"
+    case carLoan = "车贷"
+    case creditCard = "信用卡"
+    case otherLoan = "其他借款"
+}
+
+/// 还款方式
+enum RepaymentType: String, Codable, CaseIterable {
+    case standard = "默认"         // 每期本金+固定手续费
+    case equalPrincipal = "等额本金"  // 每月本金固定，利息递减
+    case equalInstallment = "等额本息" // 每月还款固定
+}
+
 /// 基本工资条目（支持多项，考虑涨薪/换工作）
 struct SalaryBaseItem: Identifiable, Codable {
     let id: UUID
@@ -213,8 +228,9 @@ struct SalaryBreakdown: Codable {
     var medicalRate: Double                // 医疗保险比例(%)
     var unemploymentRate: Double           // 失业保险比例(%)
     var housingFundRate: Double            // 住房公积金比例(%)
+    var payDay: Int                        // 每月发薪日（1-31，默认10号）
     
-    init(salaryBaseItems: [SalaryBaseItem] = [], equityItems: [EquityItem] = [], bonusItems: [BonusItem] = [], otherIncomeItems: [OtherIncomeItem] = [], annualTax: Double = 0, autoCalculateTax: Bool = false, socialInsurance: Double = 0, specialDeduction: Double = 0, pensionRate: Double = 8, medicalRate: Double = 2, unemploymentRate: Double = 0.2, housingFundRate: Double = 5) {
+    init(salaryBaseItems: [SalaryBaseItem] = [], equityItems: [EquityItem] = [], bonusItems: [BonusItem] = [], otherIncomeItems: [OtherIncomeItem] = [], annualTax: Double = 0, autoCalculateTax: Bool = false, socialInsurance: Double = 0, specialDeduction: Double = 0, pensionRate: Double = 8, medicalRate: Double = 2, unemploymentRate: Double = 0.2, housingFundRate: Double = 5, payDay: Int = 10) {
         self.salaryBaseItems = salaryBaseItems
         self.equityItems = equityItems
         self.bonusItems = bonusItems
@@ -227,6 +243,7 @@ struct SalaryBreakdown: Codable {
         self.medicalRate = medicalRate
         self.unemploymentRate = unemploymentRate
         self.housingFundRate = housingFundRate
+        self.payDay = payDay
     }
     
     /// 当前生效的月基本工资
@@ -442,12 +459,16 @@ struct FinanceRecord: Identifiable, Codable {
     // 收入相关
     var incomePeriod: IncomePeriod?      // 收入类型
     var salaryBreakdown: SalaryBreakdown? // 结构性收入明细（工资类型专用）
+    var countAsIncome: Bool?             // 是否计入收入（nil 视为旧数据默认行为）
     
     // 负债相关
+    var debtType: DebtType?              // 贷款类型
+    var repaymentType: RepaymentType?    // 还款方式
     var loanMonths: Int?                 // 贷款总月数
     var monthlyPayment: Double?          // 每月还款额
     var loanRate: Double?                // 每期利率(%)
     var loanStartDate: Date?             // 贷款起始日期
+    var repayDay: Int?                   // 每月还款日（1-31）
     
     // 投资相关
     var expectedReturn: Double?          // 预期年化收益率(%)
@@ -455,8 +476,8 @@ struct FinanceRecord: Identifiable, Codable {
     
     init(id: UUID = UUID(), title: String, amount: Double, type: FinanceType,
          category: String = "", date: Date = Date(), note: String = "",
-         incomePeriod: IncomePeriod? = nil, salaryBreakdown: SalaryBreakdown? = nil,
-         loanMonths: Int? = nil, monthlyPayment: Double? = nil, loanRate: Double? = nil, loanStartDate: Date? = nil,
+         incomePeriod: IncomePeriod? = nil, salaryBreakdown: SalaryBreakdown? = nil, countAsIncome: Bool? = nil,
+         debtType: DebtType? = nil, repaymentType: RepaymentType? = nil, loanMonths: Int? = nil, monthlyPayment: Double? = nil, loanRate: Double? = nil, loanStartDate: Date? = nil, repayDay: Int? = nil,
          expectedReturn: Double? = nil, investmentPlatform: String? = nil) {
         self.id = id
         self.title = title
@@ -467,10 +488,14 @@ struct FinanceRecord: Identifiable, Codable {
         self.note = note
         self.incomePeriod = incomePeriod
         self.salaryBreakdown = salaryBreakdown
+        self.countAsIncome = countAsIncome
+        self.debtType = debtType
+        self.repaymentType = repaymentType
         self.loanMonths = loanMonths
         self.monthlyPayment = monthlyPayment
         self.loanRate = loanRate
         self.loanStartDate = loanStartDate
+        self.repayDay = repayDay
         self.expectedReturn = expectedReturn
         self.investmentPlatform = investmentPlatform
     }
@@ -525,15 +550,22 @@ class FinanceStore: ObservableObject {
     @Published var savingsGoal: SavingsGoal = SavingsGoal()
     @Published var totalAssets: Double = 0
     
-    private let recordsFileURL: URL
-    private let goalFileURL: URL
-    private let assetsFileURL: URL
+    private var recordsFileURL: URL {
+        UserStorageHelper.shared.currentUserDirectory.appendingPathComponent("finance_records.json")
+    }
+    private var goalFileURL: URL {
+        UserStorageHelper.shared.currentUserDirectory.appendingPathComponent("savings_goal.json")
+    }
+    private var assetsFileURL: URL {
+        UserStorageHelper.shared.currentUserDirectory.appendingPathComponent("total_assets.json")
+    }
     
     init() {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        recordsFileURL = docs.appendingPathComponent("finance_records.json")
-        goalFileURL = docs.appendingPathComponent("savings_goal.json")
-        assetsFileURL = docs.appendingPathComponent("total_assets.json")
+        loadAll()
+    }
+    
+    /// 用户切换后重新加载数据
+    func reloadForCurrentUser() {
         loadAll()
     }
     
@@ -648,8 +680,8 @@ class FinanceStore: ObservableObject {
                 }
                 
             case .oneTime, .savings:
-                // 一次性收入/储蓄：按记录日期
-                if record.date >= startDate && record.date <= endDate {
+                // 一次性收入/储蓄：仅 countAsIncome 为 true 时计入收入
+                if record.countAsIncome == true, record.date >= startDate && record.date <= endDate {
                     total += record.amount
                 }
                 
@@ -677,6 +709,20 @@ class FinanceStore: ObservableObject {
         var total: Double = 0
         for m in 0..<12 {
             guard let mStart = calendar.date(byAdding: .month, value: m, to: yearStart) else { continue }
+            guard let mEnd = calendar.date(byAdding: DateComponents(month: 1, second: -1), to: mStart) else { continue }
+            total += totalIncome(from: mStart, to: mEnd)
+        }
+        return total
+    }
+    
+    /// 从当前往前数12个月的总收入
+    func trailing12MonthsIncome() -> Double {
+        let calendar = Calendar.current
+        let now = Date()
+        let curMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: now))!
+        var total: Double = 0
+        for i in 0..<12 {
+            guard let mStart = calendar.date(byAdding: .month, value: -i, to: curMonth) else { continue }
             guard let mEnd = calendar.date(byAdding: DateComponents(month: 1, second: -1), to: mStart) else { continue }
             total += totalIncome(from: mStart, to: mEnd)
         }
@@ -794,7 +840,8 @@ class FinanceStore: ObservableObject {
     /// 目标达成预估时间（月）- 根据收入情况
     func estimatedMonthsToGoal(itemsTotalPrice: Double = 0, outlook: IncomeOutlook = .fluctuating) -> Int? {
         guard savingsGoal.targetAmount > 0 else { return nil }
-        let remaining = savingsGoal.targetAmount - calculatedTotalAssets(itemsTotalPrice: itemsTotalPrice)
+        let currentAssets = totalSavingsAmount + totalInvestmentAmount + itemsTotalPrice
+        let remaining = savingsGoal.targetAmount - currentAssets
         guard remaining > 0 else { return 0 }
         
         let monthlyNet: Double
@@ -822,8 +869,7 @@ class FinanceStore: ObservableObject {
             guard let mStart = calendar.date(byAdding: .month, value: -i, to: currentMonthStart) else { continue }
             guard let mEnd = calendar.date(byAdding: DateComponents(month: 1, second: -1), to: mStart) else { continue }
             let income = totalIncome(from: mStart, to: mEnd)
-            let debt = totalDebt(from: mStart, to: mEnd)
-            monthlyNets.append(income - debt)
+            monthlyNets.append(income)
         }
         
         // 从第一个有收入的月份开始
@@ -867,9 +913,8 @@ class FinanceStore: ObservableObject {
             }
         }
         
-        let monthlyDebt = monthlyRecurringDebt
         let investmentMonthlyReturn = totalInvestmentAmount * (weightedAverageReturn / 100.0) / 12.0
-        return monthlyIncome - monthlyDebt + investmentMonthlyReturn
+        return monthlyIncome + investmentMonthlyReturn
     }
     
     /// 悲观：中位数月工资 + 最低3次年终奖均值/12 + 最低2次长期激励均值/12 + 投资回报/2
@@ -905,10 +950,9 @@ class FinanceStore: ObservableObject {
             }
         }
         
-        let monthlyDebt = monthlyRecurringDebt
         // 投资回报率减半
         let investmentMonthlyReturn = totalInvestmentAmount * (weightedAverageReturn / 100.0 / 2.0) / 12.0
-        return monthlyIncome - monthlyDebt + investmentMonthlyReturn
+        return monthlyIncome + investmentMonthlyReturn
     }
     
     /// 近 6 个月图表数据
@@ -1178,6 +1222,8 @@ struct DailyExpenseView: View {
     @State private var showingEditGoal = false
     @State private var showingFullTrend = false
     @State private var showingSalaryConfig = false
+    @State private var showingSavingsConfig = false
+    @State private var showingAssetDetail = false
     @State private var selectedRecord: FinanceRecord? = nil
     @State private var periodMode: PeriodMode = .year
     @State private var showCurrentMonthIncome = false
@@ -1202,7 +1248,7 @@ struct DailyExpenseView: View {
             }
             return financeStore.averageMonthlyIncome()
         } else {
-            return financeStore.totalIncomeForYear()
+            return financeStore.trailing12MonthsIncome()
         }
     }
     
@@ -1216,9 +1262,9 @@ struct DailyExpenseView: View {
         return financeStore.totalInvestment(from: range.start, to: range.end)
     }
     
-    /// 我的物品总价（非归档）
+    /// 我的物品总价（非归档、非无价之物）
     private var itemsTotalPrice: Double {
-        store.items.filter { $0.listType == .items && !$0.isArchived }.reduce(0) { $0 + $1.price }
+        store.items.filter { $0.listType == .items && !$0.isArchived && !$0.isPriceless }.reduce(0) { $0 + $1.price }
     }
     
     var body: some View {
@@ -1251,6 +1297,12 @@ struct DailyExpenseView: View {
         .sheet(isPresented: $showingSalaryConfig) {
             SalaryConfigView(financeStore: financeStore)
         }
+        .sheet(isPresented: $showingSavingsConfig) {
+            SavingsConfigView(financeStore: financeStore)
+        }
+        .sheet(isPresented: $showingAssetDetail) {
+            AssetDetailView(financeStore: financeStore, store: store, selectedRecord: $selectedRecord)
+        }
     }
     
     // MARK: - 总资产卡片
@@ -1264,19 +1316,16 @@ struct DailyExpenseView: View {
                 Text("¥\(financeStore.calculatedTotalAssets(itemsTotalPrice: itemsTotalPrice), specifier: "%.2f")")
                     .font(.system(size: 32, weight: .bold, design: .rounded))
                     .foregroundStyle(.orange)
-                Text("储蓄 + 投资 + 物品 - 负债")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             
             // 快速统计行
             HStack(spacing: 0) {
-                miniStatItem(title: "月净收入", value: financeStore.monthlyNetIncome, color: financeStore.monthlyNetIncome >= 0 ? .green : .red)
-                Divider().frame(height: 30)
-                miniStatItem(title: "投资总额", value: financeStore.totalInvestmentAmount, color: .blue)
+                miniStatItem(title: "总资产价值", value: financeStore.totalSavingsAmount + financeStore.totalInvestmentAmount + itemsTotalPrice, color: .orange)
                 Divider().frame(height: 30)
                 miniStatItem(title: "剩余负债", value: financeStore.totalRemainingDebt, color: .red)
+                Divider().frame(height: 30)
+                miniStatItem(title: "年度收入", value: financeStore.trailing12MonthsIncome(), color: .green)
             }
         }
         .padding(16)
@@ -1305,6 +1354,11 @@ struct DailyExpenseView: View {
     
     // MARK: - 收入/负债/投资概览
     
+    /// 大件物品总价
+    private var largeItemsTotalPrice: Double {
+        store.items.filter { $0.listType == .items && !$0.isArchived && $0.isLargeItem && !$0.isPriceless }.reduce(0) { $0 + $1.price }
+    }
+    
     private var incomeDebtOverview: some View {
         VStack(spacing: 12) {
             HStack {
@@ -1312,38 +1366,67 @@ struct DailyExpenseView: View {
                     .font(.headline)
                     .foregroundStyle(.primary)
                 Spacer()
-                Picker("", selection: $periodMode) {
-                    ForEach(PeriodMode.allCases, id: \.self) { mode in
-                        Text(mode.rawValue).tag(mode)
+                Button {
+                    showingAssetDetail = true
+                } label: {
+                    HStack(spacing: 2) {
+                        Text("资产详情")
+                            .font(.caption)
+                        Image(systemName: "chevron.right")
+                            .font(.caption2)
                     }
+                    .foregroundStyle(.orange)
                 }
-                .pickerStyle(.segmented)
-                .frame(width: 130)
             }
             
             HStack(spacing: 8) {
                 overviewTile(
-                    icon: "arrow.up.circle.fill",
-                    label: periodMode == .month ? (showCurrentMonthIncome ? "本月收入" : "月均收入") : "年度收入",
-                    amount: incomeAmount,
+                    icon: "banknote.fill",
+                    label: "储蓄金额",
+                    amount: financeStore.totalSavingsAmount,
                     color: .green
                 )
-                .onTapGesture {
-                    if periodMode == .month {
-                        withAnimation { showCurrentMonthIncome.toggle() }
-                    }
-                }
+                .onTapGesture { showingSavingsConfig = true }
                 overviewTile(
-                    icon: "arrow.down.circle.fill",
-                    label: "\(periodMode.rawValue)负债",
-                    amount: debtAmount,
-                    color: .red
+                    icon: "house.fill",
+                    label: "大件价值",
+                    amount: largeItemsTotalPrice,
+                    color: .orange
                 )
                 overviewTile(
                     icon: "chart.line.uptrend.xyaxis.circle.fill",
-                    label: "\(periodMode.rawValue)投资",
-                    amount: investmentAmount,
+                    label: "投资价值",
+                    amount: financeStore.totalInvestmentAmount,
                     color: .blue
+                )
+            }
+            
+            // 管理储蓄入口
+            Button {
+                showingSavingsConfig = true
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "banknote.fill")
+                        .font(.title3)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("管理储蓄")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                        Text(financeStore.totalSavingsAmount > 0 ? "储蓄总额 ¥\(financeStore.totalSavingsAmount, specifier: "%.0f")" : "添加定期存款、银行储蓄等")
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.8))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                }
+                .foregroundStyle(.white)
+                .padding(12)
+                .background(
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(.green.gradient)
                 )
             }
         }
@@ -1387,67 +1470,157 @@ struct DailyExpenseView: View {
                     .font(.headline)
                 Spacer()
                 if financeStore.salaryRecord != nil {
+                    Picker("", selection: $periodMode) {
+                        ForEach(PeriodMode.allCases, id: \.self) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 130)
                     Button {
                         showingSalaryConfig = true
                     } label: {
-                        HStack(spacing: 2) {
-                            Text("编辑工资")
-                                .font(.caption)
-                            Image(systemName: "chevron.right")
-                                .font(.caption2)
-                        }
-                        .foregroundStyle(.orange)
+                        Image(systemName: "chevron.right")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
                     }
                 }
             }
             
             if let record = financeStore.salaryRecord, let bd = record.salaryBreakdown {
-                // 已配置工资 - 展示摘要
+                // 收入/负债/投资概览
+                if periodMode == .month {
+                HStack(spacing: 8) {
+                    overviewTile(
+                        icon: "arrow.up.circle.fill",
+                        label: showCurrentMonthIncome ? "本月收入" : "月均收入",
+                        amount: incomeAmount,
+                        color: .green
+                    )
+                    .onTapGesture {
+                        withAnimation { showCurrentMonthIncome.toggle() }
+                    }
+                    overviewTile(
+                        icon: "arrow.down.circle.fill",
+                        label: "月度负债",
+                        amount: debtAmount,
+                        color: .red
+                    )
+                    overviewTile(
+                        icon: "chart.line.uptrend.xyaxis.circle.fill",
+                        label: "月度投资",
+                        amount: investmentAmount,
+                        color: .blue
+                    )
+                }
+            } else {
+                let annualSalary = bd.currentMonthlyBase
+                let annualIncentive = bd.equityItems.reduce(0.0) { $0 + $1.perVestingAmount * (12.0 / max(Double($1.vestingMonths), 1)) }
+                
+                HStack(spacing: 8) {
+                    overviewTile(
+                        icon: "arrow.up.circle.fill",
+                        label: "全年收入",
+                        amount: incomeAmount,
+                        color: .green
+                    )
+                    overviewTile(
+                        icon: "briefcase.fill",
+                        label: "全年工资",
+                        amount: annualSalary * 12,
+                        color: .primary
+                    )
+                    overviewTile(
+                        icon: "star.fill",
+                        label: "长期激励",
+                        amount: annualIncentive,
+                        color: .purple
+                    )
+                }
+            }
+            
+                // 已配置工资 - 根据模式展示摘要
                 let gross = bd.totalMonthlyGross
                 let net = bd.totalMonthlyIncome
                 let social = bd.socialInsurance
                 let tax = bd.effectiveAnnualTax
                 
                 HStack(spacing: 8) {
-                    VStack(spacing: 4) {
-                        Text("月税前")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        Text("¥\(gross, specifier: "%.0f")")
-                            .font(.system(size: 15, weight: .bold, design: .rounded))
-                            .foregroundStyle(.primary)
+                    if periodMode == .month {
+                        VStack(spacing: 4) {
+                            Text("月税前")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Text("¥\(gross, specifier: "%.0f")")
+                                .font(.system(size: 15, weight: .bold, design: .rounded))
+                                .foregroundStyle(.primary)
+                        }
+                        .frame(maxWidth: .infinity)
+                        
+                        VStack(spacing: 4) {
+                            Text("月社保")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Text("¥\(social, specifier: "%.0f")")
+                                .font(.system(size: 15, weight: .bold, design: .rounded))
+                                .foregroundStyle(.orange)
+                        }
+                        .frame(maxWidth: .infinity)
+                        
+                        VStack(spacing: 4) {
+                            Text("月净收入")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Text("¥\(net, specifier: "%.0f")")
+                                .font(.system(size: 15, weight: .bold, design: .rounded))
+                                .foregroundStyle(.green)
+                        }
+                        .frame(maxWidth: .infinity)
+                    } else {
+                        VStack(spacing: 4) {
+                            Text("年税前")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Text("¥\(gross * 12, specifier: "%.0f")")
+                                .font(.system(size: 15, weight: .bold, design: .rounded))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1).minimumScaleFactor(0.6)
+                        }
+                        .frame(maxWidth: .infinity)
+                        
+                        VStack(spacing: 4) {
+                            Text("年个税")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Text("¥\(tax, specifier: "%.0f")")
+                                .font(.system(size: 15, weight: .bold, design: .rounded))
+                                .foregroundStyle(.red)
+                                .lineLimit(1).minimumScaleFactor(0.6)
+                        }
+                        .frame(maxWidth: .infinity)
+                        
+                        VStack(spacing: 4) {
+                            Text("年社保")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Text("¥\(social * 12, specifier: "%.0f")")
+                                .font(.system(size: 15, weight: .bold, design: .rounded))
+                                .foregroundStyle(.orange)
+                                .lineLimit(1).minimumScaleFactor(0.6)
+                        }
+                        .frame(maxWidth: .infinity)
+                        
+                        VStack(spacing: 4) {
+                            Text("年净收入")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Text("¥\(net * 12, specifier: "%.0f")")
+                                .font(.system(size: 15, weight: .bold, design: .rounded))
+                                .foregroundStyle(.green)
+                                .lineLimit(1).minimumScaleFactor(0.6)
+                        }
+                        .frame(maxWidth: .infinity)
                     }
-                    .frame(maxWidth: .infinity)
-                    
-                    VStack(spacing: 4) {
-                        Text("月社保")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        Text("¥\(social, specifier: "%.0f")")
-                            .font(.system(size: 15, weight: .bold, design: .rounded))
-                            .foregroundStyle(.orange)
-                    }
-                    .frame(maxWidth: .infinity)
-                    
-                    VStack(spacing: 4) {
-                        Text("月均税")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        Text("¥\(tax / 12, specifier: "%.0f")")
-                            .font(.system(size: 15, weight: .bold, design: .rounded))
-                            .foregroundStyle(.red)
-                    }
-                    .frame(maxWidth: .infinity)
-                    
-                    VStack(spacing: 4) {
-                        Text("月净收入")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        Text("¥\(net, specifier: "%.0f")")
-                            .font(.system(size: 15, weight: .bold, design: .rounded))
-                            .foregroundStyle(.green)
-                    }
-                    .frame(maxWidth: .infinity)
                 }
                 .padding(.vertical, 8)
                 .background(
@@ -1469,6 +1642,8 @@ struct DailyExpenseView: View {
                             Text("设置基本工资、长期激励、年终奖等，自动计算个税")
                                 .font(.caption)
                                 .foregroundStyle(.white.opacity(0.8))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.7)
                         }
                         Spacer()
                         Image(systemName: "chevron.right")
@@ -1582,34 +1757,39 @@ struct DailyExpenseView: View {
         VStack(spacing: 8) {
             Image(systemName: "chart.bar.xaxis")
                 .font(.largeTitle)
-                .foregroundStyle(.tertiary)
-            Text("暂无数据，添加记录后展示趋势图")
-                .font(.subheadline)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.white.opacity(0.9))
+            Text("添加记录后展示趋势图")
+                .font(.system(.subheadline, design: .rounded))
+                .fontWeight(.semibold)
+                .foregroundStyle(.white.opacity(0.9))
         }
         .frame(maxWidth: .infinity)
         .frame(height: 150)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(.blue.opacity(0.6))
+        )
     }
     
     // MARK: - 目标达成预估
     
     private var goalEstimateCard: some View {
         VStack(spacing: 12) {
-            HStack {
-                Text(financeStore.savingsGoal.name)
-                    .font(.headline)
-                Spacer()
-                Button {
-                    showingEditGoal = true
-                } label: {
-                    Image(systemName: "gearshape.circle.fill")
-                        .font(.title2)
-                        .foregroundStyle(.orange.opacity(0.7))
-                }
-            }
-            
             if financeStore.savingsGoal.targetAmount > 0 {
-                let progress = min(financeStore.calculatedTotalAssets(itemsTotalPrice: itemsTotalPrice) / financeStore.savingsGoal.targetAmount, 1.0)
+                HStack {
+                    Text(financeStore.savingsGoal.name)
+                        .font(.headline)
+                    Spacer()
+                    Button {
+                        showingEditGoal = true
+                    } label: {
+                        Image(systemName: "gearshape.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(.orange.opacity(0.7))
+                    }
+                }
+                
+                let progress = min((financeStore.totalSavingsAmount + financeStore.totalInvestmentAmount) / financeStore.savingsGoal.targetAmount, 1.0)
                 
                 Text("目标：¥\(financeStore.savingsGoal.targetAmount, specifier: "%.2f")")
                     .font(.subheadline)
@@ -1626,7 +1806,7 @@ struct DailyExpenseView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    if let months = financeStore.estimatedMonthsToGoal(itemsTotalPrice: itemsTotalPrice, outlook: incomeOutlook) {
+                    if let months = financeStore.estimatedMonthsToGoal(itemsTotalPrice: 0, outlook: incomeOutlook) {
                         if months == 0 {
                             Text("🎉 目标已达成！")
                                 .font(.caption)
@@ -1652,9 +1832,20 @@ struct DailyExpenseView: View {
                     }
                 }
             } else {
-                Text("尚未设定目标金额")
-                    .font(.subheadline)
-                    .foregroundStyle(.tertiary)
+                Button {
+                    showingEditGoal = true
+                } label: {
+                    Text("添加财务自由目标")
+                        .font(.system(.subheadline, design: .rounded))
+                        .fontWeight(.semibold)
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 20)
+                    .background(
+                        RoundedRectangle(cornerRadius: 14)
+                            .fill(.green.opacity(0.6))
+                    )
+                }
             }
         }
         .padding(16)
@@ -1664,42 +1855,270 @@ struct DailyExpenseView: View {
         )
     }
     
-    // MARK: - 最近记录
+    // MARK: - 近期财务事件
     
-    private var recentRecordsCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("最近记录")
-                    .font(.headline)
-                Spacer()
+    /// 财务事件类型
+    private enum FinanceEventType {
+        case salary       // 工资发放
+        case debt         // 负债扣款
+        case equity       // 长期激励归属
+        case unrealized   // 未归属收入归属
+        case bonus        // 年终奖发放
+        
+        var icon: String {
+            switch self {
+            case .salary: return "yensign.circle.fill"
+            case .debt: return "creditcard.fill"
+            case .equity: return "star.circle.fill"
+            case .unrealized: return "clock.arrow.circlepath"
+            case .bonus: return "gift.fill"
             }
+        }
+        
+        var color: Color {
+            switch self {
+            case .salary: return .green
+            case .debt: return .red
+            case .equity: return .purple
+            case .unrealized: return .orange
+            case .bonus: return .yellow
+            }
+        }
+        
+        var label: String {
+            switch self {
+            case .salary: return "工资发放"
+            case .debt: return "负债扣款"
+            case .equity: return "激励归属"
+            case .unrealized: return "收入归属"
+            case .bonus: return "年终奖"
+            }
+        }
+    }
+    
+    /// 财务事件
+    private struct FinanceEvent: Identifiable {
+        let id = UUID()
+        let date: Date
+        let type: FinanceEventType
+        let title: String
+        let amount: Double
+        let isPast: Bool
+    }
+    
+    /// 生成近期财务事件（过去6个月 + 未来1个月）
+    private var recentFinanceEvents: [FinanceEvent] {
+        let calendar = Calendar.current
+        let now = Date()
+        let today = calendar.startOfDay(for: now)
+        guard let sixMonthsAgo = calendar.date(byAdding: .month, value: -6, to: today),
+              let oneMonthLater = calendar.date(byAdding: .month, value: 1, to: today) else {
+            return []
+        }
+        
+        /// 生成指定日（day）在某月的日期，超出天数则取月末
+        func dateForDay(_ day: Int, inMonthOf base: Date) -> Date {
+            var comp = calendar.dateComponents([.year, .month], from: base)
+            let range = calendar.range(of: .day, in: .month, for: base)!
+            comp.day = min(day, range.upperBound - 1)
+            return calendar.date(from: comp) ?? base
+        }
+        
+        var events: [FinanceEvent] = []
+        let currentMonthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: now))!
+        
+        // 获取工资配置
+        if let salaryRecord = financeStore.salaryRecord,
+           let bd = salaryRecord.salaryBreakdown {
             
-            if financeStore.records.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "tray")
-                        .font(.largeTitle)
-                        .foregroundStyle(.tertiary)
-                    Text("还没有记录，点击添加")
-                        .font(.subheadline)
-                        .foregroundStyle(.tertiary)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 20)
-            } else {
-                ForEach(financeStore.records.prefix(15)) { record in
-                    recordRow(record)
-                    
-                    if record.id != financeStore.records.prefix(15).last?.id {
-                        Divider()
+            let payDay = bd.payDay
+            
+            // 1. 工资发放：使用实际发薪日
+            let activeSalary = bd.salaryBaseItems.filter { $0.isActive(at: now) }
+            if !activeSalary.isEmpty {
+                let monthlyBase = activeSalary.reduce(0) { $0 + $1.amount }
+                for offset in -6...1 {
+                    guard let monthBase = calendar.date(byAdding: .month, value: offset, to: currentMonthStart) else { continue }
+                    let payDate = dateForDay(payDay, inMonthOf: monthBase)
+                    if payDate >= sixMonthsAgo && payDate <= oneMonthLater {
+                        events.append(FinanceEvent(
+                            date: payDate,
+                            type: .salary,
+                            title: "月薪发放",
+                            amount: monthlyBase,
+                            isPast: payDate < today
+                        ))
                     }
                 }
             }
+            
+            // 2. 长期激励归属
+            for equity in bd.equityItems where equity.perVestingAmount > 0 {
+                guard let firstVesting = equity.vestingDate else { continue }
+                let vestingMonths = max(equity.vestingMonths, 1)
+                
+                let maxIterations = equity.isLongTermVesting ? 100 : (equity.vestingCount ?? 0)
+                for i in 0..<maxIterations {
+                    guard let vestDate = calendar.date(byAdding: .month, value: vestingMonths * i, to: firstVesting) else { break }
+                    if vestDate > oneMonthLater { break }
+                    if vestDate < sixMonthsAgo { continue }
+                    
+                    let typeName = equity.incentiveType == .equity ? "股权归属" : "现金激励归属"
+                    events.append(FinanceEvent(
+                        date: vestDate,
+                        type: .equity,
+                        title: equity.note.isEmpty ? typeName : equity.note,
+                        amount: equity.perVestingAmount,
+                        isPast: vestDate < today
+                    ))
+                }
+            }
+            
+            // 3. 年终奖
+            for bonus in bd.bonusItems where bonus.amount > 0 {
+                if bonus.date >= sixMonthsAgo && bonus.date <= oneMonthLater {
+                    events.append(FinanceEvent(
+                        date: bonus.date,
+                        type: .bonus,
+                        title: bonus.note.isEmpty ? "年终奖发放" : bonus.note,
+                        amount: bonus.amount,
+                        isPast: bonus.date < today
+                    ))
+                }
+            }
         }
-        .padding(16)
-        .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(Color(.secondarySystemGroupedBackground))
-        )
+        
+        // 4. 负债扣款：使用实际还款日
+        for record in financeStore.records where record.type == .debt {
+            guard let monthlyPayment = record.monthlyPayment, monthlyPayment > 0 else { continue }
+            let startDate = record.loanStartDate ?? record.date
+            let totalMonths = record.loanMonths ?? 0
+            let rDay = record.repayDay ?? calendar.component(.day, from: startDate)
+            
+            for offset in -6...1 {
+                guard let monthBase = calendar.date(byAdding: .month, value: offset, to: currentMonthStart) else { continue }
+                let repayDate = dateForDay(rDay, inMonthOf: monthBase)
+                if repayDate < startDate { continue }
+                if totalMonths > 0 {
+                    let elapsed = calendar.dateComponents([.month], from: startDate, to: repayDate).month ?? 0
+                    if elapsed >= totalMonths { continue }
+                }
+                if repayDate >= sixMonthsAgo && repayDate <= oneMonthLater {
+                    events.append(FinanceEvent(
+                        date: repayDate,
+                        type: .debt,
+                        title: record.title,
+                        amount: monthlyPayment,
+                        isPast: repayDate < today
+                    ))
+                }
+            }
+        }
+        
+        // 5. 未归属收入
+        for record in financeStore.records where record.type == .income && record.incomePeriod == .unrealized {
+            if record.date >= sixMonthsAgo && record.date <= oneMonthLater {
+                events.append(FinanceEvent(
+                    date: record.date,
+                    type: .unrealized,
+                    title: record.title,
+                    amount: record.amount,
+                    isPast: record.date < today
+                ))
+            }
+        }
+        
+        // 6. 一次性收入
+        for record in financeStore.records where record.type == .income && record.incomePeriod == .oneTime {
+            if record.date >= sixMonthsAgo && record.date <= oneMonthLater {
+                events.append(FinanceEvent(
+                    date: record.date,
+                    type: .salary,
+                    title: record.title,
+                    amount: record.amount,
+                    isPast: record.date < today
+                ))
+            }
+        }
+        
+        return events.sorted { $0.date > $1.date }
+    }
+    
+    private var recentRecordsCard: some View {
+        let events = recentFinanceEvents
+        
+        return Group {
+            if !events.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("近期事件")
+                            .font(.headline)
+                        Spacer()
+                        Text("近6个月")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    
+                    ForEach(events) { event in
+                        eventRow(event)
+                        
+                        if event.id != events.last?.id {
+                            Divider()
+                        }
+                    }
+                }
+                .padding(16)
+                .background(
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(Color(.secondarySystemGroupedBackground))
+                )
+            }
+        }
+    }
+    
+    private func eventRow(_ event: FinanceEvent) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: event.type.icon)
+                .font(.title3)
+                .foregroundStyle(event.isPast ? event.type.color.opacity(0.5) : event.type.color)
+                .frame(width: 28)
+            
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Text(event.title)
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .foregroundStyle(event.isPast ? .secondary : .primary)
+                    
+                    Text(event.type.label)
+                        .font(.caption2)
+                        .foregroundStyle(event.type.color)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(event.type.color.opacity(0.1)))
+                }
+                
+                Text(chineseDateString(event.date))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            
+            Spacer()
+            
+            Text("\(event.type == .debt ? "-" : "+")¥\(event.amount, specifier: "%.0f")")
+                .font(.subheadline)
+                .fontWeight(.semibold)
+                .foregroundStyle(event.isPast ? event.type.color.opacity(0.5) : event.type.color)
+        }
+        .opacity(event.isPast ? 0.7 : 1.0)
+        .padding(.vertical, 2)
+    }
+    
+    private func chineseDateString(_ date: Date) -> String {
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "zh_CN")
+        fmt.dateFormat = "yyyy年M月d日"
+        return fmt.string(from: date)
     }
     
     private func recordRow(_ record: FinanceRecord) -> some View {
@@ -1752,7 +2171,7 @@ struct DailyExpenseView: View {
                 }
                 
                 HStack(spacing: 4) {
-                    Text(record.date, style: .date)
+                    Text(chineseDateString(record.date))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     if record.type == .debt, let mp = record.monthlyPayment {
@@ -1821,8 +2240,13 @@ struct AddFinanceRecordView: View {
     @State private var date = Date()
     @State private var note = ""
     
+    // 各类型输入缓存（切换时保存/恢复）
+    @State private var cachedInputs: [FinanceType: (title: String, amount: String, note: String)] = [:]
+    
     // 收入
     @State private var incomePeriod: IncomePeriod = .oneTime
+    @State private var countAsIncome = false
+    @State private var addToSavings = true
     @State private var showSalaryBreakdown = false
     @State private var salaryBaseItems: [SalaryBaseItem] = [SalaryBaseItem()]
     @State private var equityItems: [EquityItem] = []
@@ -1839,9 +2263,12 @@ struct AddFinanceRecordView: View {
     @State private var specialDeductionText = ""
     
     // 负债
+    @State private var debtType: DebtType = .mortgage
+    @State private var repaymentType: RepaymentType = .standard
     @State private var loanMonthsText = ""
     @State private var monthlyPaymentText = ""
     @State private var loanRateText = ""
+    @State private var repayDay = 1
     
     // 投资
     @State private var expectedReturnText = ""
@@ -1897,64 +2324,117 @@ struct AddFinanceRecordView: View {
     
     var body: some View {
         NavigationStack {
-            Form {
+            List {
                 // 大类型选择
                 Section {
                     Picker("类型", selection: $type) {
                         ForEach(FinanceType.allCases, id: \.self) { t in
-                            Label(t.rawValue, systemImage: t.icon).tag(t)
+                            Label(t.rawValue, systemImage: t.icon)
+                                .font(.system(.body, design: .rounded))
+                                .fontWeight(.semibold)
+                                .tag(t)
                         }
                     }
                     .pickerStyle(.segmented)
+                    .listRowSeparator(.hidden)
+                    .onChange(of: type) { oldType, newType in
+                        guard !isEditing else { return }
+                        cachedInputs[oldType] = (title, amountText, note)
+                        if let cached = cachedInputs[newType] {
+                            title = cached.title
+                            amountText = cached.amount
+                            note = cached.note
+                        } else {
+                            title = ""
+                            amountText = ""
+                            note = ""
+                        }
+                    }
                 }
                 
                 switch type {
                 case .income:
-                    // 收入类型（不含工资，工资在独立页面配置）
-                    Section("收入类型") {
+                    Section(header: Text("收入类型").font(.system(.subheadline, design: .rounded)).fontWeight(.bold).foregroundStyle(.primary).textCase(nil)) {
                         Picker("类型", selection: $incomePeriod) {
-                            Text(IncomePeriod.oneTime.rawValue).tag(IncomePeriod.oneTime)
-                            Text(IncomePeriod.savings.rawValue).tag(IncomePeriod.savings)
-                            Text(IncomePeriod.unrealized.rawValue).tag(IncomePeriod.unrealized)
+                            Text(IncomePeriod.oneTime.rawValue).font(.system(.body, design: .rounded)).fontWeight(.semibold).tag(IncomePeriod.oneTime)
+                            Text(IncomePeriod.unrealized.rawValue).font(.system(.body, design: .rounded)).fontWeight(.semibold).tag(IncomePeriod.unrealized)
                         }
                         .pickerStyle(.segmented)
+                        .listRowSeparator(.hidden)
                         
                         if incomePeriod == .oneTime {
                             HStack {
                                 Image(systemName: "info.circle").foregroundStyle(.blue)
                                 Text("一次性收入不纳入月度净收入计算").font(.caption).foregroundStyle(.secondary)
                             }
-                        }
-                        if incomePeriod == .savings {
-                            HStack {
-                                Image(systemName: "info.circle").foregroundStyle(.blue)
-                                Text("储蓄记录，如定期存款、存入等").font(.caption).foregroundStyle(.secondary)
-                            }
+                            .listRowSeparator(.hidden)
                         }
                         if incomePeriod == .unrealized {
                             HStack {
                                 Image(systemName: "info.circle").foregroundStyle(.blue)
                                 Text("未归属收入（如期权、长期激励等），不纳入月度净收入").font(.caption).foregroundStyle(.secondary)
                             }
+                            .listRowSeparator(.hidden)
                         }
                     }
                     
-                    Section("收入信息") {
+                    Section(header: Text("收入信息").font(.system(.subheadline, design: .rounded)).fontWeight(.bold).foregroundStyle(.primary).textCase(nil)) {
                         TextField(titlePlaceholder, text: $title)
+                            .listRowSeparator(.hidden)
                         HStack {
                             Text("¥").foregroundStyle(.secondary)
                             TextField(amountPlaceholder, text: $amountText).keyboardType(.decimalPad)
                         }
+                        .listRowSeparator(.hidden)
                         DatePicker("日期", selection: $date, displayedComponents: .date).environment(\.locale, Locale(identifier: "zh_CN"))
+                            .listRowSeparator(.hidden)
+                        Toggle("计入收入", isOn: $countAsIncome)
+                            .tint(.green)
+                            .listRowSeparator(.hidden)
+                        if !countAsIncome {
+                            HStack {
+                                Image(systemName: "info.circle").foregroundStyle(.blue)
+                                Text("仅计入资产，不计入收入统计").font(.caption).foregroundStyle(.secondary)
+                            }
+                            .listRowSeparator(.hidden)
+                        }
+                        Toggle("加入储蓄", isOn: $addToSavings)
+                            .tint(.green)
+                            .listRowSeparator(.hidden)
+                        if addToSavings {
+                            HStack {
+                                Image(systemName: "info.circle").foregroundStyle(.green)
+                                Text("保存时将同步添加一条同等金额的储蓄记录").font(.caption).foregroundStyle(.secondary)
+                            }
+                            .listRowSeparator(.hidden)
+                        }
                     }
                     
                 case .debt:
-                    Section("负债信息") {
+                    Section(header: Text("负债信息").font(.system(.subheadline, design: .rounded)).fontWeight(.bold).foregroundStyle(.primary).textCase(nil)) {
+                        Picker("贷款类型", selection: $debtType) {
+                            ForEach(DebtType.allCases, id: \.self) { t in
+                                Text(t.rawValue).tag(t)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .listRowSeparator(.hidden)
                         TextField(titlePlaceholder, text: $title)
+                            .listRowSeparator(.hidden)
                         HStack { Text("¥").foregroundStyle(.secondary); TextField(amountPlaceholder, text: $amountText).keyboardType(.decimalPad) }
+                            .listRowSeparator(.hidden)
                         DatePicker("开始日期", selection: $date, displayedComponents: .date).environment(\.locale, Locale(identifier: "zh_CN"))
+                            .listRowSeparator(.hidden)
                     }
-                    Section("贷款设置") {
+                    Section(header: Text("贷款设置").font(.system(.subheadline, design: .rounded)).fontWeight(.bold).foregroundStyle(.primary).textCase(nil)) {
+                        Picker("还款方式", selection: $repaymentType) {
+                            ForEach(RepaymentType.allCases, id: \.self) { t in
+                                Text(t.rawValue).tag(t)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .listRowSeparator(.hidden)
+                        
                         HStack {
                             Text("贷款期数")
                             Spacer()
@@ -1965,34 +2445,86 @@ struct AddFinanceRecordView: View {
                             Text("个月")
                                 .foregroundStyle(.secondary)
                         }
+                        .listRowSeparator(.hidden)
                         
                         HStack {
-                            Text("每月还款")
+                            Text(repaymentType == .standard ? "每期费率" : "年利率")
                             Spacer()
-                            Text("¥")
-                                .foregroundStyle(.secondary)
-                            TextField("月供金额", text: $monthlyPaymentText)
-                                .keyboardType(.decimalPad)
-                                .multilineTextAlignment(.trailing)
-                                .frame(width: 100)
-                        }
-                        
-                        HStack {
-                            Text("每期利率")
-                            Spacer()
-                            TextField("如 0.35", text: $loanRateText)
+                            TextField(repaymentType == .standard ? "如 0.35" : "如 3.5", text: $loanRateText)
                                 .keyboardType(.decimalPad)
                                 .multilineTextAlignment(.trailing)
                                 .frame(width: 80)
                             Text("%")
                                 .foregroundStyle(.secondary)
                         }
+                        .listRowSeparator(.hidden)
+                        
+                        Stepper("每月 \(repayDay) 号还款", value: $repayDay, in: 1...31)
+                            .listRowSeparator(.hidden)
                         
                         if let months = Int(loanMonthsText), months > 0,
-                           let mp = Double(monthlyPaymentText), mp > 0 {
-                            let totalPayment = mp * Double(months)
-                            let totalAmount = Double(amountText) ?? 0
+                           let totalAmount = Double(amountText), totalAmount > 0 {
+                            let rateInput = (Double(loanRateText) ?? 0) / 100.0
+                            
+                            let firstMonthPayment: Double = {
+                                switch repaymentType {
+                                case .standard:
+                                    return totalAmount / Double(months) + totalAmount * rateInput
+                                case .equalPrincipal:
+                                    let monthlyRate = rateInput / 12.0
+                                    return totalAmount / Double(months) + totalAmount * monthlyRate
+                                case .equalInstallment:
+                                    let monthlyRate = rateInput / 12.0
+                                    if monthlyRate > 0 {
+                                        return totalAmount * monthlyRate * pow(1 + monthlyRate, Double(months)) / (pow(1 + monthlyRate, Double(months)) - 1)
+                                    }
+                                    return totalAmount / Double(months)
+                                }
+                            }()
+                            
+                            let totalPayment: Double = {
+                                switch repaymentType {
+                                case .standard:
+                                    return firstMonthPayment * Double(months)
+                                case .equalPrincipal:
+                                    let monthlyRate = rateInput / 12.0
+                                    let principal = totalAmount / Double(months)
+                                    var total: Double = 0
+                                    for i in 0..<months {
+                                        total += principal + (totalAmount - principal * Double(i)) * monthlyRate
+                                    }
+                                    return total
+                                case .equalInstallment:
+                                    return firstMonthPayment * Double(months)
+                                }
+                            }()
+                            
                             let totalInterest = totalPayment - totalAmount
+                            
+                            HStack {
+                                Text(repaymentType == .equalPrincipal ? "首月还款" : "每月还款")
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Text("¥\(firstMonthPayment, specifier: "%.2f")")
+                                    .fontWeight(.medium)
+                                    .foregroundStyle(.primary)
+                            }
+                            .listRowSeparator(.hidden)
+                            
+                            if repaymentType == .equalPrincipal {
+                                let monthlyRate = rateInput / 12.0
+                                let lastPayment = totalAmount / Double(months) + (totalAmount - totalAmount / Double(months) * Double(months - 1)) * monthlyRate
+                                HStack {
+                                    Text("末月还款")
+                                        .foregroundStyle(.secondary)
+                                    Spacer()
+                                    Text("¥\(lastPayment, specifier: "%.2f")")
+                                        .fontWeight(.medium)
+                                        .foregroundStyle(.primary)
+                                }
+                                .listRowSeparator(.hidden)
+                            }
+                            
                             HStack {
                                 Image(systemName: "info.circle")
                                     .foregroundStyle(.blue)
@@ -2007,16 +2539,20 @@ struct AddFinanceRecordView: View {
                                     }
                                 }
                             }
+                            .listRowSeparator(.hidden)
                         }
                     }
                     
                 case .investment:
-                    Section("投资信息") {
+                    Section(header: Text("投资信息").font(.system(.subheadline, design: .rounded)).fontWeight(.bold).foregroundStyle(.primary).textCase(nil)) {
                         TextField(titlePlaceholder, text: $title)
+                            .listRowSeparator(.hidden)
                         HStack { Text("¥").foregroundStyle(.secondary); TextField(amountPlaceholder, text: $amountText).keyboardType(.decimalPad) }
+                            .listRowSeparator(.hidden)
                         DatePicker("开始日期", selection: $date, displayedComponents: .date).environment(\.locale, Locale(identifier: "zh_CN"))
+                            .listRowSeparator(.hidden)
                     }
-                    Section("投资设置") {
+                    Section(header: Text("投资设置").font(.system(.subheadline, design: .rounded)).fontWeight(.bold).foregroundStyle(.primary).textCase(nil)) {
                         HStack {
                             Text("预期年化收益")
                             Spacer()
@@ -2027,8 +2563,10 @@ struct AddFinanceRecordView: View {
                             Text("%")
                                 .foregroundStyle(.secondary)
                         }
+                        .listRowSeparator(.hidden)
                         
                         TextField("投资平台（可选）", text: $investmentPlatform)
+                            .listRowSeparator(.hidden)
                         
                         if let ret = Double(expectedReturnText), ret > 0,
                            let amt = Double(amountText), amt > 0 {
@@ -2039,13 +2577,15 @@ struct AddFinanceRecordView: View {
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
+                            .listRowSeparator(.hidden)
                         }
                     }
                 }
                 
                 // 备注
-                Section("备注") {
+                Section(header: Text("备注").font(.system(.subheadline, design: .rounded)).fontWeight(.bold).foregroundStyle(.primary).textCase(nil)) {
                     TextField("备注信息", text: $note)
+                        .listRowSeparator(.hidden)
                 }
                 
                 // 编辑模式下显示删除按钮
@@ -2066,8 +2606,13 @@ struct AddFinanceRecordView: View {
                     }
                 }
             }
+            .listStyle(.insetGrouped)
+            .scrollContentBackground(.visible)
             .navigationTitle(isEditing ? "编辑\(type.rawValue)" : "添加\(type.rawValue)")
             .navigationBarTitleDisplayMode(.inline)
+            .font(.system(.body, design: .rounded))
+            .fontWeight(.semibold)
+            .scrollDismissesKeyboard(.interactively)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("取消") { dismiss() }
@@ -2084,6 +2629,13 @@ struct AddFinanceRecordView: View {
             .onAppear {
                 if let record = editingRecord {
                     populateFromRecord(record)
+                } else {
+                    countAsIncome = (incomePeriod == .oneTime)
+                }
+            }
+            .onChange(of: incomePeriod) { _, newValue in
+                if !isEditing {
+                    countAsIncome = (newValue == .oneTime)
                 }
             }
         }
@@ -2091,9 +2643,9 @@ struct AddFinanceRecordView: View {
     
     private var titlePlaceholder: String {
         switch type {
-        case .income: return "例如：工资、副业收入"
-        case .debt: return "例如：房贷、车贷、花呗"
-        case .investment: return "例如：基金定投、股票"
+        case .income: return "收入信息：Apple 收入"
+        case .debt: return "房贷、车贷、花呗"
+        case .investment: return "基金定投、股票"
         }
     }
     
@@ -2108,6 +2660,27 @@ struct AddFinanceRecordView: View {
     private func saveRecord() {
         guard let finalAmount = Double(amountText) else { return }
         
+        // 自动计算月供
+        var calculatedMonthlyPayment: Double? = nil
+        if type == .debt, let months = Int(loanMonthsText), months > 0 {
+            let rateInput = (Double(loanRateText) ?? 0) / 100.0
+            switch repaymentType {
+            case .standard:
+                calculatedMonthlyPayment = finalAmount / Double(months) + finalAmount * rateInput
+            case .equalPrincipal:
+                // 首月还款（最大值）
+                let monthlyRate = rateInput / 12.0
+                calculatedMonthlyPayment = finalAmount / Double(months) + finalAmount * monthlyRate
+            case .equalInstallment:
+                let monthlyRate = rateInput / 12.0
+                if monthlyRate > 0 {
+                    calculatedMonthlyPayment = finalAmount * monthlyRate * pow(1 + monthlyRate, Double(months)) / (pow(1 + monthlyRate, Double(months)) - 1)
+                } else {
+                    calculatedMonthlyPayment = finalAmount / Double(months)
+                }
+            }
+        }
+        
         let record = FinanceRecord(
             id: editingRecord?.id ?? UUID(),
             title: title.trimmingCharacters(in: .whitespaces),
@@ -2117,10 +2690,14 @@ struct AddFinanceRecordView: View {
             date: date,
             note: note,
             incomePeriod: type == .income ? incomePeriod : nil,
+            countAsIncome: type == .income ? countAsIncome : nil,
+            debtType: type == .debt ? debtType : nil,
+            repaymentType: type == .debt ? repaymentType : nil,
             loanMonths: type == .debt ? Int(loanMonthsText) : nil,
-            monthlyPayment: type == .debt ? Double(monthlyPaymentText) : nil,
+            monthlyPayment: calculatedMonthlyPayment,
             loanRate: type == .debt ? Double(loanRateText) : nil,
             loanStartDate: type == .debt ? date : nil,
+            repayDay: type == .debt ? repayDay : nil,
             expectedReturn: type == .investment ? Double(expectedReturnText) : nil,
             investmentPlatform: type == .investment ? investmentPlatform : nil
         )
@@ -2129,6 +2706,21 @@ struct AddFinanceRecordView: View {
             financeStore.updateRecord(record)
         } else {
             financeStore.addRecord(record)
+            
+            // 如果是收入且开启了"加入储蓄"，同步创建一条储蓄记录
+            if type == .income && addToSavings {
+                let savingsRecord = FinanceRecord(
+                    id: UUID(),
+                    title: "储蓄 - \(title.trimmingCharacters(in: .whitespaces))",
+                    amount: finalAmount,
+                    type: .income,
+                    date: date,
+                    note: "由\(incomePeriod.rawValue)自动转入",
+                    incomePeriod: .savings,
+                    countAsIncome: false
+                )
+                financeStore.addRecord(savingsRecord)
+            }
         }
         dismiss()
     }
@@ -2143,7 +2735,8 @@ struct AddFinanceRecordView: View {
         
         switch record.type {
         case .income:
-            incomePeriod = record.incomePeriod ?? .salary
+            incomePeriod = record.incomePeriod ?? .savings
+            countAsIncome = record.countAsIncome ?? (record.incomePeriod == .oneTime)
             if let bd = record.salaryBreakdown {
                 showSalaryBreakdown = true
                 salaryBaseItems = bd.salaryBaseItems.isEmpty ? [SalaryBaseItem()] : bd.salaryBaseItems
@@ -2166,10 +2759,13 @@ struct AddFinanceRecordView: View {
             }
             
         case .debt:
+            debtType = record.debtType ?? .mortgage
+            repaymentType = record.repaymentType ?? .standard
             amountText = record.amount > 0 ? String(format: "%.2f", record.amount) : ""
             loanMonthsText = record.loanMonths != nil ? "\(record.loanMonths!)" : ""
             monthlyPaymentText = record.monthlyPayment != nil ? String(format: "%.2f", record.monthlyPayment!) : ""
             loanRateText = record.loanRate != nil ? String(format: "%.2f", record.loanRate!) : ""
+            repayDay = record.repayDay ?? 1
             
         case .investment:
             amountText = record.amount > 0 ? String(format: "%.2f", record.amount) : ""
@@ -2192,14 +2788,14 @@ struct EditGoalView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("目标名称") {
+                Section(header: Text("目标名称").font(.system(.subheadline, design: .rounded)).fontWeight(.bold).foregroundStyle(.primary).textCase(nil)) {
                     TextField("例如：买房首付", text: $goalName)
                 }
-                Section("目标金额") {
+                Section(header: Text("目标金额").font(.system(.subheadline, design: .rounded)).fontWeight(.bold).foregroundStyle(.primary).textCase(nil)) {
                     TextField("输入目标金额", text: $goalAmountText)
                         .keyboardType(.decimalPad)
                 }
-                Section("收入情况") {
+                Section(header: Text("收入情况").font(.system(.subheadline, design: .rounded)).fontWeight(.bold).foregroundStyle(.primary).textCase(nil)) {
                     Picker("预估模式", selection: $incomeOutlook) {
                         ForEach(FinanceStore.IncomeOutlook.allCases, id: \.self) { o in
                             Text(o.rawValue).tag(o)
@@ -2306,7 +2902,7 @@ struct FullTrendView: View {
                             .onAppear {
                                 proxy.scrollTo("trendChart", anchor: .trailing)
                             }
-                            .onChange(of: trendMode) { _ in
+                            .onChange(of: trendMode) { _, _ in
                                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                                     proxy.scrollTo("trendChart", anchor: .trailing)
                                 }
@@ -2408,6 +3004,7 @@ struct SalaryConfigView: View {
     @State private var socialInsuranceText = ""
     @State private var specialDeductionText = ""
     @State private var note = ""
+    @State private var payDay = 10
     
     private var isValid: Bool {
         salaryBaseItems.contains { $0.amount > 0 }
@@ -2434,15 +3031,20 @@ struct SalaryConfigView: View {
             pensionRate: r1,
             medicalRate: r2,
             unemploymentRate: r3,
-            housingFundRate: r4
+            housingFundRate: r4,
+            payDay: payDay
         )
     }
     
     var body: some View {
         NavigationStack {
-            Form {
+            List {
                 Section("名称") {
                     TextField("如：工资收入", text: $title)
+                }
+                
+                Section("发薪日") {
+                    Stepper("每月 \(payDay) 号", value: $payDay, in: 1...31)
                 }
                 
                 Section("基本工资") {
@@ -2464,7 +3066,7 @@ struct SalaryConfigView: View {
                 }
                 
                 if !equityItems.isEmpty {
-                    Section {
+                    Section("长期激励") {
                         ForEach($equityItems) { $item in
                             VStack(spacing: 8) {
                                 Picker("激励方式", selection: $item.incentiveType) {
@@ -2487,7 +3089,7 @@ struct SalaryConfigView: View {
                             }
                         }
                         .onDelete { equityItems.remove(atOffsets: $0) }
-                    } header: { Text("长期激励") }
+                    }
                 }
                 
                 if !bonusItems.isEmpty {
@@ -2517,13 +3119,17 @@ struct SalaryConfigView: View {
                 
                 Section("添加收入项") {
                     Button { withAnimation { equityItems.append(EquityItem()) } } label: { Label("添加长期激励", systemImage: "plus.circle").foregroundStyle(.green) }
+                        .listRowSeparator(.hidden)
                     Button { withAnimation { bonusItems.append(BonusItem()) } } label: { Label("添加年终奖", systemImage: "plus.circle").foregroundStyle(.green) }
+                        .listRowSeparator(.hidden)
                     Button { withAnimation { otherIncomeItems.append(OtherIncomeItem()) } } label: { Label("添加其他收入", systemImage: "plus.circle").foregroundStyle(.green) }
+                        .listRowSeparator(.hidden)
                 }
                 
                 // 个税
                 Section("个税") {
                     Toggle("自动计算个税", isOn: $autoCalculateTax).tint(.green).foregroundStyle(.green)
+                        .listRowSeparator(.hidden)
                     
                     if autoCalculateTax {
                         HStack { Text("养老保险"); Spacer(); TextField("8", text: $pensionRateText).keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(width: 60); Text("%").foregroundStyle(.secondary) }
@@ -2585,6 +3191,7 @@ struct SalaryConfigView: View {
                 
                 Section("备注") {
                     TextField("备注信息", text: $note)
+                        .listRowSeparator(.hidden)
                 }
                 
                 // 编辑已有记录时显示删除
@@ -2601,6 +3208,10 @@ struct SalaryConfigView: View {
                     }
                 }
             }
+            .listStyle(.insetGrouped)
+            .font(.system(.body, design: .rounded))
+            .fontWeight(.semibold)
+            .headerProminence(.increased)
             .navigationTitle("工资配置")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -2635,6 +3246,7 @@ struct SalaryConfigView: View {
         unemploymentRateText = String(format: "%g", bd.unemploymentRate)
         housingFundRateText = String(format: "%g", bd.housingFundRate)
         if bd.socialInsurance > 0 { socialInsuranceText = String(format: "%.0f", bd.socialInsurance) }
+        payDay = bd.payDay
     }
     
     private func saveConfig() {
@@ -2655,6 +3267,522 @@ struct SalaryConfigView: View {
             financeStore.addRecord(record)
         }
         dismiss()
+    }
+}
+
+// MARK: - 储蓄配置视图
+
+struct SavingsConfigView: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var financeStore: FinanceStore
+    
+    @State private var showingAddSavings = false
+    @State private var editingRecord: FinanceRecord? = nil
+    
+    // 添加/编辑表单状态
+    @State private var title = ""
+    @State private var amountText = ""
+    @State private var date = Date()
+    @State private var note = ""
+    @State private var countAsIncome = false
+    @State private var annualRateText = ""
+    
+    private var savingsRecords: [FinanceRecord] {
+        financeStore.records.filter { $0.type == .income && $0.incomePeriod == .savings }
+    }
+    
+    private var totalSavings: Double {
+        savingsRecords.reduce(0) { $0 + $1.amount }
+    }
+    
+    var body: some View {
+        NavigationStack {
+            List {
+                // 总额
+                Section {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("储蓄总额")
+                                .font(.system(.subheadline, design: .rounded))
+                                .foregroundStyle(.secondary)
+                            Text("¥\(totalSavings, specifier: "%.2f")")
+                                .font(.system(size: 28, weight: .bold, design: .rounded))
+                                .foregroundStyle(.green)
+                        }
+                        Spacer()
+                    }
+                    .listRowSeparator(.hidden)
+                }
+                
+                // 储蓄记录列表
+                Section {
+                    if savingsRecords.isEmpty {
+                        Text("暂无储蓄记录，点击右上角 + 添加")
+                            .font(.system(.subheadline, design: .rounded))
+                            .foregroundStyle(.tertiary)
+                            .listRowSeparator(.hidden)
+                    } else {
+                        ForEach(savingsRecords) { record in
+                            Button {
+                                editingRecord = record
+                                title = record.title
+                                amountText = String(format: "%.2f", record.amount)
+                                date = record.date
+                                note = record.note
+                                countAsIncome = record.countAsIncome ?? false
+                                annualRateText = record.expectedReturn != nil ? String(format: "%g", record.expectedReturn!) : ""
+                                showingAddSavings = true
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(record.title)
+                                            .font(.system(.body, design: .rounded))
+                                            .fontWeight(.semibold)
+                                            .foregroundStyle(.primary)
+                                        HStack(spacing: 8) {
+                                            Text(chineseDateStr(record.date))
+                                                .font(.system(.caption, design: .rounded))
+                                                .foregroundStyle(.secondary)
+                                            if let rate = record.expectedReturn, rate > 0 {
+                                                Text("\(rate, specifier: "%g")%")
+                                                    .font(.system(.caption, design: .rounded))
+                                                    .fontWeight(.medium)
+                                                    .foregroundStyle(.orange)
+                                            }
+                                        }
+                                    }
+                                    Spacer()
+                                    Text("¥\(record.amount, specifier: "%.2f")")
+                                        .font(.system(.body, design: .rounded))
+                                        .fontWeight(.bold)
+                                        .foregroundStyle(.green)
+                                }
+                            }
+                            .listRowSeparator(.hidden)
+                        }
+                        .onDelete { offsets in
+                            let records = savingsRecords
+                            for index in offsets {
+                                financeStore.deleteRecord(records[index])
+                            }
+                        }
+                    }
+                } header: {
+                    Text("储蓄记录")
+                        .font(.system(.footnote, design: .rounded))
+                        .fontWeight(.semibold)
+                }
+            }
+            .listStyle(.insetGrouped)
+            .navigationTitle("储蓄管理")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("完成") { dismiss() }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        editingRecord = nil
+                        title = ""
+                        amountText = ""
+                        date = Date()
+                        note = ""
+                        countAsIncome = false
+                        annualRateText = ""
+                        showingAddSavings = true
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                }
+            }
+            .sheet(isPresented: $showingAddSavings) {
+                NavigationStack {
+                    Form {
+                        Section {
+                            TextField("储蓄名称（如：定期存款）", text: $title)
+                                .font(.system(.body, design: .rounded))
+                                .fontWeight(.semibold)
+                                .listRowSeparator(.hidden)
+                            HStack {
+                                Text("¥")
+                                    .font(.system(.body, design: .rounded))
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(.secondary)
+                                TextField("金额", text: $amountText)
+                                    .font(.system(.body, design: .rounded))
+                                    .fontWeight(.semibold)
+                                    .keyboardType(.decimalPad)
+                            }
+                            .listRowSeparator(.hidden)
+                            DatePicker(selection: $date, displayedComponents: .date) {
+                                Text("日期")
+                                    .font(.system(.body, design: .rounded))
+                                    .fontWeight(.semibold)
+                            }
+                            .environment(\.locale, Locale(identifier: "zh_CN"))
+                            .listRowSeparator(.hidden)
+                            HStack {
+                                Text("年利率")
+                                    .font(.system(.body, design: .rounded))
+                                    .fontWeight(.semibold)
+                                Spacer()
+                                TextField("0", text: $annualRateText)
+                                    .font(.system(.body, design: .rounded))
+                                    .fontWeight(.semibold)
+                                    .keyboardType(.decimalPad)
+                                    .multilineTextAlignment(.trailing)
+                                    .frame(width: 80)
+                                Text("%")
+                                    .font(.system(.body, design: .rounded))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .listRowSeparator(.hidden)
+                        } header: {
+                            Text("储蓄信息")
+                                .font(.system(.footnote, design: .rounded))
+                                .fontWeight(.semibold)
+                        }
+                        
+                        Section {
+                            TextField("备注", text: $note)
+                                .font(.system(.body, design: .rounded))
+                                .listRowSeparator(.hidden)
+                        } header: {
+                            Text("备注")
+                                .font(.system(.footnote, design: .rounded))
+                                .fontWeight(.semibold)
+                        }
+                    }
+                    .navigationTitle(editingRecord != nil ? "编辑储蓄" : "添加储蓄")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .navigationBarLeading) {
+                            Button("取消") { showingAddSavings = false }
+                        }
+                        ToolbarItem(placement: .navigationBarTrailing) {
+                            Button("保存") {
+                                saveSavingsRecord()
+                            }
+                            .disabled(title.trimmingCharacters(in: .whitespaces).isEmpty || Double(amountText) == nil)
+                            .fontWeight(.semibold)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    private func saveSavingsRecord() {
+        guard let amount = Double(amountText) else { return }
+        let rate = Double(annualRateText)
+        let record = FinanceRecord(
+            id: editingRecord?.id ?? UUID(),
+            title: title.trimmingCharacters(in: .whitespaces),
+            amount: amount,
+            type: .income,
+            date: date,
+            note: note,
+            incomePeriod: .savings,
+            countAsIncome: countAsIncome,
+            expectedReturn: rate
+        )
+        if editingRecord != nil {
+            financeStore.updateRecord(record)
+        } else {
+            financeStore.addRecord(record)
+        }
+        showingAddSavings = false
+    }
+    
+    private func chineseDateStr(_ date: Date) -> String {
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "zh_CN")
+        fmt.dateFormat = "yyyy年M月d日"
+        return fmt.string(from: date)
+    }
+}
+
+// MARK: - 资产详情视图
+
+struct AssetDetailView: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var financeStore: FinanceStore
+    @ObservedObject var store: ItemStore
+    @Binding var selectedRecord: FinanceRecord?
+    
+    private func chineseDateStr(_ date: Date) -> String {
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "zh_CN")
+        fmt.dateFormat = "yyyy年M月d日"
+        return fmt.string(from: date)
+    }
+    
+    private var savingsRecords: [FinanceRecord] {
+        financeStore.records.filter { $0.type == .income && $0.incomePeriod == .savings }
+    }
+    
+    private var investmentRecords: [FinanceRecord] {
+        financeStore.records.filter { $0.type == .investment }
+    }
+    
+    private var debtRecords: [FinanceRecord] {
+        financeStore.records.filter { $0.type == .debt }
+    }
+    
+    private var largeItems: [Item] {
+        store.items.filter { $0.listType == .items && !$0.isArchived && $0.isLargeItem }
+    }
+    
+    /// 非大件物品（去重：排除已标记为大件的物品）
+    private var normalItems: [Item] {
+        store.items.filter { $0.listType == .items && !$0.isArchived && !$0.isLargeItem && !$0.isPriceless }
+    }
+    
+    var body: some View {
+        NavigationStack {
+            List {
+                // 储蓄
+                Section {
+                    if savingsRecords.isEmpty {
+                        Text("暂无储蓄记录")
+                            .font(.subheadline)
+                            .foregroundStyle(.tertiary)
+                    } else {
+                        ForEach(savingsRecords) { record in
+                            Button {
+                                dismiss()
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                    selectedRecord = record
+                                }
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(record.title)
+                                            .font(.subheadline)
+                                            .foregroundStyle(.primary)
+                                        Text(chineseDateStr(record.date))
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Text("¥\(record.amount, specifier: "%.2f")")
+                                        .font(.subheadline)
+                                        .fontWeight(.semibold)
+                                        .foregroundStyle(.green)
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                } header: {
+                    HStack {
+                        Image(systemName: "banknote.fill").foregroundStyle(.green)
+                        Text("储蓄")
+                        Spacer()
+                        Text("¥\(savingsRecords.reduce(0) { $0 + $1.amount }, specifier: "%.0f")")
+                            .foregroundStyle(.green)
+                    }
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                }
+                
+                // 大件物品
+                Section {
+                    if largeItems.isEmpty {
+                        Text("暂无大件物品")
+                            .font(.subheadline)
+                            .foregroundStyle(.tertiary)
+                    } else {
+                        ForEach(largeItems) { item in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.name)
+                                        .font(.subheadline)
+                                        .foregroundStyle(.primary)
+                                    Text(item.type)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text("¥\(item.price, specifier: "%.2f")")
+                                    .font(.subheadline)
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(.orange)
+                            }
+                        }
+                    }
+                } header: {
+                    HStack {
+                        Image(systemName: "house.fill").foregroundStyle(.orange)
+                        Text("大件物品")
+                        Spacer()
+                        Text("¥\(largeItems.reduce(0) { $0 + $1.price }, specifier: "%.0f")")
+                            .foregroundStyle(.orange)
+                    }
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                }
+                
+                // 物品价值（非大件）
+                Section {
+                    HStack {
+                        Text("共 \(normalItems.count) 件物品")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("¥\(normalItems.reduce(0) { $0 + $1.price }, specifier: "%.2f")")
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.purple)
+                    }
+                } header: {
+                    HStack {
+                        Image(systemName: "cube.fill").foregroundStyle(.purple)
+                        Text("物品价值")
+                        Spacer()
+                        Text("¥\(normalItems.reduce(0) { $0 + $1.price }, specifier: "%.0f")")
+                            .foregroundStyle(.purple)
+                    }
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                }
+                
+                // 投资
+                Section {
+                    if investmentRecords.isEmpty {
+                        Text("暂无投资记录")
+                            .font(.subheadline)
+                            .foregroundStyle(.tertiary)
+                    } else {
+                        ForEach(investmentRecords) { record in
+                            Button {
+                                dismiss()
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                    selectedRecord = record
+                                }
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(record.title)
+                                            .font(.subheadline)
+                                            .foregroundStyle(.primary)
+                                        HStack(spacing: 4) {
+                                            Text(chineseDateStr(record.date))
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                            if let ret = record.expectedReturn {
+                                                Text("· \(ret, specifier: "%.1f")%")
+                                                    .font(.caption)
+                                                    .foregroundStyle(.blue)
+                                            }
+                                            if let platform = record.investmentPlatform, !platform.isEmpty {
+                                                Text("· \(platform)")
+                                                    .font(.caption)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                        }
+                                    }
+                                    Spacer()
+                                    Text("¥\(record.amount, specifier: "%.2f")")
+                                        .font(.subheadline)
+                                        .fontWeight(.semibold)
+                                        .foregroundStyle(.blue)
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                } header: {
+                    HStack {
+                        Image(systemName: "chart.line.uptrend.xyaxis.circle.fill").foregroundStyle(.blue)
+                        Text("投资")
+                        Spacer()
+                        Text("¥\(investmentRecords.reduce(0) { $0 + $1.amount }, specifier: "%.0f")")
+                            .foregroundStyle(.blue)
+                    }
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                }
+                
+                // 负债
+                Section {
+                    if debtRecords.isEmpty {
+                        Text("暂无负债记录")
+                            .font(.subheadline)
+                            .foregroundStyle(.tertiary)
+                    } else {
+                        ForEach(debtRecords) { record in
+                            Button {
+                                dismiss()
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                    selectedRecord = record
+                                }
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(record.title)
+                                            .font(.subheadline)
+                                            .foregroundStyle(.primary)
+                                        HStack(spacing: 4) {
+                                            Text(chineseDateStr(record.date))
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                            if let dt = record.debtType {
+                                                Text("· \(dt.rawValue)")
+                                                    .font(.caption)
+                                                    .foregroundStyle(.red)
+                                            }
+                                            if let months = record.loanMonths {
+                                                Text("· \(months)期")
+                                                    .font(.caption)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                        }
+                                    }
+                                    Spacer()
+                                    VStack(alignment: .trailing, spacing: 2) {
+                                        Text("¥\(record.remainingDebtAmount ?? record.amount, specifier: "%.0f")")
+                                            .font(.subheadline)
+                                            .fontWeight(.semibold)
+                                            .foregroundStyle(.red)
+                                        if let monthly = record.monthlyPayment {
+                                            Text("月供 ¥\(monthly, specifier: "%.0f")")
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                } header: {
+                    HStack {
+                        Image(systemName: "creditcard.fill").foregroundStyle(.red)
+                        Text("负债")
+                        Spacer()
+                        Text("¥\(financeStore.totalRemainingDebt, specifier: "%.0f")")
+                            .foregroundStyle(.red)
+                    }
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                }
+            }
+            .listStyle(.insetGrouped)
+            .navigationTitle("资产详情")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
     }
 }
 

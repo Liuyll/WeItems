@@ -289,6 +289,88 @@ class SignupManager {
         }
     }
     
+    // 私钥（用于第三方授权注册的 provider_token）
+    private let privateKey = ""
+    
+    /// 使用第三方授权注册创建用户
+    /// - Parameters:
+    ///   - username: 用户名（5-24位）
+    ///   - password: 密码
+    ///   - providerToken: 第三方身份源 token（如 Apple identityToken），为 nil 时使用默认 privateKey
+    /// - Returns: 注册成功返回Token信息
+    func signupWithProvider(
+        username: String,
+        password: String,
+        providerToken: String? = nil
+    ) async throws -> SignupResponse {
+        
+        // 验证用户名格式
+        guard isValidUsername(username) else {
+            throw SignupError.invalidUsername
+        }
+        
+        // 验证密码长度
+        guard password.count >= 6 else {
+            throw SignupError.weakPassword
+        }
+        
+        let url = URL(string: "\(baseUrl)/auth/v1/signup")!
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        
+        let body: [String: Any] = [
+            "provider_token": providerToken ?? privateKey,
+            "username": username,
+            "password": password
+        ]
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        // 打印请求
+        print("=== HTTP 请求（账号密码注册）===")
+        print("URL: \(url)")
+        print("Method: POST")
+        print("Body: \(body)")
+        print("===========================")
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        // 打印HTTP响应
+        print("=== HTTP 响应（账号密码注册）===")
+        if let httpResponse = response as? HTTPURLResponse {
+            print("Status Code: \(httpResponse.statusCode)")
+            print("Headers: \(httpResponse.allHeaderFields)")
+        }
+        if let responseString = String(data: data, encoding: .utf8) {
+            print("Body: \(responseString)")
+        }
+        print("================")
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw SignupError.networkError
+        }
+        
+        // 处理错误响应
+        if !(200...299).contains(httpResponse.statusCode) {
+            if let errorResponse = try? JSONDecoder().decode(SignupErrorResponse.self, from: data) {
+                throw mapError(errorResponse)
+            } else {
+                throw SignupError.serverError("HTTP \(httpResponse.statusCode)")
+            }
+        }
+        
+        // 解析成功响应
+        do {
+            let signupResponse = try JSONDecoder().decode(SignupResponse.self, from: data)
+            return signupResponse
+        } catch {
+            throw SignupError.unknownError("解析响应失败: \(error.localizedDescription)")
+        }
+    }
+    
     // MARK: - 验证方法
     
     /// 验证用户名格式（2-48位，支持英文大小写、数字、特殊字符-_.:+@，以字母或数字开头）

@@ -4,40 +4,359 @@
 //
 
 import SwiftUI
+import PhotosUI
+
+// 物品排序方式
+enum ItemSortMode: String, CaseIterable {
+    case addedDate = "添加时间"
+    case ownedDate = "拥有时间"
+    case price = "按价值"
+}
 
 struct ProfileView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject var authManager: AuthManager
     @EnvironmentObject var itemStore: ItemStore
     @EnvironmentObject var sharedWishlistStore: SharedWishlistStore
+    @EnvironmentObject var financeStore: FinanceStore
+    
+    var onBack: (() -> Void)? = nil
     
     @State private var showingLogoutConfirm = false
     @State private var isSyncing = false
+    @State private var isICloudSyncing = false
     @State private var toastMessage: String?
     @State private var showToast = false
+    @AppStorage("assetFaceIDLock") private var assetFaceIDLock = false
+    @AppStorage("itemSortMode") private var itemSortMode: ItemSortMode = .addedDate
+    
+    @State private var showingProUpgrade = false
+    @State private var selectedPhoto: PhotosPickerItem?
+    @ObservedObject private var avatarStore = AvatarStore.shared
+    @ObservedObject private var iapManager = IAPManager.shared
+    
+    @State private var showingLogin = false
+    
+    private var firstRecordInfo: (dateStr: String, days: Int) {
+        let allDates: [Date] = itemStore.items.map { $0.createdAt } + financeStore.records.map { $0.date }
+        guard let earliest = allDates.min() else { return ("今天", 0) }
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "zh_CN")
+        fmt.dateFormat = "yyyy年M月d日"
+        let days = max(Calendar.current.dateComponents([.day], from: earliest, to: Date()).day ?? 0, 0)
+        return (fmt.string(from: earliest), days)
+    }
     
     var body: some View {
         NavigationStack {
             ZStack {
                 List {
-                    // 同步设置
-                    Section("同步设置") {
-                        Button {
-                            performSync()
-                        } label: {
-                            HStack {
-                                Label("远端同步", systemImage: isSyncing ? "arrow.clockwise.circle.fill" : "arrow.clockwise.circle")
-                                Spacer()
-                                if isSyncing {
-                                    ProgressView()
-                                        .scaleEffect(0.8)
+                    // 头像区域
+                    Section {
+                        if authManager.isAuthenticated {
+                            HStack(spacing: 14) {
+                                PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                                    if let img = avatarStore.avatarImage {
+                                        Image(uiImage: img)
+                                            .resizable()
+                                            .scaledToFill()
+                                            .frame(width: 48, height: 48)
+                                            .clipShape(Circle())
+                                            .overlay(
+                                                Circle().stroke(Color.gray.opacity(0.2), lineWidth: 1)
+                                            )
+                                    } else {
+                                        Image(systemName: "person.crop.circle.fill")
+                                            .font(.system(size: 44))
+                                            .foregroundStyle(.gray.opacity(0.4))
+                                            .frame(width: 48, height: 48)
+                                    }
+                                }
+                                .onChange(of: selectedPhoto) { _, newValue in
+                                    Task {
+                                        if let data = try? await newValue?.loadTransferable(type: Data.self),
+                                           let uiImage = UIImage(data: data) {
+                                            avatarStore.saveAvatar(uiImage)
+                                        }
+                                    }
+                                }
+                                
+                                VStack(alignment: .leading, spacing: 4) {
+                                    let info = firstRecordInfo
+                                    Text("从 \(info.dateStr) 开始记录")
+                                        .font(.subheadline)
+                                        .foregroundStyle(.primary)
+                                    Text(info.days < 7 ? "才加入我们没多久" : "已经过去 \(info.days) 天")
+                                        .font(.caption)
+                                        .foregroundStyle(.tertiary)
                                 }
                             }
+                            .listRowSeparator(.hidden)
+                        } else {
+                            Button {
+                                showingLogin = true
+                            } label: {
+                                HStack(spacing: 14) {
+                                    Image(systemName: "person.crop.circle.fill")
+                                        .font(.system(size: 44))
+                                        .foregroundStyle(.white.opacity(0.8))
+                                        .frame(width: 48, height: 48)
+                                    
+                                    Text("登录开始记录生涯")
+                                        .font(.subheadline)
+                                        .fontWeight(.semibold)
+                                        .foregroundStyle(.white)
+                                    
+                                    Spacer()
+                                    
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption)
+                                        .foregroundStyle(.white.opacity(0.7))
+                                }
+                            }
+                            .listRowBackground(Color.blue)
+                            .listRowSeparator(.hidden)
                         }
-                        .disabled(isSyncing)
+                    }
+                    
+                    // Pro 会员
+                    Section {
+                        if iapManager.isPro {
+                            HStack {
+                                Text("已经是 Pro 版本")
+                                    .font(.subheadline)
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(.white)
+                                Spacer()
+                            }
+                            .padding(.vertical, 4)
+                            .listRowBackground(Color.green)
+                            .listRowSeparator(.hidden)
+                        } else {
+                            Button {
+                                showingProUpgrade = true
+                            } label: {
+                                HStack {
+                                    Text("升级 Pro 版本")
+                                        .font(.subheadline)
+                                        .fontWeight(.semibold)
+                                        .foregroundStyle(.white)
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption)
+                                        .foregroundStyle(.white.opacity(0.7))
+                                }
+                                .padding(.vertical, 4)
+                            }
+                            .listRowBackground(
+                                Color(red: 0x50/255.0, green: 0x64/255.0, blue: 0xEB/255.0)
+                            )
+                            .listRowSeparator(.hidden)
+                        }
+                    }
+                    
+                    // 同步设置
+                    Section {
+                        if iapManager.isVIPActive {
+                            // 远端同步
+                            Button {
+                                performSync()
+                            } label: {
+                                HStack {
+                                    Label {
+                                        Text("远端同步")
+                                            .font(.system(.body, design: .rounded))
+                                            .fontWeight(.semibold)
+                                            .foregroundStyle(.primary)
+                                    } icon: {
+                                        Image(systemName: isSyncing ? "arrow.triangle.2.circlepath.circle.fill" : "arrow.triangle.2.circlepath")
+                                            .foregroundStyle(.green)
+                                    }
+                                    Spacer()
+                                    if isSyncing {
+                                        ProgressView()
+                                            .scaleEffect(0.8)
+                                    }
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .disabled(isSyncing)
+                            .buttonStyle(.plain)
+                            .listRowSeparator(.hidden)
+                            
+                            // iCloud 同步
+                            Button {
+                                performICloudSync()
+                            } label: {
+                                HStack {
+                                    Label {
+                                        Text("iCloud 同步")
+                                            .font(.system(.body, design: .rounded))
+                                            .fontWeight(.semibold)
+                                            .foregroundStyle(.primary)
+                                    } icon: {
+                                        Image(systemName: isICloudSyncing ? "icloud.and.arrow.up.fill" : "icloud.fill")
+                                            .foregroundStyle(.cyan)
+                                    }
+                                    Spacer()
+                                    if isICloudSyncing {
+                                        ProgressView()
+                                            .scaleEffect(0.8)
+                                    }
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .disabled(isICloudSyncing)
+                            .buttonStyle(.plain)
+                            .listRowSeparator(.hidden)
+                            
+                            // 同步历史
+                            NavigationLink(destination: SyncHistoryView()) {
+                                Label {
+                                    Text("同步历史")
+                                        .font(.system(.body, design: .rounded))
+                                        .fontWeight(.semibold)
+                                        .foregroundStyle(.primary)
+                                } icon: {
+                                    Image(systemName: "clock")
+                                        .foregroundStyle(.blue)
+                                }
+                                .foregroundStyle(.primary)
+                            }
+                            .listRowSeparator(.hidden)
+                        } else {
+                            // 远端同步
+                            Button {
+                                showingProUpgrade = true
+                            } label: {
+                                HStack {
+                                    Label {
+                                        Text("远端同步")
+                                            .font(.system(.body, design: .rounded))
+                                            .fontWeight(.semibold)
+                                            .foregroundStyle(.primary)
+                                    } icon: {
+                                        Image(systemName: "arrow.triangle.2.circlepath")
+                                            .foregroundStyle(.green)
+                                    }
+                                    Spacer()
+                                    ProBadge(fontSize: 11, paddingH: 6, paddingV: 2)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .listRowSeparator(.hidden)
+                            
+                            // iCloud 同步
+                            Button {
+                                showingProUpgrade = true
+                            } label: {
+                                HStack {
+                                    Label {
+                                        Text("iCloud 同步")
+                                            .font(.system(.body, design: .rounded))
+                                            .fontWeight(.semibold)
+                                            .foregroundStyle(.primary)
+                                    } icon: {
+                                        Image(systemName: "icloud.fill")
+                                            .foregroundStyle(.cyan)
+                                    }
+                                    Spacer()
+                                    ProBadge(fontSize: 11, paddingH: 6, paddingV: 2)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .listRowSeparator(.hidden)
+                            
+                            // 同步历史
+                            Button {
+                                showingProUpgrade = true
+                            } label: {
+                                HStack {
+                                    Label {
+                                        Text("同步历史")
+                                            .font(.system(.body, design: .rounded))
+                                            .fontWeight(.semibold)
+                                            .foregroundStyle(.primary)
+                                    } icon: {
+                                        Image(systemName: "clock")
+                                            .foregroundStyle(.blue)
+                                    }
+                                    Spacer()
+                                    ProBadge(fontSize: 11, paddingH: 6, paddingV: 2)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .listRowSeparator(.hidden)
+                        }
+                    } header: {
+                        Text("同步设置")
+                    }
+                    
+                    // 功能设置
+                    Section("功能设置") {
+                        // 物品排序
+                        Picker(selection: $itemSortMode) {
+                            ForEach(ItemSortMode.allCases, id: \.self) { mode in
+                                Text(mode.rawValue).tag(mode)
+                            }
+                        } label: {
+                            Label {
+                                Text("物品排序")
+                                    .font(.system(.body, design: .rounded))
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(.primary)
+                            } icon: {
+                                Image(systemName: "arrow.up.arrow.down")
+                            }
+                        }
+                        .listRowSeparator(.hidden)
                         
-                        NavigationLink(destination: SyncHistoryView()) {
-                            Label("同步历史", systemImage: "clock.arrow.circlepath")
+                        if iapManager.isVIPActive {
+                            Toggle(isOn: $assetFaceIDLock) {
+                                Label {
+                                    Text("资产面容解锁")
+                                        .font(.system(.body, design: .rounded))
+                                        .fontWeight(.semibold)
+                                        .foregroundStyle(.primary)
+                                } icon: {
+                                    Image(systemName: "faceid")
+                                }
+                            }
+                            .tint(.orange)
+                            .listRowSeparator(.hidden)
+                            if assetFaceIDLock {
+                                HStack {
+                                    Image(systemName: "info.circle").foregroundStyle(.blue)
+                                    Text("进入个人资产页面时需要 Face ID 验证")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .listRowSeparator(.hidden)
+                            }
+                        } else {
+                            Button {
+                                showingProUpgrade = true
+                            } label: {
+                                HStack {
+                                    Label {
+                                        Text("资产面容解锁")
+                                            .font(.system(.body, design: .rounded))
+                                            .fontWeight(.semibold)
+                                            .foregroundStyle(.primary)
+                                    } icon: {
+                                        Image(systemName: "faceid")
+                                            .foregroundStyle(.blue)
+                                    }
+                                    Spacer()
+                                    ProBadge(fontSize: 11, paddingH: 6, paddingV: 2)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .listRowSeparator(.hidden)
                         }
                     }
                     
@@ -46,9 +365,17 @@ struct ProfileView: View {
                         Button {
                             showingLogoutConfirm = true
                         } label: {
-                            Label("退出登录", systemImage: "rectangle.portrait.and.arrow.right")
-                                .foregroundStyle(.red)
+                            Label {
+                                Text("退出登录")
+                                    .font(.system(.body, design: .rounded))
+                                    .fontWeight(.semibold)
+                            } icon: {
+                                Image(systemName: "rectangle.portrait.and.arrow.right")
+                            }
+                            .foregroundStyle(.red)
                         }
+                        .buttonStyle(.plain)
+                        .listRowSeparator(.hidden)
                     }
                     
                     // 关于
@@ -56,15 +383,34 @@ struct ProfileView: View {
                         NavigationLink {
                             PrivacySettingsView()
                         } label: {
-                            Label("我的隐私", systemImage: "hand.raised.fill")
+                            Label {
+                                Text("我的隐私")
+                                    .font(.system(.body, design: .rounded))
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(.primary)
+                            } icon: {
+                                Image(systemName: "hand.raised.fill")
+                                    .foregroundStyle(.blue)
+                            }
+                            .foregroundStyle(.primary)
                         }
+                        .listRowSeparator(.hidden)
                         
                         HStack {
-                            Label("版本", systemImage: "info.circle")
+                            Label {
+                                Text("版本")
+                                    .font(.system(.body, design: .rounded))
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(.primary)
+                            } icon: {
+                                Image(systemName: "info.circle")
+                            }
                             Spacer()
                             Text("1.0.0")
+                                .font(.system(.body, design: .rounded))
                                 .foregroundStyle(.secondary)
                         }
+                        .listRowSeparator(.hidden)
                     }
                 }
                 .listStyle(.insetGrouped)
@@ -89,24 +435,38 @@ struct ProfileView: View {
                     .animation(.easeInOut(duration: 0.3), value: showToast)
                 }
             }
-            .navigationTitle("我的")
-            .navigationBarTitleDisplayMode(.large)
+            .navigationTitle("设置")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("完成") {
-                        dismiss()
+                if onBack != nil {
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        Button {
+                            onBack?()
+                        } label: {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(.primary)
+                        }
                     }
                 }
             }
-            .alert("退出登录", isPresented: $showingLogoutConfirm) {
-                Button("取消", role: .cancel) {}
-                Button("退出", role: .destructive) {
+            .sheet(isPresented: $showingProUpgrade) {
+                ProUpgradeView()
+            }
+            .sheet(isPresented: $showingLogin) {
+                AuthViewWrapper()
+            }
+            .customConfirmAlert(
+                isPresented: $showingLogoutConfirm,
+                title: "退出登录",
+                message: "退出登录后，数据将不再自动同步到云端。确定要退出吗？",
+                confirmText: "退出",
+                isDestructive: true,
+                onConfirm: {
                     authManager.logout()
                     dismiss()
                 }
-            } message: {
-                Text("退出登录后，数据将不再自动同步到云端。确定要退出吗？")
-            }
+            )
         }
     }
     
@@ -125,6 +485,11 @@ struct ProfileView: View {
     
     /// 执行数据同步（物品、心愿、共享清单）
     private func performSync() {
+        guard IAPManager.shared.isVIPActive else {
+            showingProUpgrade = true
+            return
+        }
+        
         isSyncing = true
         
         Task {
@@ -147,12 +512,47 @@ struct ProfileView: View {
                 return
             }
             
-            // 同时同步物品、心愿清单和获取 userinfo
-            async let itemsResult = client.syncItems(items: itemStore.items)
-            async let wishesResult = client.syncWishes(items: itemStore.items)
+            // 同时同步物品、心愿清单、获取 userinfo 和储蓄投资
+            let deletedRecords = itemStore.deletedItemRecords
+            async let itemsResult = client.syncItems(items: itemStore.items, deletedItemRecords: deletedRecords)
+            async let wishesResult = client.syncWishes(items: itemStore.items, deletedItemRecords: deletedRecords)
             async let userInfoResult = client.fetchUserInfo()
             
+            // 储蓄投资同步：上传到 savinginfo 模型
+            let nonSalaryRecords = financeStore.records.filter { $0.incomePeriod != .salary }
+            let salaryRec = financeStore.salaryRecord
+            let largeItemsPrice = itemStore.items.filter { $0.listType == .items && !$0.isArchived && $0.isLargeItem && !$0.isPriceless }.reduce(0) { $0 + $1.price }
+            let normalItemsPrice = itemStore.items.filter { $0.listType == .items && !$0.isArchived && !$0.isLargeItem && !$0.isPriceless }.reduce(0) { $0 + $1.price }
+            let allItemsPrice = largeItemsPrice + normalItemsPrice
+            async let savingResult = client.syncSavingInfo(
+                records: nonSalaryRecords,
+                salaryRecord: salaryRec,
+                goal: financeStore.savingsGoal,
+                totalAssets: financeStore.calculatedTotalAssets(itemsTotalPrice: allItemsPrice)
+            )
+            
             let (itemsSyncResult, wishesSyncResult, userInfoResponse) = await (itemsResult, wishesResult, userInfoResult)
+            let savingSuccess = await savingResult
+            print("[手动同步] 储蓄投资同步: \(savingSuccess ? "成功" : "失败")")
+            
+            // 从 userinfo 读取 VIP 信息
+            if let records = userInfoResponse?.data?.records, let record = records.first {
+                if let vipInfo = record.vip_type, let vipType = vipInfo.type {
+                    await MainActor.run {
+                        IAPManager.shared.applyRemoteVIPInfo(
+                            type: vipType,
+                            startDate: vipInfo.startDate,
+                            expireDate: vipInfo.expireDate
+                        )
+                    }
+                    print("[手动同步] 从云端获取 VIP 信息: type=\(vipType)")
+                }
+                
+                // 如果本地有 VIP 但云端没有，同步到云端
+                if record.vip_type == nil && IAPManager.shared.isPro {
+                    await IAPManager.shared.syncVIPToCloud()
+                }
+            }
             
             // 从 userinfo 的 share_wish_list 同步共享清单
             if let records = userInfoResponse?.data?.records, let record = records.first,
@@ -189,6 +589,18 @@ struct ProfileView: View {
                         )
                     }
                     
+                    // 从远端 number_list 中提取当前用户的昵称
+                    let currentUserId = TokenStorage.shared.getSub() ?? ""
+                    let numberList = sharedRecord.numbers?.number_list ?? []
+                    let myRemoteNickname: String? = {
+                        if !currentUserId.isEmpty,
+                           let myEntry = numberList.first(where: { $0.number_id == currentUserId }),
+                           let name = myEntry.number_name, !name.isEmpty {
+                            return name
+                        }
+                        return nil
+                    }()
+                    
                     await MainActor.run {
                         if let existingIndex = sharedWishlistStore.lists.firstIndex(where: { $0.wishGroupId == wishGroupId }) {
                             // 本地已有该清单，用远端数据更新
@@ -200,6 +612,10 @@ struct ProfileView: View {
                                 remoteEmoji: listEmoji,
                                 remoteOwnerName: ownerName
                             )
+                            // 从远端 number_list 同步自己的昵称
+                            if let nickname = myRemoteNickname {
+                                sharedWishlistStore.setMyNickname(sharedWishlistStore.lists[existingIndex].id, nickname: nickname)
+                            }
                             print("[手动同步] 已更新共享清单: \(listName) (\(wishGroupId))")
                         } else {
                             // 本地没有该清单，作为新的共享清单添加（非 owner）
@@ -210,7 +626,8 @@ struct ProfileView: View {
                                 isSynced: true,
                                 wishGroupId: wishGroupId,
                                 isOwner: false,
-                                ownerName: ownerName
+                                ownerName: ownerName,
+                                myNickname: myRemoteNickname
                             )
                             sharedWishlistStore.add(newList)
                             print("[手动同步] 已添加共享清单: \(listName) (\(wishGroupId))")
@@ -219,6 +636,17 @@ struct ProfileView: View {
                 }
             } else {
                 print("[手动同步] userinfo 无 share_wish_list 或为空")
+            }
+            
+            // 将本地共享清单 ID 同步到 userinfo（本地有但远端没有的）
+            let remoteWishIds = Set(userInfoResponse?.data?.records?.first?.share_wish_list ?? [])
+            let localWishIds = sharedWishlistStore.lists.compactMap { $0.wishGroupId }
+            let missingIds = localWishIds.filter { !remoteWishIds.contains($0) }
+            if !missingIds.isEmpty {
+                print("[手动同步] 本地有 \(missingIds.count) 个共享清单未同步到 userinfo，开始上传...")
+                for wishGroupId in missingIds {
+                    await client.syncUserInfoShareWishList(wishGroupId: wishGroupId, action: "push")
+                }
             }
             
             // 下载远端物品/心愿的图片
@@ -253,20 +681,23 @@ struct ProfileView: View {
                 
                 // 处理物品同步结果
                 if let result = itemsSyncResult {
-                    for name in result.deletedLocalNames {
-                        if let item = itemStore.items.first(where: { $0.name == name && $0.listType == .items }) {
+                    for deletedItemId in result.deletedLocalItemIds {
+                        if let item = itemStore.items.first(where: { $0.itemId == deletedItemId && $0.listType == .items }) {
                             itemStore.delete(item)
-                            print("[同步] 已删除本地物品: \(name)")
+                            print("[同步] 已删除本地物品: \(item.name)")
                         }
                     }
                     // 远端独有或远端更新的物品，添加到本地
                     for var remoteItem in result.remoteOnlyItems {
-                        if !itemStore.items.contains(where: { $0.name == remoteItem.name && $0.listType == remoteItem.listType }) {
+                        // itemId 为空则忽略该物品
+                        guard !remoteItem.itemId.isEmpty else { continue }
+                        if !itemStore.items.contains(where: { $0.itemId == remoteItem.itemId }) {
                             // 如果下载到了图片，设置到 imageData
                             if let imageData = downloadedImages[remoteItem.id.uuidString] {
                                 remoteItem.imageData = imageData
                                 print("[同步] 已下载远端物品图片: \(remoteItem.name)")
                             }
+                            remoteItem.isSynced = true
                             itemStore.add(remoteItem)
                             print("[同步] 已添加远端物品: \(remoteItem.name)")
                         }
@@ -277,20 +708,22 @@ struct ProfileView: View {
                 
                 // 处理心愿清单同步结果
                 if let result = wishesSyncResult {
-                    for name in result.deletedLocalNames {
-                        if let item = itemStore.items.first(where: { $0.name == name && $0.listType == .wishlist }) {
+                    for deletedItemId in result.deletedLocalItemIds {
+                        if let item = itemStore.items.first(where: { $0.itemId == deletedItemId && $0.listType == .wishlist }) {
                             itemStore.delete(item)
-                            print("[同步] 已删除本地心愿: \(name)")
+                            print("[同步] 已删除本地心愿: \(item.name)")
                         }
                     }
                     // 远端独有或远端更新的心愿，添加到本地
                     for var remoteItem in result.remoteOnlyItems {
-                        if !itemStore.items.contains(where: { $0.name == remoteItem.name && $0.listType == remoteItem.listType }) {
+                        guard !remoteItem.itemId.isEmpty else { continue }
+                        if !itemStore.items.contains(where: { $0.itemId == remoteItem.itemId }) {
                             // 如果下载到了图片，设置到 imageData
                             if let imageData = downloadedImages[remoteItem.id.uuidString] {
                                 remoteItem.imageData = imageData
                                 print("[同步] 已下载远端心愿图片: \(remoteItem.name)")
                             }
+                            remoteItem.isSynced = true
                             itemStore.add(remoteItem)
                             print("[同步] 已添加远端心愿: \(remoteItem.name)")
                         }
@@ -306,11 +739,24 @@ struct ProfileView: View {
                 
                 if allSuccess {
                     itemStore.markSyncCompleted()
+                    itemStore.markAllItemsSynced()
                     itemStore.rebuildCustomDisplayTypesFromWishes()
+                    // 清理已同步的删除记录
+                    var syncedDeleteIds = itemsSyncResult?.deletedRemoteItemIds ?? []
+                    syncedDeleteIds.append(contentsOf: wishesSyncResult?.deletedRemoteItemIds ?? [])
+                    if !syncedDeleteIds.isEmpty {
+                        itemStore.clearDeletedRecords(itemIds: syncedDeleteIds)
+                    }
                     message = "同步成功"
                 } else if itemsSyncResult != nil || wishesSyncResult != nil {
                     itemStore.markSyncCompleted()
+                    itemStore.markAllItemsSynced()
                     itemStore.rebuildCustomDisplayTypesFromWishes()
+                    var syncedDeleteIds = itemsSyncResult?.deletedRemoteItemIds ?? []
+                    syncedDeleteIds.append(contentsOf: wishesSyncResult?.deletedRemoteItemIds ?? [])
+                    if !syncedDeleteIds.isEmpty {
+                        itemStore.clearDeletedRecords(itemIds: syncedDeleteIds)
+                    }
                     message = "部分同步成功"
                 } else {
                     message = "同步失败，请检查网络连接"
@@ -323,13 +769,152 @@ struct ProfileView: View {
                     trigger: .manual,
                     itemsUploaded: itemsSyncResult?.uploadedCount ?? 0,
                     itemsUpdated: itemsSyncResult?.updatedCount ?? 0,
-                    itemsDeletedLocal: itemsSyncResult?.deletedLocalNames.count ?? 0,
+                    itemsDeletedLocal: itemsSyncResult?.deletedLocalItemIds.count ?? 0,
                     itemsFailed: itemsSyncResult?.failedIds.count ?? 0,
                     wishesUploaded: wishesSyncResult?.uploadedCount ?? 0,
                     wishesUpdated: wishesSyncResult?.updatedCount ?? 0,
-                    wishesDeletedLocal: wishesSyncResult?.deletedLocalNames.count ?? 0,
+                    wishesDeletedLocal: wishesSyncResult?.deletedLocalItemIds.count ?? 0,
                     wishesFailed: wishesSyncResult?.failedIds.count ?? 0,
+                    savingInfoSynced: savingSuccess,
                     success: allSuccess || itemsSyncResult != nil || wishesSyncResult != nil,
+                    message: message
+                )
+                SyncHistoryStore.shared.addRecord(record)
+                
+                showToastMessage(message)
+            }
+        }
+    }
+    /// 执行 iCloud 同步（物品、心愿、储蓄投资）
+    /// 逻辑与远端同步一致，但读写 iCloud 存储，图片直接存 iCloud 无需上传 COS
+    private func performICloudSync() {
+        guard IAPManager.shared.isVIPActive else {
+            showingProUpgrade = true
+            return
+        }
+        
+        isICloudSyncing = true
+        
+        Task {
+            // 让出一帧，确保 UI 先刷新显示 loading
+            await Task.yield()
+            
+            // 检查 iCloud 可用性
+            guard ICloudSyncManager.shared.isICloudAvailable,
+                  ICloudSyncManager.shared.iCloudDocumentsURL != nil else {
+                await MainActor.run {
+                    isICloudSyncing = false
+                    showToastMessage("iCloud 不可用，请检查是否已登录 iCloud")
+                }
+                return
+            }
+            
+            let items = itemStore.items
+            let deletedRecords = itemStore.deletedItemRecords
+            let nonSalaryRecords = financeStore.records.filter { $0.incomePeriod != .salary }
+            let salaryRec = financeStore.salaryRecord
+            let savingsGoal = financeStore.savingsGoal
+            let largeItemsPrice = items.filter { $0.listType == .items && !$0.isArchived && $0.isLargeItem && !$0.isPriceless }.reduce(0) { $0 + $1.price }
+            let normalItemsPrice = items.filter { $0.listType == .items && !$0.isArchived && !$0.isLargeItem && !$0.isPriceless }.reduce(0) { $0 + $1.price }
+            let allItemsPrice = largeItemsPrice + normalItemsPrice
+            let calcTotalAssets = financeStore.calculatedTotalAssets(itemsTotalPrice: allItemsPrice)
+            
+            // 并发同步物品、心愿和储蓄投资
+            async let itemsResult = ICloudSyncManager.shared.syncItems(
+                items: items,
+                deletedItemRecords: deletedRecords
+            )
+            async let wishesResult = ICloudSyncManager.shared.syncWishes(
+                items: items,
+                deletedItemRecords: deletedRecords
+            )
+            
+            async let savingResult = ICloudSyncManager.shared.syncSavingInfo(
+                records: nonSalaryRecords,
+                salaryRecord: salaryRec,
+                goal: savingsGoal,
+                totalAssets: calcTotalAssets
+            )
+            
+            let (icloudItemsResult, icloudWishesResult) = await (itemsResult, wishesResult)
+            let icloudSavingSuccess = await savingResult
+            print("[iCloud 同步] 储蓄投资: \(icloudSavingSuccess ? "成功" : "失败")")
+            
+            await MainActor.run {
+                isICloudSyncing = false
+                
+                var allSuccess = true
+                var message = ""
+                
+                // 处理物品同步结果
+                if let result = icloudItemsResult {
+                    for deletedItemId in result.deletedLocalItemIds {
+                        if let item = itemStore.items.first(where: { $0.itemId == deletedItemId && $0.listType == .items }) {
+                            itemStore.delete(item)
+                            print("[iCloud 同步] 已删除本地物品: \(item.name)")
+                        }
+                    }
+                    for var remoteItem in result.remoteOnlyItems {
+                        guard !remoteItem.itemId.isEmpty else { continue }
+                        if !itemStore.items.contains(where: { $0.itemId == remoteItem.itemId }) {
+                            remoteItem.isSynced = true
+                            itemStore.add(remoteItem)
+                            print("[iCloud 同步] 已添加物品: \(remoteItem.name)")
+                        }
+                    }
+                } else {
+                    allSuccess = false
+                }
+                
+                // 处理心愿同步结果
+                if let result = icloudWishesResult {
+                    for deletedItemId in result.deletedLocalItemIds {
+                        if let item = itemStore.items.first(where: { $0.itemId == deletedItemId && $0.listType == .wishlist }) {
+                            itemStore.delete(item)
+                            print("[iCloud 同步] 已删除本地心愿: \(item.name)")
+                        }
+                    }
+                    for var remoteItem in result.remoteOnlyItems {
+                        guard !remoteItem.itemId.isEmpty else { continue }
+                        if !itemStore.items.contains(where: { $0.itemId == remoteItem.itemId }) {
+                            remoteItem.isSynced = true
+                            itemStore.add(remoteItem)
+                            print("[iCloud 同步] 已添加心愿: \(remoteItem.name)")
+                        }
+                    }
+                } else {
+                    allSuccess = false
+                }
+                
+                if allSuccess {
+                    itemStore.markSyncCompleted()
+                    itemStore.markAllItemsSynced()
+                    itemStore.rebuildCustomDisplayTypesFromWishes()
+                    message = "iCloud 同步成功"
+                } else if icloudItemsResult != nil || icloudWishesResult != nil {
+                    itemStore.markSyncCompleted()
+                    itemStore.markAllItemsSynced()
+                    itemStore.rebuildCustomDisplayTypesFromWishes()
+                    message = "iCloud 部分同步成功"
+                } else {
+                    message = "iCloud 同步失败"
+                }
+                
+                // 记录同步历史
+                let record = SyncRecord(
+                    id: UUID(),
+                    date: Date(),
+                    trigger: .icloud,
+                    itemsUploaded: icloudItemsResult?.uploadedCount ?? 0,
+                    itemsUpdated: icloudItemsResult?.updatedCount ?? 0,
+                    itemsDeletedLocal: icloudItemsResult?.deletedLocalItemIds.count ?? 0,
+                    itemsFailed: icloudItemsResult?.failedCount ?? 0,
+                    wishesUploaded: icloudWishesResult?.uploadedCount ?? 0,
+                    wishesUpdated: icloudWishesResult?.updatedCount ?? 0,
+                    wishesDeletedLocal: icloudWishesResult?.deletedLocalItemIds.count ?? 0,
+                    wishesFailed: icloudWishesResult?.failedCount ?? 0,
+                    savingInfoSynced: icloudSavingSuccess,
+                    success: allSuccess || icloudItemsResult != nil || icloudWishesResult != nil,
                     message: message
                 )
                 SyncHistoryStore.shared.addRecord(record)
@@ -345,4 +930,5 @@ struct ProfileView: View {
         .environmentObject(AuthManager.shared)
         .environmentObject(ItemStore())
         .environmentObject(SharedWishlistStore())
+        .environmentObject(FinanceStore())
 }

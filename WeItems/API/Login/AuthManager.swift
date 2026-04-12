@@ -49,8 +49,8 @@ class AuthManager: ObservableObject {
     
     /// 应用启动时验证 Token
     /// 1. 检查本地是否有 token
-    /// 2. 如果上次验证在 24 小时内，直接复用（跳过网络请求）
-    /// 3. 超过 24 小时，使用 refresh_token 刷新
+    /// 2. 如果 access_token 未过期（还有 >5min 有效期），直接复用
+    /// 3. 快过期或已过期，使用 refresh_token 刷新
     /// 4. 如果刷新失败，则标记为未认证
     @MainActor
     func validateTokenOnLaunch() async {
@@ -72,28 +72,32 @@ class AuthManager: ObservableObject {
             cloudBaseClient = CloudBaseClient(envId: envId, accessToken: accessToken)
         }
         
-        // 2. 检查上次验证时间，24 小时内直接复用
-        if TokenStorage.shared.isLastVerifyStillValid() {
-            print("[AuthManager] 上次验证在 24 小时内，直接复用本地 token")
+        // 2. 检查 access_token 是否仍有效（还有 >5min 有效期）
+        if !TokenStorage.shared.needsRefresh() {
+            let remaining = TokenStorage.shared.tokenRemainingSeconds()
+            print("[AuthManager] access_token 仍有效（剩余 \(Int(remaining))秒），直接复用")
             authState = .authenticated
+            Task { await fetchOrCreateUserInfo() }
             return
         }
         
-        // 3. 超过 24 小时，使用 refresh_token 刷新
-        print("[AuthManager] 超过 24 小时或首次验证，使用 refresh_token 刷新...")
+        // 3. access_token 已过期或即将过期，使用 refresh_token 刷新
+        let remaining = TokenStorage.shared.tokenRemainingSeconds()
+        print("[AuthManager] access_token 需刷新（剩余 \(Int(remaining))秒），使用 refresh_token...")
         if await refreshTokenWithStoredRefreshToken(refreshToken: refreshToken) {
             print("[AuthManager] Token 刷新成功")
-            TokenStorage.shared.saveLastVerifyTime()
             authState = .authenticated
+            Task { await fetchOrCreateUserInfo() }
             return
         }
         
-        // 4. refresh 失败，尝试直接验证当前 token（可能 refresh_token 过期但 access_token 还有效）
+        // 4. refresh 失败，尝试直接验证当前 token（可能 access_token 虽然本地计算过期但服务端还有效）
         print("[AuthManager] Refresh 失败，尝试验证当前 access_token...")
         if await introspectCurrentToken() {
             print("[AuthManager] 当前 access_token 仍然有效")
             TokenStorage.shared.saveLastVerifyTime()
             authState = .authenticated
+            Task { await fetchOrCreateUserInfo() }
             return
         }
         
@@ -147,9 +151,6 @@ class AuthManager: ObservableObject {
             sub: sub
         )
         
-        // 记录本次验证时间
-        TokenStorage.shared.saveLastVerifyTime()
-        
         // 更新 cloudBaseClient
         if let envId = Self.loadEnvId() {
             self.cloudBaseClient = CloudBaseClient(
@@ -163,11 +164,58 @@ class AuthManager: ObservableObject {
         
         // 通知 Store 重新加载当前用户数据
         NotificationCenter.default.post(name: Self.userDidChangeNotification, object: nil)
+        
+        // 异步获取/创建 userinfo 并同步 VIP 信息
+        Task {
+            await fetchOrCreateUserInfo()
+        }
+    }
+    
+    /// 获取 userinfo，如果不存在则创建；仅在本地 VIP 过期时从云端同步 VIP 状态
+    @MainActor
+    private func fetchOrCreateUserInfo() async {
+        guard let client = cloudBaseClient else {
+            print("[AuthManager] 无 CloudBaseClient，跳过 userinfo 获取")
+            return
+        }
+        
+        // 本地 VIP 未过期，不需要请求云端
+        if !IAPManager.shared.isVIPExpiredLocally {
+            print("[AuthManager] 本地 VIP 未过期(\(IAPManager.shared.vipLevel.displayName))，跳过云端获取")
+            return
+        }
+        
+        let response = await client.fetchUserInfo()
+        
+        if let records = response?.data?.records, let record = records.first {
+            print("[AuthManager] 已获取 userinfo: _id=\(record._id ?? "nil")")
+            
+            // 同步远端 VIP 信息到本地
+            if let vipInfo = record.vip_type, let vipType = vipInfo.type {
+                IAPManager.shared.applyRemoteVIPInfo(
+                    type: vipType,
+                    startDate: vipInfo.startDate,
+                    expireDate: vipInfo.expireDate
+                )
+                print("[AuthManager] 已同步 VIP 信息: type=\(vipType)")
+            }
+        } else {
+            // userinfo 不存在，创建新记录
+            print("[AuthManager] userinfo 不存在，开始创建...")
+            let _ = await client.createUserInfo(shareWishList: [])
+            print("[AuthManager] userinfo 已创建")
+            
+            // 如果本地已有 VIP（如之前通过 IAP 购买），同步到云端
+            if IAPManager.shared.isPro {
+                await IAPManager.shared.syncVIPToCloud()
+            }
+        }
     }
     
     /// 用户登出
     func logout() {
         TokenStorage.shared.clearToken()
+        IAPManager.shared.clearLocalVIPInfo()
         authState = .unauthenticated
         cloudBaseClient = nil
         print("[AuthManager] 用户已登出")
@@ -176,19 +224,19 @@ class AuthManager: ObservableObject {
         NotificationCenter.default.post(name: Self.userDidChangeNotification, object: nil)
     }
     
-    /// 确保 token 有效：如果上次验证超过 24 小时则自动刷新
+    /// 确保 token 有效：如果 access_token 即将过期则自动刷新
     /// 在进行任何 API 调用前应先调用此方法
     /// - Returns: token 是否有效（刷新成功也算有效）
     @MainActor
     func ensureValidToken() async -> Bool {
-        // 1. 检查上次验证时间，24 小时内直接复用
-        if TokenStorage.shared.isLastVerifyStillValid() {
-            print("[AuthManager] 上次验证在 24 小时内，token 有效")
+        // 1. 检查 access_token 是否仍然有效（还有 5 分钟以上有效期）
+        if !TokenStorage.shared.needsRefresh() {
             return true
         }
         
-        // 2. 超过 24 小时，使用 refresh_token 刷新
-        print("[AuthManager] 超过 24 小时，尝试刷新 token...")
+        // 2. 需要刷新，使用 refresh_token
+        let remaining = TokenStorage.shared.tokenRemainingSeconds()
+        print("[AuthManager] access_token 剩余 \(Int(remaining))秒，开始刷新...")
         return await tryRefreshToken()
     }
     
@@ -203,7 +251,6 @@ class AuthManager: ObservableObject {
         
         if await refreshTokenWithStoredRefreshToken(refreshToken: refreshToken) {
             print("[AuthManager] Token 刷新成功")
-            TokenStorage.shared.saveLastVerifyTime()
             authState = .authenticated
             return true
         }
@@ -226,8 +273,8 @@ class AuthManager: ObservableObject {
     
     /// 判断启动时是否需要网络验证 token
     /// - 没有本地 token → 不需要（直接进入首页，显示未登录状态）
-    /// - 有 token 且 24h 内已验证 → 不需要（直接复用，可以跳过开屏页）
-    /// - 有 token 但超过 24h → 需要（要走网络刷新流程，需要开屏页等待）
+    /// - 有 token 且未过期 → 不需要（直接复用，可以跳过开屏页）
+    /// - 有 token 但需要刷新 → 需要（要走网络刷新流程，需要开屏页等待）
     func needsNetworkVerification() -> Bool {
         guard TokenStorage.shared.getAccessToken() != nil,
               TokenStorage.shared.getRefreshToken() != nil else {
@@ -235,8 +282,8 @@ class AuthManager: ObservableObject {
             return false
         }
         
-        if TokenStorage.shared.isLastVerifyStillValid() {
-            // 24h 内已验证，不需要网络请求，同步设置状态
+        if !TokenStorage.shared.needsRefresh() {
+            // access_token 仍有效，不需要网络请求，同步设置状态
             authState = .authenticated
             // 确保 CloudBaseClient 已创建
             if cloudBaseClient == nil, let envId = Self.loadEnvId(),
@@ -246,7 +293,7 @@ class AuthManager: ObservableObject {
             return false
         }
         
-        // 需要网络验证
+        // 需要网络刷新
         return true
     }
 }

@@ -4,213 +4,131 @@
 //
 
 import SwiftUI
-import Combine
 
-// 礼炮状态
-enum FireworkState {
-    case launching(startPosition: CGPoint, targetPosition: CGPoint, progress: CGFloat)
-    case exploding(position: CGPoint, particles: [ExplosionParticle])
-}
+// MARK: - 轻量烟花粒子
 
-// 爆炸粒子
-struct ExplosionParticle: Identifiable {
+struct FireworkDot: Identifiable {
     let id = UUID()
-    var position: CGPoint
-    var velocity: CGPoint
+    var x: CGFloat
+    var y: CGFloat
+    var targetX: CGFloat
+    var targetY: CGFloat
     var color: Color
     var size: CGFloat
-    var opacity: Double
 }
 
-// 礼炮
-struct FireworkRocket: Identifiable {
-    let id = UUID()
-    var state: FireworkState
-    let color: Color
-}
-
-// 烟花视图
+// 烟花视图（轻量版，纯 SwiftUI 动画）
 struct FireworkView: View {
-    @State private var rockets: [FireworkRocket] = []
-    @State private var timer: Timer? = nil
-    @State private var launchCount = 0
-    let maxLaunches = 8
-    let duration: TimeInterval = 2.0
+    @State private var bursts: [[FireworkDot]] = []
+    @State private var animating = false
     
-    let colors: [Color] = [.yellow, .orange, .red, .pink, .purple, .blue, .cyan, .white]
+    let colors: [Color] = [.yellow, .orange, .red, .pink, .purple, .cyan, .white]
     
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1/60)) { _ in
-            Canvas { context, size in
-                for rocket in rockets {
-                    switch rocket.state {
-                    case .launching(let startPos, let targetPos, let progress):
-                        // 绘制上升的礼炮
-                        let currentX = startPos.x + (targetPos.x - startPos.x) * progress
-                        let currentY = startPos.y + (targetPos.y - startPos.y) * progress
-                        
-                        var path = Path()
-                        path.addEllipse(in: CGRect(x: currentX - 3, y: currentY - 3, width: 6, height: 6))
-                        context.fill(path, with: .color(rocket.color))
-                        
-                        // 拖尾效果
-                        for i in 1...5 {
-                            let trailProgress = max(0, progress - Double(i) * 0.02)
-                            let trailX = startPos.x + (targetPos.x - startPos.x) * trailProgress
-                            let trailY = startPos.y + (targetPos.y - startPos.y) * trailProgress
-                            let alpha = 1.0 - Double(i) * 0.15
-                            var trailPath = Path()
-                            trailPath.addEllipse(in: CGRect(x: trailX - 2, y: trailY - 2, width: 4, height: 4))
-                            context.fill(trailPath, with: .color(rocket.color.opacity(alpha)))
-                        }
-                        
-                    case .exploding(_, let particles):
-                        // 绘制爆炸粒子
-                        for particle in particles {
-                            var path = Path()
-                            path.addEllipse(in: CGRect(
-                                x: particle.position.x - particle.size / 2,
-                                y: particle.position.y - particle.size / 2,
-                                width: particle.size,
-                                height: particle.size
-                            ))
-                            context.fill(path, with: .color(particle.color.opacity(particle.opacity)))
-                        }
-                    }
-                }
+        ZStack {
+            ForEach(bursts.flatMap({ $0 })) { dot in
+                Circle()
+                    .fill(dot.color)
+                    .frame(width: dot.size, height: dot.size)
+                    .position(x: animating ? dot.targetX : dot.x,
+                              y: animating ? dot.targetY : dot.y)
+                    .opacity(animating ? 0 : 1)
             }
         }
         .ignoresSafeArea()
         .onAppear {
-            startFireworks()
-        }
-        .onDisappear {
-            timer?.invalidate()
-        }
-    }
-    
-    private func startFireworks() {
-        let screenWidth = UIScreen.main.bounds.width
-        let screenHeight = UIScreen.main.bounds.height
-        
-        // 持续发射礼炮
-        timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { _ in
-            guard launchCount < maxLaunches else { return }
-            
-            let startX = CGFloat.random(in: screenWidth * 0.1...screenWidth * 0.9)
-            let targetX = startX + CGFloat.random(in: -50...50)
-            let targetY = CGFloat.random(in: screenHeight * 0.15...screenHeight * 0.35)
-            
-            let rocket = FireworkRocket(
-                state: .launching(
-                    startPosition: CGPoint(x: startX, y: screenHeight),
-                    targetPosition: CGPoint(x: targetX, y: targetY),
-                    progress: 0
-                ),
-                color: colors.randomElement()!
-            )
-            
-            rockets.append(rocket)
-            launchCount += 1
-            
-            // 发射动画
-            animateLaunch(for: rocket.id)
-        }
-        
-        // 2秒后停止
-        DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
-            timer?.invalidate()
-        }
-    }
-    
-    private func animateLaunch(for rocketId: UUID) {
-        let steps = 20
-        let interval = 0.015
-        
-        for step in 0...steps {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(step) * interval) {
-                if let index = rockets.firstIndex(where: { $0.id == rocketId }) {
-                    if case .launching(let startPos, let targetPos, _) = rockets[index].state {
-                        let progress = CGFloat(step) / CGFloat(steps)
-                        
-                        if progress >= 1.0 {
-                            // 到达顶点，爆炸
-                            explode(at: targetPos, for: rocketId)
-                        } else {
-                            rockets[index].state = .launching(
-                                startPosition: startPos,
-                                targetPosition: targetPos,
-                                progress: progress
-                            )
-                        }
-                    }
-                }
+            generateBursts()
+            withAnimation(.easeOut(duration: 1.2)) {
+                animating = true
             }
         }
     }
     
-    private func explode(at position: CGPoint, for rocketId: UUID) {
-        guard let index = rockets.firstIndex(where: { $0.id == rocketId }) else { return }
+    private func generateBursts() {
+        let screenW = UIScreen.main.bounds.width
+        let screenH = UIScreen.main.bounds.height
         
-        let particleCount = 25
-        let explosionColors = colors.shuffled().prefix(3)
-        
-        let particles = (0..<particleCount).map { i in
-            let angle = Double(i) / Double(particleCount) * 2 * .pi + Double.random(in: -0.2...0.2)
-            let speed = CGFloat.random(in: 4...10)
-            return ExplosionParticle(
-                position: position,
-                velocity: CGPoint(
-                    x: cos(angle) * speed,
-                    y: sin(angle) * speed
-                ),
-                color: explosionColors.randomElement()!,
+        for _ in 0..<5 {
+            let cx = CGFloat.random(in: screenW * 0.15...screenW * 0.85)
+            let cy = CGFloat.random(in: screenH * 0.15...screenH * 0.4)
+            let burstColor = colors.randomElement()!
+            let count = 12
+            
+            var dots: [FireworkDot] = []
+            for i in 0..<count {
+                let angle = Double(i) / Double(count) * 2 * .pi
+                let dist = CGFloat.random(in: 40...90)
+                dots.append(FireworkDot(
+                    x: cx, y: cy,
+                    targetX: cx + cos(angle) * dist,
+                    targetY: cy + sin(angle) * dist + 30,
+                    color: burstColor.opacity(Double.random(in: 0.6...1.0)),
+                    size: CGFloat.random(in: 3...6)
+                ))
+            }
+            bursts.append(dots)
+        }
+    }
+}
+
+// 冒泡粒子（轻量版）
+struct BubbleParticle: Identifiable {
+    let id = UUID()
+    let x: CGFloat
+    let startY: CGFloat
+    let size: CGFloat
+    let duration: Double
+    let delay: Double
+    let opacity: Double
+}
+
+struct ParticleView: View {
+    @State private var animating = false
+    
+    let particles: [BubbleParticle] = {
+        let w = UIScreen.main.bounds.width
+        let h = UIScreen.main.bounds.height
+        return (0..<20).map { _ in
+            BubbleParticle(
+                x: CGFloat.random(in: 0...w),
+                startY: CGFloat.random(in: h * 0.5...h + 50),
                 size: CGFloat.random(in: 3...7),
-                opacity: 1.0
+                duration: Double.random(in: 3...6),
+                delay: Double.random(in: 0...2),
+                opacity: Double.random(in: 0.1...0.35)
             )
         }
-        
-        rockets[index].state = .exploding(position: position, particles: particles)
-        
-        // 爆炸粒子动画
-        animateExplosion(for: rocketId)
-    }
+    }()
     
-    private func animateExplosion(for rocketId: UUID) {
-        let steps = 40
-        let interval = 0.02
-        
-        for step in 0...steps {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(step) * interval) {
-                if let index = rockets.firstIndex(where: { $0.id == rocketId }) {
-                    if case .exploding(let position, var particles) = rockets[index].state {
-                        for i in particles.indices {
-                            // 更新位置
-                            particles[i].position.x += particles[i].velocity.x
-                            particles[i].position.y += particles[i].velocity.y
-                            
-                            // 重力
-                            particles[i].velocity.y += 0.2
-                            
-                            // 阻力
-                            particles[i].velocity.x *= 0.96
-                            particles[i].velocity.y *= 0.96
-                            
-                            // 渐隐
-                            particles[i].opacity = 1.0 - Double(step) / Double(steps)
-                        }
-                        
-                        rockets[index].state = .exploding(position: position, particles: particles)
-                        
-                        // 动画结束，移除
-                        if step == steps {
-                            rockets.remove(at: index)
-                        }
-                    }
-                }
+    var body: some View {
+        ZStack {
+            ForEach(particles) { p in
+                Circle()
+                    .fill(Color.white.opacity(p.opacity))
+                    .frame(width: p.size, height: p.size)
+                    .position(x: p.x, y: animating ? -20 : p.startY)
+                    .animation(
+                        .linear(duration: p.duration)
+                        .repeatForever(autoreverses: false)
+                        .delay(p.delay),
+                        value: animating
+                    )
             }
         }
+        .ignoresSafeArea()
+        .onAppear {
+            animating = true
+        }
     }
+}
+
+// 粒子模型（保留兼容旧引用）
+struct Particle {
+    var x: CGFloat
+    var y: CGFloat
+    var size: CGFloat
+    var speed: CGFloat
+    var opacity: CGFloat
 }
 
 struct SpiritTravelCelebrationView: View {
@@ -366,65 +284,6 @@ struct SpiritTravelCelebrationView: View {
             }
         }
     }
-}
-
-// 粒子效果视图
-struct ParticleView: View {
-    @State private var particles: [Particle] = []
-    let timer = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
-    
-    var body: some View {
-        TimelineView(.animation) { timeline in
-            Canvas { context, size in
-                for particle in particles {
-                    var path = Path()
-                    path.addEllipse(in: CGRect(x: particle.x, y: particle.y, width: particle.size, height: particle.size))
-                    
-                    let color = Color.white.opacity(particle.opacity)
-                    context.fill(path, with: .color(color))
-                }
-            }
-        }
-        .onReceive(timer) { _ in
-            updateParticles()
-        }
-        .onAppear {
-            // 初始化粒子
-            for _ in 0..<30 {
-                particles.append(createParticle())
-            }
-        }
-    }
-    
-    private func createParticle() -> Particle {
-        Particle(
-            x: CGFloat.random(in: 0...UIScreen.main.bounds.width),
-            y: CGFloat.random(in: UIScreen.main.bounds.height...UIScreen.main.bounds.height + 100),
-            size: CGFloat.random(in: 3...8),
-            speed: CGFloat.random(in: 0.5...2),
-            opacity: CGFloat.random(in: 0.1...0.4)
-        )
-    }
-    
-    private func updateParticles() {
-        for i in particles.indices {
-            particles[i].y -= particles[i].speed
-            
-            // 重置超出屏幕的粒子
-            if particles[i].y < -20 {
-                particles[i] = createParticle()
-            }
-        }
-    }
-}
-
-// 粒子模型
-struct Particle {
-    var x: CGFloat
-    var y: CGFloat
-    var size: CGFloat
-    var speed: CGFloat
-    var opacity: CGFloat
 }
 
 #Preview {

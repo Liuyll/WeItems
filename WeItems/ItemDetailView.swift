@@ -14,10 +14,14 @@ struct ItemDetailView: View {
     var wishlistGroupStore: WishlistGroupStore?
     
     @State private var showingArchiveConfirm = false
+    @State private var showingSoldConfirm = false
+    @State private var soldPriceText = ""
     @State private var showingMoveToWishlistConfirm = false
     @State private var showingFulfillWishConfirm = false
     @State private var showingAddToSharedWishlist = false
     @State private var showingEditWish = false
+    @State private var toastMessage: String?
+    @State private var showToast = false
     
     var body: some View {
         NavigationStack {
@@ -38,10 +42,17 @@ struct ItemDetailView: View {
                             .font(.title)
                             .fontWeight(.bold)
                         
-                        Text("¥\(String(format: "%.2f", item.price))")
-                            .font(.title2)
-                            .fontWeight(.semibold)
-                            .foregroundStyle(.blue)
+                        if item.isPriceless {
+                            Text("无价之物")
+                                .font(.title2)
+                                .fontWeight(.semibold)
+                                .foregroundStyle(.orange)
+                        } else {
+                            Text("¥\(String(format: "%.2f", item.price))")
+                                .font(.title2)
+                                .fontWeight(.semibold)
+                                .foregroundStyle(.blue)
+                        }
                     }
                     
                     Divider()
@@ -75,45 +86,68 @@ struct ItemDetailView: View {
                         }
                     }
                     
-                    // 详情
+                    // 详情/心愿描述
                     if !item.details.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("详情")
-                                .font(.headline)
+                            Text(item.listType == .wishlist ? "心愿描述" : "详情")
+                                .font(.system(.headline, design: .rounded))
                             Text(item.details)
-                                .font(.body)
+                                .font(.system(.body, design: .rounded))
                                 .foregroundStyle(.secondary)
+                        }
+                    } else if item.listType == .wishlist {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("心愿描述")
+                                .font(.system(.headline, design: .rounded))
+                            Text("暂无描述")
+                                .font(.system(.body, design: .rounded))
+                                .foregroundStyle(.tertiary)
                         }
                     }
                     
-                    // 购买链接
-                    if !item.purchaseLink.isEmpty, let url = URL(string: item.purchaseLink), 
-                       url.scheme?.hasPrefix("http") == true {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("购买链接")
-                                .font(.headline)
-                            
-                            Link(destination: url) {
-                                HStack {
-                                    Image(systemName: "link")
-                                    Text("点击打开链接")
-                                    Spacer()
-                                    Image(systemName: "arrow.up.right.square")
+                    // 购买链接（仅心愿清单）
+                    if item.listType == .wishlist {
+                        if !item.purchaseLink.isEmpty {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("购买链接")
+                                    .font(.system(.headline, design: .rounded))
+                                
+                                Button {
+                                    UIPasteboard.general.string = item.purchaseLink
+                                    toastMessage = "已复制到剪贴板"
+                                    withAnimation { showToast = true }
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                                        withAnimation { showToast = false }
+                                    }
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: "link")
+                                            .font(.system(size: 14))
+                                        Text(shortenURL(item.purchaseLink))
+                                            .lineLimit(1)
+                                        Spacer()
+                                        Text("点击复制")
+                                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                                            .foregroundStyle(.blue.opacity(0.8))
+                                        Image(systemName: "doc.on.doc")
+                                            .font(.system(size: 12))
+                                    }
+                                    .font(.system(.body, design: .rounded))
+                                    .padding(12)
+                                    .background(Color.blue.opacity(0.08))
+                                    .foregroundStyle(.blue)
+                                    .clipShape(RoundedRectangle(cornerRadius: 10))
                                 }
-                                .padding()
-                                .background(Color.blue.opacity(0.1))
-                                .foregroundStyle(.blue)
-                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                                .buttonStyle(.plain)
                             }
-                        }
-                    } else if !item.purchaseLink.isEmpty {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("购买链接")
-                                .font(.headline)
-                            Text(item.purchaseLink)
-                                .font(.body)
-                                .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
+                        } else {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("购买链接")
+                                    .font(.system(.headline, design: .rounded))
+                                Text("暂无链接")
+                                    .font(.system(.body, design: .rounded))
+                                    .foregroundStyle(.tertiary)
+                            }
                         }
                     }
                     
@@ -135,7 +169,7 @@ struct ItemDetailView: View {
                                 .foregroundStyle(.secondary)
                         }
                         
-                        if item.listType == .items {
+                        if item.listType == .items && !item.isPriceless {
                             HStack(spacing: 4) {
                                 Text("平均每天支付：")
                                     .font(.subheadline)
@@ -224,30 +258,36 @@ struct ItemDetailView: View {
                         }
                     }
                     
-                    // 归档/取消归档按钮（仅在我的物品中显示）
+                    // 售出/取消售出按钮（仅在我的物品中显示）
                     if item.listType == .items {
                         Button {
                             if item.isArchived {
-                                // 取消归档直接执行
+                                // 取消售出直接执行
                                 withAnimation(.spring(duration: 0.3)) {
                                     store.toggleArchiveItem(itemId: item.id)
+                                    // 清除售出信息
+                                    if var updatedItem = store.items.first(where: { $0.id == item.id }) {
+                                        updatedItem.soldPrice = nil
+                                        updatedItem.soldDate = nil
+                                        store.update(updatedItem)
+                                    }
                                     dismiss()
                                 }
                             } else {
-                                // 归档需要确认
-                                showingArchiveConfirm = true
+                                soldPriceText = ""
+                                showingSoldConfirm = true
                             }
                         } label: {
                             HStack {
-                                Image(systemName: item.isArchived ? "archivebox.fill" : "archivebox")
-                                Text(item.isArchived ? "取消归档" : "归档")
+                                Image(systemName: item.isArchived ? "arrow.uturn.left.circle.fill" : "tag.circle.fill")
+                                Text(item.isArchived ? "取消售出" : "我已售出")
                                     .fontWeight(.semibold)
                                 Spacer()
-                                Image(systemName: item.isArchived ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
+                                Image(systemName: item.isArchived ? "arrow.up.circle.fill" : "yensign.circle.fill")
                             }
                             .padding()
-                            .background(item.isArchived ? Color.purple.opacity(0.1) : Color.gray.opacity(0.1))
-                            .foregroundStyle(item.isArchived ? .purple : .gray)
+                            .background(item.isArchived ? Color.purple.opacity(0.1) : Color.orange.opacity(0.1))
+                            .foregroundStyle(item.isArchived ? .purple : .orange)
                             .clipShape(RoundedRectangle(cornerRadius: 12))
                         }
                     }
@@ -255,6 +295,23 @@ struct ItemDetailView: View {
                     Spacer()
                 }
                 .padding()
+            }
+            .overlay {
+                if showToast, let msg = toastMessage {
+                    VStack {
+                        Spacer()
+                        Text(msg)
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 12)
+                            .background(Capsule().fill(Color.black.opacity(0.75)))
+                            .padding(.bottom, 40)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                    .animation(.easeInOut(duration: 0.3), value: showToast)
+                }
             }
             .navigationTitle(item.listType == .wishlist ? "心愿详情" : "物品详情")
             .navigationBarTitleDisplayMode(.inline)
@@ -279,41 +336,48 @@ struct ItemDetailView: View {
                     EditWishlistItemView(item: item, store: store, wishlistGroupStore: groupStore)
                 }
             }
-            .alert("确认归档", isPresented: $showingArchiveConfirm) {
-                Button("取消", role: .cancel) { }
-                Button("确认归档", role: .none) {
+            .customInputAlert(
+                isPresented: $showingSoldConfirm,
+                title: "确认售出",
+                message: "输入「\(item.name)」的售出价格，物品将移入售出列表",
+                placeholder: "售出价格",
+                text: $soldPriceText,
+                confirmText: "确认售出",
+                keyboardType: .decimalPad,
+                onConfirm: {
                     withAnimation(.spring(duration: 0.3)) {
-                        store.toggleArchiveItem(itemId: item.id)
+                        let soldPrice = Double(soldPriceText) ?? 0
+                        store.markAsSold(itemId: item.id, soldPrice: soldPrice)
                         dismiss()
                     }
                 }
-            } message: {
-                Text("归档后，该物品将从「我的物品」列表中移除，并移至「归档」标签下。是否继续？")
-            }
-            .alert("移入心愿列表", isPresented: $showingMoveToWishlistConfirm) {
-                Button("取消", role: .cancel) { }
-                Button("确认移入", role: .none) {
+            )
+            .customConfirmAlert(
+                isPresented: $showingMoveToWishlistConfirm,
+                title: "移入心愿列表",
+                message: "移入后，该物品将从「我的物品」列表中移除，并移至「心愿列表」中。是否继续？",
+                confirmText: "确认移入",
+                onConfirm: {
                     UserDefaults.standard.set(true, forKey: "hasShownMoveToWishlistHint")
                     withAnimation(.spring(duration: 0.3)) {
                         store.moveToList(itemId: item.id, listType: .wishlist)
                         dismiss()
                     }
                 }
-            } message: {
-                Text("移入后，该物品将从「我的物品」列表中移除，并移至「心愿列表」中。是否继续？")
-            }
-            .alert("实现心愿", isPresented: $showingFulfillWishConfirm) {
-                Button("取消", role: .cancel) { }
-                Button("确认实现", role: .none) {
+            )
+            .customConfirmAlert(
+                isPresented: $showingFulfillWishConfirm,
+                title: "实现心愿",
+                message: "实现心愿后，该物品将从「心愿列表」中移除，并移至「我的物品」中。是否继续？",
+                confirmText: "确认实现",
+                onConfirm: {
                     UserDefaults.standard.set(true, forKey: "hasShownFulfillWishHint")
                     withAnimation(.spring(duration: 0.3)) {
                         store.moveToList(itemId: item.id, listType: .items)
                         dismiss()
                     }
                 }
-            } message: {
-                Text("实现心愿后，该物品将从「心愿列表」中移除，并移至「我的物品」中。是否继续？")
-            }
+            )
             .sheet(isPresented: $showingAddToSharedWishlist) {
                 if let sharedStore = sharedStore {
                     AddToSharedWishlistSheet(item: item, sharedStore: sharedStore)
@@ -342,6 +406,20 @@ struct ItemDetailView: View {
     private var averageDailyCost: Double {
         guard daysSinceCreation > 0 else { return item.price }
         return item.price / Double(daysSinceCreation)
+    }
+    
+    /// 将 URL 缩短为域名+路径前缀的短链形式
+    private func shortenURL(_ urlString: String) -> String {
+        guard let url = URL(string: urlString), let host = url.host else {
+            // 非标准 URL，截断显示
+            return urlString.count > 30 ? String(urlString.prefix(30)) + "..." : urlString
+        }
+        let path = url.path
+        if path.isEmpty || path == "/" {
+            return host
+        }
+        let shortPath = path.count > 15 ? String(path.prefix(15)) + "..." : path
+        return host + shortPath
     }
     
     private func shareWishToFriends() {
@@ -466,12 +544,14 @@ struct AddToSharedWishlistSheet: View {
                     Button("取消") { dismiss() }
                 }
             }
-            .alert("新建共享清单", isPresented: $showingCreateNew) {
-                TextField("清单名称", text: $newListName)
-                Button("取消", role: .cancel) {
-                    newListName = ""
-                }
-                Button("创建") {
+            .customInputAlert(
+                isPresented: $showingCreateNew,
+                title: "新建共享清单",
+                message: "输入新共享清单的名称，心愿将自动添加到其中",
+                placeholder: "清单名称",
+                text: $newListName,
+                confirmText: "创建",
+                onConfirm: {
                     guard !newListName.trimmingCharacters(in: .whitespaces).isEmpty else { return }
                     let newList = SharedWishlist(
                         name: newListName.trimmingCharacters(in: .whitespaces),
@@ -485,10 +565,11 @@ struct AddToSharedWishlistSheet: View {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                         dismiss()
                     }
+                },
+                onCancel: {
+                    newListName = ""
                 }
-            } message: {
-                Text("输入新共享清单的名称，心愿将自动添加到其中")
-            }
+            )
         }
     }
 }

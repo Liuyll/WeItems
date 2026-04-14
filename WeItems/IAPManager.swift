@@ -64,7 +64,7 @@ class IAPManager: ObservableObject {
         loadLocalVIPInfo()
         updateListenerTask = listenForTransactions()
         Task { await loadProducts() }
-        Task { await updatePurchasedProducts() }
+        Task { await checkSubscriptionStatus() }
     }
     
     deinit {
@@ -182,9 +182,20 @@ class IAPManager: ObservableObject {
         errorMessage = nil
         do {
             let ids = IAPProduct.allCases.map { $0.rawValue }
+            print("[IAP] 请求产品列表: \(ids)")
             let storeProducts = try await Product.products(for: ids)
             products = storeProducts.sorted { $0.price < $1.price }
             isLoading = false
+            
+            if storeProducts.isEmpty {
+                print("[IAP] ⚠️ 未获取到任何产品，请检查 App Store Connect 配置")
+                print("[IAP]   - 产品 ID 是否在 App Store Connect 中创建")
+                print("[IAP]   - 付费协议是否已签署并激活")
+                print("[IAP]   - 产品状态是否为\"准备提交\"")
+                errorMessage = "无法获取订阅方案，请检查网络后重试"
+            } else {
+                print("[IAP] 成功加载 \(storeProducts.count) 个产品: \(storeProducts.map { "\($0.id)(\($0.displayPrice))" })")
+            }
         } catch {
             isLoading = false
             errorMessage = "获取产品信息失败：\(error.localizedDescription)"
@@ -348,6 +359,86 @@ class IAPManager: ObservableObject {
         Task.detached {
             for await result in Transaction.updates {
                 if case .verified(let transaction) = result {
+                    
+                    // 检查是否被退款
+                    if let revocationDate = transaction.revocationDate {
+                        print("")
+                        print("[IAP] ⚠️⚠️⚠️ ========== 检测到退款 ==========")
+                        print("[IAP] 产品ID: \(transaction.productID)")
+                        print("[IAP] 交易ID: \(transaction.id)")
+                        print("[IAP] 原始交易ID: \(transaction.originalID)")
+                        print("[IAP] 购买时间: \(transaction.purchaseDate)")
+                        print("[IAP] 退款时间: \(revocationDate)")
+                        if let reason = transaction.revocationReason {
+                            print("[IAP] 退款原因: \(reason == .developerIssue ? "开发者问题" : "其他原因")")
+                        }
+                        print("[IAP] 当前VIP等级: \(await MainActor.run { self.vipLevel.displayName })")
+                        print("[IAP] =====================================")
+                        print("")
+                        
+                        await MainActor.run { [self] in
+                            self.purchasedProductIDs.remove(transaction.productID)
+                            self.revokeVIPIfNeeded()
+                        }
+                        await transaction.finish()
+                        
+                        // 同步到云端
+                        let tokenValid = await AuthManager.shared.ensureValidToken()
+                        if tokenValid {
+                            await MainActor.run { [self] in
+                                _ = Task { await self.syncVIPToCloud() }
+                            }
+                        }
+                        let newLevel = await MainActor.run { self.vipLevel.displayName }
+                        print("[IAP] ✅ 退款处理完成，当前VIP等级: \(newLevel)，已同步到云端: \(tokenValid)")
+                        continue
+                    }
+                    
+                    // 检查订阅是否已过期（取消订阅后到期）
+                    if let expirationDate = transaction.expirationDate, expirationDate < Date() {
+                        print("")
+                        print("[IAP] ⚠️⚠️⚠️ ========== 检测到订阅过期 ==========")
+                        print("[IAP] 产品ID: \(transaction.productID)")
+                        print("[IAP] 交易ID: \(transaction.id)")
+                        print("[IAP] 原始交易ID: \(transaction.originalID)")
+                        print("[IAP] 购买时间: \(transaction.purchaseDate)")
+                        print("[IAP] 过期时间: \(expirationDate)")
+                        print("[IAP] 当前时间: \(Date())")
+                        print("[IAP] 已过期: \(String(format: "%.0f", Date().timeIntervalSince(expirationDate)))秒")
+                        print("[IAP] 当前VIP等级: \(await MainActor.run { self.vipLevel.displayName })")
+                        print("[IAP] ==========================================")
+                        print("")
+                        
+                        await MainActor.run { [self] in
+                            self.purchasedProductIDs.remove(transaction.productID)
+                            self.revokeVIPIfNeeded()
+                        }
+                        await transaction.finish()
+                        
+                        // 同步到云端
+                        let tokenValid = await AuthManager.shared.ensureValidToken()
+                        if tokenValid {
+                            await MainActor.run { [self] in
+                                _ = Task { await self.syncVIPToCloud() }
+                            }
+                        }
+                        let newLevel = await MainActor.run { self.vipLevel.displayName }
+                        print("[IAP] ✅ 订阅过期处理完成，当前VIP等级: \(newLevel)，已同步到云端: \(tokenValid)")
+                        continue
+                    }
+                    
+                    // 正常购买/续订
+                    print("")
+                    print("[IAP] 🎉 ========== 交易更新（购买/续订）==========")
+                    print("[IAP] 产品ID: \(transaction.productID)")
+                    print("[IAP] 交易ID: \(transaction.id)")
+                    print("[IAP] 购买时间: \(transaction.purchaseDate)")
+                    if let exp = transaction.expirationDate {
+                        print("[IAP] 到期时间: \(exp)")
+                    }
+                    print("[IAP] =============================================")
+                    print("")
+                    
                     await MainActor.run { [self] in
                         self.purchasedProductIDs.insert(transaction.productID)
                         self.updateVIPLevelFromTransaction(productID: transaction.productID)
@@ -360,10 +451,126 @@ class IAPManager: ObservableObject {
                         await MainActor.run { [self] in
                             _ = Task { await self.syncVIPToCloud() }
                         }
-                        print("[IAP] 交易更新，VIP 信息已同步到云端")
+                    }
+                    let newLevel = await MainActor.run { self.vipLevel.displayName }
+                    print("[IAP] ✅ 交易处理完成，当前VIP等级: \(newLevel)，已同步到云端: \(tokenValid)")
+                }
+            }
+        }
+    }
+    
+    // MARK: - 退款/取消订阅处理
+    
+    /// 检查并撤销 VIP（退款或订阅过期时调用）
+    private func revokeVIPIfNeeded() {
+        // 重新检查当前所有有效权益
+        Task {
+            var hasYearly = false
+            var hasLifetime = false
+            
+            print("[IAP] 🔍 重新检查当前有效权益...")
+            
+            for await result in Transaction.currentEntitlements {
+                if case .verified(let transaction) = result {
+                    // 跳过已退款的交易
+                    if transaction.revocationDate != nil {
+                        print("[IAP]   ❌ 跳过已退款: \(transaction.productID)")
+                        continue
+                    }
+                    // 跳过已过期的交易
+                    if let exp = transaction.expirationDate, exp < Date() {
+                        print("[IAP]   ❌ 跳过已过期: \(transaction.productID), 过期: \(exp)")
+                        continue
+                    }
+                    
+                    print("[IAP]   ✅ 有效权益: \(transaction.productID)")
+                    
+                    if transaction.productID == IAPProduct.proLifetime.rawValue {
+                        hasLifetime = true
+                    } else if transaction.productID == IAPProduct.proYearly.rawValue {
+                        hasYearly = true
                     }
                 }
             }
+            
+            await MainActor.run {
+                let previousLevel = self.vipLevel
+                if hasLifetime {
+                    self.vipLevel = .masterVIP
+                } else if hasYearly {
+                    self.vipLevel = .vip
+                } else {
+                    self.vipLevel = .free
+                    self.vipStartDate = nil
+                    self.vipExpireDate = nil
+                }
+                self.purchasedProductIDs = hasLifetime || hasYearly ? self.purchasedProductIDs : []
+                self.saveLocalVIPInfo()
+                
+                print("[IAP] 📊 VIP 等级变更: \(previousLevel.displayName) → \(self.vipLevel.displayName)")
+            }
+        }
+    }
+    
+    /// 检查订阅状态（App 启动和前台恢复时调用）
+    func checkSubscriptionStatus() async {
+        var validProductIDs: Set<String> = []
+        var hasValidSubscription = false
+        var hasLifetime = false
+        
+        print("[IAP] 🔄 检查订阅状态...")
+        
+        for await result in Transaction.currentEntitlements {
+            if case .verified(let transaction) = result {
+                // 跳过已退款
+                if let revDate = transaction.revocationDate {
+                    print("[IAP]   ❌ 已退款: \(transaction.productID), 退款时间: \(revDate)")
+                    continue
+                }
+                // 跳过已过期
+                if let exp = transaction.expirationDate, exp < Date() {
+                    print("[IAP]   ❌ 已过期: \(transaction.productID), 过期时间: \(exp)")
+                    continue
+                }
+                
+                print("[IAP]   ✅ 有效: \(transaction.productID)\(transaction.expirationDate.map { ", 到期: \($0)" } ?? "")")
+                validProductIDs.insert(transaction.productID)
+                
+                if transaction.productID == IAPProduct.proLifetime.rawValue {
+                    hasLifetime = true
+                } else if transaction.productID == IAPProduct.proYearly.rawValue {
+                    hasValidSubscription = true
+                    if let exp = transaction.expirationDate {
+                        vipExpireDate = exp
+                    }
+                }
+            }
+        }
+        
+        purchasedProductIDs = validProductIDs
+        
+        let previousLevel = vipLevel
+        if hasLifetime {
+            vipLevel = .masterVIP
+        } else if hasValidSubscription {
+            vipLevel = .vip
+        } else {
+            vipLevel = .free
+            vipStartDate = nil
+            vipExpireDate = nil
+        }
+        
+        saveLocalVIPInfo()
+        
+        if previousLevel != vipLevel {
+            print("[IAP] ⚠️ VIP 等级变化: \(previousLevel.displayName) → \(vipLevel.displayName)")
+            let tokenValid = await AuthManager.shared.ensureValidToken()
+            if tokenValid {
+                await syncVIPToCloud()
+                print("[IAP] ✅ VIP 等级变化已同步到云端")
+            }
+        } else {
+            print("[IAP] ℹ️ VIP 等级未变化: \(vipLevel.displayName)")
         }
     }
     

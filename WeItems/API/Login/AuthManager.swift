@@ -162,8 +162,11 @@ class AuthManager: ObservableObject {
         authState = .authenticated
         print("[AuthManager] 登录成功，认证状态已更新")
         
-        // 通知 Store 重新加载当前用户数据
+        // 通知 Store 重新加载当前用户数据（会合并 anonymous 数据到用户目录）
         NotificationCenter.default.post(name: Self.userDidChangeNotification, object: nil)
+        
+        // 合并完成后清空 anonymous 目录，避免退出登录后残留数据
+        UserStorageHelper.shared.clearAnonymousData()
         
         // 异步获取/创建 userinfo 并同步 VIP 信息
         Task {

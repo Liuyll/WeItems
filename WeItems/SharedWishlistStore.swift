@@ -148,6 +148,10 @@ class SharedWishlistStore: ObservableObject {
     
     func reloadForCurrentUser() {
         load()
+        // 登录时合并了 anonymous 数据，保存到用户目录
+        if UserStorageHelper.shared.isLoggedIn && !lists.isEmpty {
+            save()
+        }
     }
     
     // MARK: - CRUD

@@ -27,6 +27,10 @@ class WishlistGroupStore: ObservableObject {
     /// 切换用户后重新加载数据
     func reloadForCurrentUser() {
         loadGroups()
+        // 登录时合并了 anonymous 数据，保存到用户目录
+        if UserStorageHelper.shared.isLoggedIn && !groups.isEmpty {
+            saveGroups()
+        }
         print("[WishlistGroupStore] 已切换到用户: \(UserStorageHelper.shared.currentUserKey), 共 \(groups.count) 个分组")
     }
     

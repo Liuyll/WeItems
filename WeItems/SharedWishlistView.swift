@@ -206,8 +206,6 @@ struct SharedWishlistListView: View {
         VStack(spacing: 24) {
             Spacer()
             
-            ProBadge(fontSize: 28, paddingH: 20, paddingV: 8)
-            
             Text("升级 Pro 版本，与好朋友们共享心愿")
                 .font(.headline)
                 .foregroundStyle(.secondary)
@@ -216,7 +214,7 @@ struct SharedWishlistListView: View {
             Button {
                 showingProUpgrade = true
             } label: {
-                Text("升级 Pro")
+                Text("升级 Pro 版本")
                     .font(.headline)
                     .fontWeight(.semibold)
                     .foregroundStyle(.white)

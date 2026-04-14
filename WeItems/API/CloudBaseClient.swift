@@ -525,17 +525,17 @@ class CloudBaseClient {
     /// - Returns: 物品 UUID 字符串 → 云存储下载 URL 的字典
     @available(iOS 13.0, *)
     func uploadItemImages(items: [Item]) async -> [String: String] {
-        // 只上传图片被用户编辑过的物品（imageChanged == true）
-        let itemsWithChangedImages = items.filter { $0.imageChanged && $0.imageData != nil }
-        guard !itemsWithChangedImages.isEmpty else {
-            print("[图片上传] 没有图片变更，跳过上传")
+        // 上传条件：有图片数据，且（图片被编辑过 或 远端没有 imageUrl）
+        let itemsNeedingUpload = items.filter { $0.imageData != nil && ($0.imageChanged || ($0.imageUrl ?? "").isEmpty) }
+        guard !itemsNeedingUpload.isEmpty else {
+            print("[图片上传] 没有需要上传的图片，跳过")
             return [:]
         }
         
-        print("[图片上传] 开始批量上传 \(itemsWithChangedImages.count) 张变更图片（共 \(items.filter { $0.imageData != nil }.count) 张有图片，其中 \(itemsWithChangedImages.count) 张有变更）...")
+        print("[图片上传] 开始批量上传 \(itemsNeedingUpload.count) 张图片（共 \(items.filter { $0.imageData != nil }.count) 张有图片，其中 \(itemsNeedingUpload.count) 张需上传）...")
         
         // 构造 UploadItem 列表（优先使用压缩版图片）
-        let uploadItems: [UploadItem] = itemsWithChangedImages.compactMap { item in
+        let uploadItems: [UploadItem] = itemsNeedingUpload.compactMap { item in
             // 优先使用压缩版（0.7 质量），没有则回退到原图
             let uploadData = item.compressedImageData ?? item.imageData
             guard let imageData = uploadData else { return nil }
@@ -549,7 +549,7 @@ class CloudBaseClient {
         
         // 构建 itemId → downloadUrl 映射
         var imageUrlMap: [String: String] = [:]
-        for (index, item) in itemsWithChangedImages.enumerated() {
+        for (index, item) in itemsNeedingUpload.enumerated() {
             guard index < results.count else { break }
             let result = results[index]
             if result.success, !result.downloadUrl.isEmpty {
@@ -560,7 +560,7 @@ class CloudBaseClient {
             }
         }
         
-        print("[图片上传] 批量上传完成: \(imageUrlMap.count)/\(itemsWithChangedImages.count) 成功")
+        print("[图片上传] 批量上传完成: \(imageUrlMap.count)/\(itemsNeedingUpload.count) 成功")
         return imageUrlMap
     }
     
@@ -1115,17 +1115,17 @@ class CloudBaseClient {
     /// - Returns: 心愿 UUID 字符串 → 云存储下载 URL 的字典
     @available(iOS 13.0, *)
     func uploadWishImages(items: [Item]) async -> [String: String] {
-        // 只上传图片被用户编辑过的心愿（imageChanged == true）
-        let itemsWithChangedImages = items.filter { $0.imageChanged && $0.imageData != nil }
-        guard !itemsWithChangedImages.isEmpty else {
-            print("[心愿图片上传] 没有图片变更，跳过上传")
+        // 上传条件：有图片数据，且（图片被编辑过 或 远端没有 imageUrl）
+        let itemsNeedingUpload = items.filter { $0.imageData != nil && ($0.imageChanged || ($0.imageUrl ?? "").isEmpty) }
+        guard !itemsNeedingUpload.isEmpty else {
+            print("[心愿图片上传] 没有需要上传的图片，跳过")
             return [:]
         }
         
-        print("[心愿图片上传] 开始批量上传 \(itemsWithChangedImages.count) 张变更图片（共 \(items.filter { $0.imageData != nil }.count) 张有图片，其中 \(itemsWithChangedImages.count) 张有变更）...")
+        print("[心愿图片上传] 开始批量上传 \(itemsNeedingUpload.count) 张图片（共 \(items.filter { $0.imageData != nil }.count) 张有图片，其中 \(itemsNeedingUpload.count) 张需上传）...")
         
         // 构造 UploadItem 列表（优先使用压缩版图片）
-        let uploadItems: [UploadItem] = itemsWithChangedImages.compactMap { item in
+        let uploadItems: [UploadItem] = itemsNeedingUpload.compactMap { item in
             // 优先使用压缩版（0.7 质量），没有则回退到原图
             let uploadData = item.compressedImageData ?? item.imageData
             guard let imageData = uploadData else { return nil }
@@ -1139,7 +1139,7 @@ class CloudBaseClient {
         
         // 构建 itemId → downloadUrl 映射
         var imageUrlMap: [String: String] = [:]
-        for (index, item) in itemsWithChangedImages.enumerated() {
+        for (index, item) in itemsNeedingUpload.enumerated() {
             guard index < results.count else { break }
             let result = results[index]
             if result.success, !result.downloadUrl.isEmpty {
@@ -1150,7 +1150,7 @@ class CloudBaseClient {
             }
         }
         
-        print("[心愿图片上传] 批量上传完成: \(imageUrlMap.count)/\(itemsWithChangedImages.count) 成功")
+        print("[心愿图片上传] 批量上传完成: \(imageUrlMap.count)/\(itemsNeedingUpload.count) 成功")
         return imageUrlMap
     }
     

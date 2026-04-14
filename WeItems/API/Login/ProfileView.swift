@@ -94,7 +94,9 @@ struct ProfileView: View {
                             .listRowSeparator(.hidden)
                         } else {
                             Button {
-                                showingLogin = true
+                                withAnimation(.easeInOut(duration: 0.5)) {
+                                    showingLogin = true
+                                }
                             } label: {
                                 HStack(spacing: 14) {
                                     Image(systemName: "person.crop.circle.fill")
@@ -396,6 +398,25 @@ struct ProfileView: View {
                         }
                         .listRowSeparator(.hidden)
                         
+                        if authManager.isAuthenticated {
+                            NavigationLink {
+                                AccountManagementView()
+                                    .environmentObject(authManager)
+                            } label: {
+                                Label {
+                                    Text("我的账号")
+                                        .font(.system(.body, design: .rounded))
+                                        .fontWeight(.semibold)
+                                        .foregroundStyle(.primary)
+                                } icon: {
+                                    Image(systemName: "person.text.rectangle")
+                                        .foregroundStyle(.purple)
+                                }
+                                .foregroundStyle(.primary)
+                            }
+                            .listRowSeparator(.hidden)
+                        }
+                        
                         HStack {
                             Label {
                                 Text("版本")
@@ -404,6 +425,7 @@ struct ProfileView: View {
                                     .foregroundStyle(.primary)
                             } icon: {
                                 Image(systemName: "info.circle")
+                                    .foregroundStyle(.green)
                             }
                             Spacer()
                             Text("1.0.0")
@@ -453,24 +475,32 @@ struct ProfileView: View {
             .sheet(isPresented: $showingProUpgrade) {
                 ProUpgradeView()
             }
-            .sheet(isPresented: $showingLogin) {
-                AuthViewWrapper()
-            }
-            .customConfirmAlert(
+            .customBlueConfirmAlert(
                 isPresented: $showingLogoutConfirm,
-                title: "退出登录",
                 message: "退出登录后，数据将不再自动同步到云端。确定要退出吗？",
                 confirmText: "退出",
+                cancelText: "取消",
                 isDestructive: true,
                 onConfirm: {
                     authManager.logout()
-                    dismiss()
+                    onBack?()
                 }
             )
         }
+        .overlay {
+            if showingLogin {
+                ProfileAuthView(onClose: {
+                    withAnimation(.easeInOut(duration: 0.5)) {
+                        showingLogin = false
+                    }
+                })
+                .environmentObject(authManager)
+                .transition(.move(edge: .trailing))
+                .zIndex(1)
+            }
+        }
+        .animation(.easeInOut(duration: 0.5), value: showingLogin)
     }
-    
-    /// 显示 Toast 并自动消失
     private func showToastMessage(_ message: String) {
         toastMessage = message
         withAnimation {
@@ -922,6 +952,27 @@ struct ProfileView: View {
                 showToastMessage(message)
             }
         }
+    }
+}
+
+// MARK: - 登录页 overlay 包装器
+private struct ProfileAuthView: View {
+    @EnvironmentObject var authManager: AuthManager
+    var onClose: () -> Void
+    
+    var body: some View {
+        AuthView(onLoginSuccess: { response in
+            authManager.loginSuccess(
+                accessToken: response.accessToken,
+                refreshToken: response.refreshToken,
+                expiresIn: response.expiresIn,
+                tokenType: response.tokenType,
+                sub: response.sub
+            )
+            onClose()
+        }, onSkip: {
+            onClose()
+        })
     }
 }
 

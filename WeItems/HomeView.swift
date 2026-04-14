@@ -147,15 +147,17 @@ struct HomeView: View {
                     NavigationStack {
                         TrendView(store: store)
                     }
+                    .transition(.move(edge: .bottom))
                 case .settings:
                     ProfileView(onBack: {
-                        withAnimation(.spring(duration: 0.3)) {
+                        withAnimation(.easeInOut(duration: 0.5)) {
                             selectedTab = .items
                         }
                     })
                         .environmentObject(store)
                         .environmentObject(sharedWishlistStore)
                         .environmentObject(financeStore)
+                        .transition(.move(edge: .leading))
                 }
             }
             
@@ -191,6 +193,8 @@ struct HomeView: View {
         .onAppear {
             // 初始显示后 2 秒自动隐藏
             scheduleTabBarHide()
+            // 后台预加载趋势页数据
+            TrendDataCache.shared.preload(store: store)
         }
     }
     
@@ -297,7 +301,7 @@ struct HomeView: View {
                     HStack(spacing: 10) {
                         // 用户头像
                         Button {
-                            withAnimation(.spring(duration: 0.3)) {
+                            withAnimation(.easeInOut(duration: 0.5)) {
                                 selectedTab = .settings
                             }
                         } label: {
@@ -383,6 +387,7 @@ struct HomeView: View {
                 wishlistGroupStore.reloadForCurrentUser()
                 sharedWishlistStore.reloadForCurrentUser()
                 financeStore.reloadForCurrentUser()
+                TrendDataCache.shared.preload(store: store)
             }
             .onAppear {
                 checkClipboardForSharedWishlist()
@@ -675,7 +680,7 @@ struct ItemsView: View {
             .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
             
             // 物品类型筛选
-            TypeFilterView(selectedType: $selectedType, store: store)
+            TypeFilterView(selectedType: $selectedType, store: store, showArchived: showArchived)
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 4, trailing: 0))
             
@@ -743,6 +748,10 @@ struct ItemsView: View {
                 showingAccountSync = false
             }
         }
+        .onChange(of: showArchived) { _, _ in
+            // 切换售出/非售出模式时清除类型筛选
+            selectedType = nil
+        }
     }
     
     private func deleteItems(at offsets: IndexSet) {
@@ -757,6 +766,7 @@ struct ItemsView: View {
 struct TypeFilterView: View {
     @Binding var selectedType: ItemType?
     @ObservedObject var store: ItemStore
+    var showArchived: Bool = false
     
     private static let typeColors: [ItemType: Color] = [
         .digital: .blue,
@@ -769,21 +779,71 @@ struct TypeFilterView: View {
         .other: .gray
     ]
     
-    /// 当前未归档物品中实际存在的类型
+    /// 根据当前模式（售出/未售出）获取实际存在的类型
     private var activeTypes: [ItemType] {
-        let myItems = store.items.filter { $0.listType == .items && !$0.isArchived }
+        let myItems: [Item]
+        if showArchived {
+            myItems = store.items.filter { $0.listType == .items && $0.isArchived }
+        } else {
+            myItems = store.items.filter { $0.listType == .items && !$0.isArchived }
+        }
         let typeSet = Set(myItems.compactMap { ItemType(rawValue: $0.type) })
         return ItemType.allCases.filter { typeSet.contains($0) }
+    }
+    
+    /// 总物品数（用于"全部"标签）
+    private var totalCount: Int {
+        if showArchived {
+            return store.items.filter { $0.listType == .items && $0.isArchived }.count
+        } else {
+            return store.items.filter { $0.listType == .items && !$0.isArchived }.count
+        }
     }
     
     var body: some View {
         if !activeTypes.isEmpty {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
+                    // "全部"标签
+                    Button {
+                        withAnimation(.spring(duration: 0.25)) {
+                            selectedType = nil
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "square.grid.2x2")
+                                .font(.system(size: 10))
+                            Text("全部")
+                                .font(.caption2)
+                                .fontWeight(.medium)
+                            Text("\(totalCount)")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(selectedType == nil ? .white.opacity(0.8) : Color.blue.opacity(0.7))
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(
+                            Capsule()
+                                .fill(selectedType == nil ? Color.blue : Color.blue.opacity(0.1))
+                        )
+                        .foregroundStyle(selectedType == nil ? .white : .blue)
+                        .overlay(
+                            Capsule()
+                                .stroke(Color.blue.opacity(0.3), lineWidth: selectedType == nil ? 0 : 0.5)
+                        )
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    
                     ForEach(activeTypes, id: \.self) { type in
                         let color = Self.typeColors[type] ?? .gray
                         let isSelected = selectedType == type
-                        let count = store.items.filter { $0.listType == .items && !$0.isArchived && $0.type == type.rawValue }.count
+                        let count: Int = {
+                            if showArchived {
+                                return store.items.filter { $0.listType == .items && $0.isArchived && $0.type == type.rawValue }.count
+                            } else {
+                                return store.items.filter { $0.listType == .items && !$0.isArchived && $0.type == type.rawValue }.count
+                            }
+                        }()
                         
                         Button {
                             withAnimation(.spring(duration: 0.25)) {
@@ -1090,58 +1150,66 @@ struct ItemCard: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // 顶部：名称 + 价格（左右展示）
-            HStack(alignment: .firstTextBaseline) {
-                Text(item.name)
-                    .font(.title2)
-                    .fontWeight(.bold)
-                    .lineLimit(2)
-                
-                Spacer()
-                
-                if item.isPriceless {
-                    Text("无价之物")
-                        .font(.caption)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.orange)
-                } else {
-                    Text("¥\(String(format: "%.2f", item.price))")
-                        .font(.title3)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(.blue)
-                }
-            }
-            
-            // 类型和分组标签
-            HStack(spacing: 8) {
-                HStack(spacing: 4) {
-                    Image(systemName: typeIcon(for: item.type))
-                        .font(.caption)
-                    Text(item.type)
-                        .font(.caption)
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(Color.blue.opacity(0.1))
-                .foregroundStyle(.blue)
-                .clipShape(Capsule())
-                
-                // 在全部视图下显示分组标签
-                if showGroup, let group = group {
-                    HStack(spacing: 4) {
-                        Image(systemName: group.icon)
+            if item.details.isEmpty {
+                // 无描述：名称+价格，标签在下方
+                HStack(alignment: .firstTextBaseline) {
+                    Text(item.name)
+                        .font(.title2)
+                        .fontWeight(.bold)
+                        .lineLimit(2)
+                    
+                    Spacer()
+                    
+                    if item.isPriceless {
+                        Text("无价之物")
                             .font(.caption)
-                        Text(group.name)
-                            .font(.caption)
+                            .fontWeight(.medium)
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text("¥\(String(format: "%.2f", item.price))")
+                            .font(.title3)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.blue)
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(group.color.swiftUIColor.opacity(0.1))
-                    .foregroundStyle(group.color.swiftUIColor)
-                    .clipShape(Capsule())
                 }
                 
-                Spacer()
+                // 标签
+                tagsView
+            } else {
+                // 有描述：名称+价格第一行，描述第二行，标签紧跟价格下方右侧
+                // 第一行：名称 + 价格（顶部对齐）
+                HStack(alignment: .top) {
+                    Text(item.name)
+                        .font(.title2)
+                        .fontWeight(.bold)
+                        .lineLimit(2)
+                    
+                    Spacer()
+                    
+                    if item.isPriceless {
+                        Text("无价之物")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text("¥\(String(format: "%.2f", item.price))")
+                            .font(.title3)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.blue)
+                    }
+                }
+                
+                // 第二行：描述 + 标签（中线对齐）
+                HStack(alignment: .center) {
+                    Text(item.details)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    
+                    Spacer()
+                    
+                    tagsView
+                }
             }
             
             // 图片展示（无图片时不显示）
@@ -1152,14 +1220,6 @@ struct ItemCard: View {
                     .frame(height: 180)
                     .frame(maxWidth: .infinity)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
-            }
-            
-            // 详情
-            if !item.details.isEmpty {
-                Text(item.details)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
             }
             
             // 售出信息（仅售出物品显示）
@@ -1225,6 +1285,36 @@ struct ItemCard: View {
                 .stroke(Color.gray.opacity(0.2), lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.05), radius: 8, x: 0, y: 2)
+    }
+    
+    private var tagsView: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 4) {
+                Image(systemName: typeIcon(for: item.type))
+                    .font(.caption)
+                Text(item.type)
+                    .font(.caption)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color.blue.opacity(0.1))
+            .foregroundStyle(.blue)
+            .clipShape(Capsule())
+            
+            if showGroup, let group = group {
+                HStack(spacing: 4) {
+                    Image(systemName: group.icon)
+                        .font(.caption)
+                    Text(group.name)
+                        .font(.caption)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(group.color.swiftUIColor.opacity(0.1))
+                .foregroundStyle(group.color.swiftUIColor)
+                .clipShape(Capsule())
+            }
+        }
     }
     
     private func typeIcon(for type: String) -> String {
@@ -1303,7 +1393,7 @@ struct CustomTabBar: View {
         HStack(spacing: 0) {
             ForEach(BottomTab.allCases, id: \.self) { tab in
                 Button {
-                    withAnimation(.spring(duration: 0.3)) {
+                    withAnimation(.easeInOut(duration: 0.5)) {
                         selectedTab = tab
                     }
                 } label: {
@@ -1332,7 +1422,7 @@ struct CustomTabBar: View {
         HStack(spacing: 0) {
             ForEach(BottomTab.allCases, id: \.self) { tab in
                 Button {
-                    withAnimation(.spring(duration: 0.3)) {
+                    withAnimation(.easeInOut(duration: 0.5)) {
                         selectedTab = tab
                     }
                 } label: {

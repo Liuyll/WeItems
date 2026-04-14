@@ -103,10 +103,18 @@ class ItemStore: ObservableObject {
     
     /// 切换用户后重新加载数据
     func reloadForCurrentUser() {
+        let prevCount = items.count
         loadItems()
         loadCustomDisplayTypes()
         loadUnsyncedFlag()
         loadDeletedItemRecords()
+        
+        // 登录时合并了 anonymous 数据，需要保存到用户目录以持久化
+        if UserStorageHelper.shared.isLoggedIn && items.count > 0 {
+            saveItems()
+            saveCustomDisplayTypes()
+        }
+        
         print("[ItemStore] 已切换到用户: \(UserStorageHelper.shared.currentUserKey), 共 \(items.count) 个物品")
     }
     
@@ -417,6 +425,9 @@ class ItemStore: ObservableObject {
         // 标记有未同步的变更
         hasUnsyncedChanges = true
         saveUnsyncedFlag(true)
+        
+        // 标记趋势缓存失效
+        TrendDataCache.shared.invalidate()
         
         // 将图片数据保存到文件，items中只保存标记
         for i in 0..<items.count {

@@ -186,6 +186,83 @@ struct ItemDetailView: View {
                             .foregroundStyle(.secondary)
                     }
                     
+                    // 售出信息（仅已售出物品显示）
+                    if item.isArchived, let soldPrice = item.soldPrice {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("售出信息")
+                                .font(.system(.headline, design: .rounded))
+                            
+                            HStack(spacing: 0) {
+                                VStack(spacing: 4) {
+                                    Text("售出价格")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Text("¥\(String(format: "%.2f", soldPrice))")
+                                        .font(.system(.title3, design: .rounded))
+                                        .fontWeight(.bold)
+                                        .foregroundStyle(.green)
+                                }
+                                .frame(maxWidth: .infinity)
+                                
+                                if let loss = item.soldLoss {
+                                    VStack(spacing: 4) {
+                                        Text(loss >= 0 ? "亏损" : "盈利")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                        Text("\(loss >= 0 ? "-" : "+")¥\(String(format: "%.2f", abs(loss)))")
+                                            .font(.system(.title3, design: .rounded))
+                                            .fontWeight(.bold)
+                                            .foregroundStyle(loss >= 0 ? .red : .green)
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                }
+                            }
+                            
+                            HStack(spacing: 0) {
+                                VStack(spacing: 4) {
+                                    Text("持有天数")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Text("\(item.daysSinceCreated) 天")
+                                        .font(.subheadline)
+                                        .fontWeight(.semibold)
+                                }
+                                .frame(maxWidth: .infinity)
+                                
+                                VStack(spacing: 4) {
+                                    Text("日均成本")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Text("¥\(String(format: "%.2f", item.dailyCost))")
+                                        .font(.subheadline)
+                                        .fontWeight(.semibold)
+                                        .foregroundStyle(.orange)
+                                }
+                                .frame(maxWidth: .infinity)
+                            }
+                            
+                            if let soldDate = item.soldDate {
+                                HStack(spacing: 4) {
+                                    Text("售出于")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Text(soldDateFormatted(soldDate))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                        .padding()
+                        .background(
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(Color.purple.opacity(0.05))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(Color.purple.opacity(0.15), lineWidth: 1)
+                        )
+                    }
+                    
                     // 实现心愿按钮（仅在心愿清单中显示）
                     if item.listType == .wishlist {
                         VStack(spacing: 12) {
@@ -399,13 +476,18 @@ struct ItemDetailView: View {
         return formatter.string(from: item.createdAt)
     }
     
+    private func soldDateFormatted(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
+    }
+    
     private var daysSinceCreation: Int {
         item.daysSinceCreated
     }
     
     private var averageDailyCost: Double {
-        guard daysSinceCreation > 0 else { return item.price }
-        return item.price / Double(daysSinceCreation)
+        return item.dailyCost
     }
     
     /// 将 URL 缩短为域名+路径前缀的短链形式

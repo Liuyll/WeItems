@@ -21,13 +21,19 @@ class ICloudSyncManager {
     
     // MARK: - iCloud 容器
     
-    /// 获取 iCloud Documents 目录
+    /// 获取 iCloud Documents 目录（按用户 sub 隔离）
     var iCloudDocumentsURL: URL? {
         guard let containerURL = FileManager.default.url(forUbiquityContainerIdentifier: containerIdentifier) else {
             print("[iCloud] 无法获取 iCloud 容器，请确认 iCloud 已登录且权限已配置")
             return nil
         }
-        let documentsURL = containerURL.appendingPathComponent("Documents")
+        var documentsURL = containerURL.appendingPathComponent("Documents")
+        
+        // 按用户 sub 隔离目录
+        if let sub = TokenStorage.shared.getSub(), !sub.isEmpty {
+            documentsURL = documentsURL.appendingPathComponent(sub)
+        }
+        
         if !FileManager.default.fileExists(atPath: documentsURL.path) {
             try? FileManager.default.createDirectory(at: documentsURL, withIntermediateDirectories: true)
         }

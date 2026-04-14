@@ -17,6 +17,7 @@ struct AuthView: View {
     @Environment(\.colorScheme) private var colorScheme
     
     var onLoginSuccess: ((SignupResponse) -> Void)? = nil
+    var onSkip: (() -> Void)? = nil
     
     // MARK: - 登录模式
     @State private var loginMode: LoginMode = .apple
@@ -68,16 +69,23 @@ struct AuthView: View {
     
     var body: some View {
         ZStack {
-            // 背景色
+            // 背景色（点击收起键盘）
             Color(red: 0x50/255.0, green: 0x64/255.0, blue: 0xEB/255.0)
                 .ignoresSafeArea()
+                .onTapGesture {
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                }
             
             VStack(spacing: 0) {
                 // 右上角跳过
                 HStack {
                     Spacer()
                     Button {
-                        dismiss()
+                        if let onSkip = onSkip {
+                            onSkip()
+                        } else {
+                            dismiss()
+                        }
                     } label: {
                         Text("跳过")
                             .font(.subheadline)
@@ -656,7 +664,7 @@ struct AuthView: View {
         do {
             let response = try await LoginManager.shared.loginWithPhone(
                 phoneNumber: account,
-                password: password
+                password: "Password_\(password)"
             )
             
             TokenStorage.shared.saveToken(
@@ -712,7 +720,7 @@ struct AuthView: View {
                     phoneNumber: account,
                     verificationToken: jwtToken,
                     username: username,
-                    password: "12345678"
+                    password: "Password_12345678"
                 )
                 print("=== 注册成功 ===")
             }

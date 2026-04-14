@@ -112,7 +112,7 @@ struct WishlistView: View {
                     if authManager.isAuthenticated {
                         NavigationLink(destination: SharedWishlistListView(sharedStore: sharedWishlistStore, itemStore: store, wishlistGroupStore: wishlistGroupStore)) {
                             HStack {
-                                Text("让朋友们一起来实现心愿")
+                                Text(sharedWishlistStore.lists.isEmpty ? "让朋友们一起来实现心愿" : "查看共享心愿清单")
                                     .font(.system(.subheadline, design: .rounded))
                                     .fontWeight(.bold)
                                     .foregroundStyle(.white)

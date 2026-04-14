@@ -1843,15 +1843,15 @@ struct DailyExpenseView: View {
                     .padding(.vertical, 20)
                     .background(
                         RoundedRectangle(cornerRadius: 14)
-                            .fill(.green.opacity(0.6))
+                            .fill(.purple)
                     )
                 }
             }
         }
-        .padding(16)
+        .padding(financeStore.savingsGoal.targetAmount > 0 ? 16 : 0)
         .background(
             RoundedRectangle(cornerRadius: 16)
-                .fill(Color(.secondarySystemGroupedBackground))
+                .fill(financeStore.savingsGoal.targetAmount > 0 ? Color(.secondarySystemGroupedBackground) : Color.clear)
         )
     }
     

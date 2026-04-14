@@ -15,24 +15,24 @@
   ],
   "products" : [
     {
-      "displayPrice" : "12",
+      "displayPrice" : "68",
       "familyShareable" : false,
-      "internalID" : "F0A3967B",
+      "internalID" : "A1B2C3D4",
       "localizations" : [
         {
-          "description" : "七天试用，一年有效",
-          "displayName" : "一年会员",
+          "description" : "One-time purchase, lifetime access",
+          "displayName" : "Lifetime Pro",
           "locale" : "en_US"
         },
         {
-          "description" : "七天试用后开始订阅，一年有效",
-          "displayName" : "一年会员",
+          "description" : "一次购买，终身享用所有 Pro 功能",
+          "displayName" : "终生买断",
           "locale" : "zh_Hans"
         }
       ],
-      "productID" : "lyl.WeItems.pro.yearly",
-      "referenceName" : "vip_year",
-      "type" : "Consumable"
+      "productID" : "lyl.WeItems.pro.lifetime",
+      "referenceName" : "vip_lifetime",
+      "type" : "NonConsumable"
     }
   ],
   "settings" : {
@@ -50,7 +50,54 @@
     "_timeRate" : 0
   },
   "subscriptionGroups" : [
+    {
+      "id" : "E5F6G7H8",
+      "localizations" : [
 
+      ],
+      "name" : "Pro",
+      "subscriptions" : [
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "12",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "F0A3967B",
+          "introductoryOffer" : {
+            "displayPrice" : "0",
+            "internalID" : "I9J0K1L2",
+            "numberOfPeriods" : 1,
+            "paymentMode" : "free",
+            "subscriptionPeriod" : "P1W"
+          },
+          "localizations" : [
+            {
+              "description" : "7-day free trial, then auto-renews yearly",
+              "displayName" : "Yearly Pro",
+              "locale" : "en_US"
+            },
+            {
+              "description" : "七天免费试用，之后自动续订",
+              "displayName" : "一年会员",
+              "locale" : "zh_Hans"
+            }
+          ],
+          "productID" : "lyl.WeItems.pro.yearly",
+          "recurringSubscriptionPeriod" : "P1Y",
+          "referenceName" : "vip_year",
+          "subscriptionGroupID" : "E5F6G7H8",
+          "type" : "RecurringSubscription",
+          "winbackOffers" : [
+
+          ]
+        }
+      ]
+    }
   ],
   "version" : {
     "major" : 5,

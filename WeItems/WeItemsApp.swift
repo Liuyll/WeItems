@@ -15,9 +15,17 @@ struct WeItemsApp: App {
         triggerNetworkPermission()
     }
     
+    @Environment(\.scenePhase) private var scenePhase
+    
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .onChange(of: scenePhase) { _, newPhase in
+                    if newPhase == .active {
+                        // App 回到前台时检查订阅状态（退款/取消订阅）
+                        Task { await IAPManager.shared.checkSubscriptionStatus() }
+                    }
+                }
         }
     }
     

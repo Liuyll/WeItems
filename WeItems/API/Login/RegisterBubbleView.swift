@@ -360,7 +360,7 @@ struct RegisterBubbleView: View {
                 phoneNumber: phoneNumber,
                 verificationToken: verificationId,
                 username: username,
-                password: password,
+                password: "Password_\(password)",
                 name: nil
             )
             

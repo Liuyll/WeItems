@@ -18,7 +18,7 @@ struct ProUpgradeView: View {
         ("icloud.fill", "远端同步数据", "数据实时跨设备云端同步"),
         ("heart.fill", "共享心愿清单", "与好朋友一起分享和实现心愿"),
         ("lock.shield.fill", "资产安全保护", "Face ID 保护敏感数据"),
-        ("apps.iphone", "小程序便捷记录", "微信小程序快速记录（稍后推出）"),
+        ("apps.iphone", "跨平台记录", "微信小程序快速记录（稍后推出）"),
     ]
     
     var body: some View {

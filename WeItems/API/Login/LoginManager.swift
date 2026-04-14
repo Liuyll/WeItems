@@ -69,7 +69,7 @@ class LoginManager {
         password: String
     ) async throws -> SignupResponse {
         
-        let username = "user_\(phoneNumber)"
+        let username = phoneNumber.count > 16 ? phoneNumber : "user_\(phoneNumber)"
         
         let url = URL(string: "\(baseUrl)/auth/v1/signin")!
         

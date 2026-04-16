@@ -126,7 +126,6 @@ class ICloudSyncManager {
                     // 无变化
                 } else if remoteTimestamp > localTimestamp {
                     // iCloud 更新，用 iCloud 版本替换本地
-                    print("[iCloud 物品同步] iCloud 更新: \(localItem.name)")
                     deletedLocalItemIds.append(localItem.itemId)
                     var remoteItem = remote.itemInfo
                     // 从 iCloud 加载图片
@@ -136,12 +135,10 @@ class ICloudSyncManager {
                     remoteOnlyItems.append(remoteItem)
                 } else {
                     // 本地更新，写入 iCloud
-                    print("[iCloud 物品同步] 本地更新: \(localItem.name)")
                     itemsToUpdate.append(localItem)
                 }
             } else {
                 // 本地独有
-                print("[iCloud 物品同步] 本地独有: \(localItem.name)")
                 itemsToCreate.append(localItem)
             }
         }
@@ -155,13 +152,11 @@ class ICloudSyncManager {
                 let remoteTimestamp = floor(remote.itemInfo.updatedAt.timeIntervalSince1970)
                 let deletedTimestamp = floor(deletedAt.timeIntervalSince1970)
                 if deletedTimestamp >= remoteTimestamp {
-                    print("[iCloud 物品同步] 本地已删除，标记 iCloud 待删: \(remote.itemInfo.name)")
                     itemsToDeleteRemote.append(remoteItemId)
                     continue
                 }
             }
             
-            print("[iCloud 物品同步] iCloud 独有: \(remote.itemInfo.name)")
             var remoteItem = remote.itemInfo
             if let imgFileName = remote.imageFileName {
                 remoteItem.imageData = loadImageFromICloud(fileName: imgFileName)
@@ -284,7 +279,6 @@ class ICloudSyncManager {
                 if localTimestamp == remoteTimestamp {
                     // 无变化
                 } else if remoteTimestamp > localTimestamp {
-                    print("[iCloud 心愿同步] iCloud 更新: \(localWish.name)")
                     deletedLocalItemIds.append(localWish.itemId)
                     var remoteItem = remote.itemInfo
                     if let imgFileName = remote.imageFileName {
@@ -292,11 +286,9 @@ class ICloudSyncManager {
                     }
                     remoteOnlyItems.append(remoteItem)
                 } else {
-                    print("[iCloud 心愿同步] 本地更新: \(localWish.name)")
                     wishesToUpdate.append(localWish)
                 }
             } else {
-                print("[iCloud 心愿同步] 本地独有: \(localWish.name)")
                 wishesToCreate.append(localWish)
             }
         }
@@ -308,13 +300,11 @@ class ICloudSyncManager {
                 let remoteTimestamp = floor(remote.itemInfo.updatedAt.timeIntervalSince1970)
                 let deletedTimestamp = floor(deletedAt.timeIntervalSince1970)
                 if deletedTimestamp >= remoteTimestamp {
-                    print("[iCloud 心愿同步] 本地已删除，标记 iCloud 待删: \(remote.itemInfo.name)")
                     wishesToDeleteRemote.append(remoteItemId)
                     continue
                 }
             }
             
-            print("[iCloud 心愿同步] iCloud 独有: \(remote.itemInfo.name)")
             var remoteItem = remote.itemInfo
             if let imgFileName = remote.imageFileName {
                 remoteItem.imageData = loadImageFromICloud(fileName: imgFileName)

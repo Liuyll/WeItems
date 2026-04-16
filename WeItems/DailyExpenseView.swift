@@ -112,7 +112,8 @@ struct SalaryBaseItem: Identifiable, Codable {
         if monthStart < calendar.date(from: calendar.dateComponents([.year, .month], from: startDate))! {
             return false
         }
-        if !isLongTerm, let end = endDate {
+        // 有结束日期时，无论是否长期，超过结束日期都视为过期
+        if let end = endDate {
             let endMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: end))!
             if monthStart > endMonth { return false }
         }
@@ -401,7 +402,7 @@ struct TaxCalculator {
     }
     
     /// 年终奖/长期激励单独计税（÷12 查月度表）
-    private static func taxForBonus(_ amount: Double) -> Double {
+    static func taxForBonus(_ amount: Double) -> Double {
         let monthlyEquivalent = amount / 12.0
         for bracket in monthlyBrackets {
             if monthlyEquivalent <= bracket.threshold {
@@ -508,10 +509,40 @@ struct FinanceRecord: Identifiable, Codable {
         return max(loanMonths - elapsed, 0)
     }
     
-    /// 负债剩余总额
+    /// 负债剩余本金
     var remainingDebtAmount: Double? {
-        guard let monthlyPayment, let remaining = remainingLoanMonths else { return nil }
-        return monthlyPayment * Double(remaining)
+        guard let loanMonths, let loanStartDate, loanMonths > 0 else { return nil }
+        let calendar = Calendar.current
+        let elapsed = calendar.dateComponents([.month], from: loanStartDate, to: Date()).month ?? 0
+        let paidMonths = min(max(elapsed, 0), loanMonths)
+        let remaining = loanMonths - paidMonths
+        
+        // 按还款方式计算剩余本金
+        let principal = amount  // amount 就是贷款本金
+        
+        switch repaymentType {
+        case .equalPrincipal:
+            // 等额本金：每月还固定本金
+            let monthlyPrincipal = principal / Double(loanMonths)
+            return monthlyPrincipal * Double(remaining)
+            
+        case .equalInstallment:
+            // 等额本息：根据月利率计算剩余本金
+            let monthlyRate = (loanRate ?? 0) / 100.0
+            if monthlyRate > 0, let mp = monthlyPayment, mp > 0 {
+                // 剩余本金 = P * (1+r)^n - M * ((1+r)^n - 1) / r
+                // 其中 P=原始本金, r=月利率, n=已还月数, M=月供
+                let factor = pow(1 + monthlyRate, Double(paidMonths))
+                let remainingPrincipal = principal * factor - mp * (factor - 1) / monthlyRate
+                return max(remainingPrincipal, 0)
+            }
+            // 无利率时按比例算
+            return principal * Double(remaining) / Double(loanMonths)
+            
+        case .standard, .none:
+            // 默认方式：按已还期数比例计算剩余本金
+            return principal * Double(remaining) / Double(loanMonths)
+        }
     }
     
     /// 收入折算为月度金额
@@ -521,13 +552,16 @@ struct FinanceRecord: Identifiable, Codable {
         case .salary:
             // 工资类型：使用结构性收入明细
             if let breakdown = salaryBreakdown {
+                // 如果所有工资条目都已过期，整个工作视为已结束，不计入月度收入
+                let hasActiveSalary = breakdown.salaryBaseItems.contains { $0.isActive(at: Date()) }
+                guard hasActiveSalary else { return 0 }
                 return breakdown.totalMonthlyIncome
             }
-            return amount  // 没有明细则直接用 amount
+            return amount
         case .oneTime, .savings, .none:
-            return 0  // 一次性收入/储蓄不折算月度
+            return 0
         case .unrealized:
-            return 0  // 未变现收入不折算月度
+            return 0
         }
     }
 }
@@ -536,10 +570,12 @@ struct FinanceRecord: Identifiable, Codable {
 struct SavingsGoal: Codable {
     var targetAmount: Double
     var name: String
+    var monthlyExpense: Double  // 月均开销（计算目标时从净收入中扣除）
     
-    init(targetAmount: Double = 0, name: String = "财务自由目标") {
+    init(targetAmount: Double = 0, name: String = "财务自由目标", monthlyExpense: Double = 0) {
         self.targetAmount = targetAmount
         self.name = name
+        self.monthlyExpense = monthlyExpense
     }
 }
 
@@ -858,101 +894,112 @@ class FinanceStore: ObservableObject {
         return Int(ceil(remaining / monthlyNet))
     }
     
-    /// 波动：最近18个月（从有收入开始）平均月净收入
+    /// 波动：当前工资 + 平均年终奖/12 + 平均长期激励/12 + 投资回报
     private func fluctuatingMonthlyNet() -> Double {
-        let calendar = Calendar.current
-        let now = Date()
-        let currentMonthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: now))!
+        let (currentSalary, otherIncome, allBonuses, allEquities) = collectIncomeComponents()
         
-        var monthlyNets: [Double] = []
-        for i in (0..<18).reversed() {
-            guard let mStart = calendar.date(byAdding: .month, value: -i, to: currentMonthStart) else { continue }
-            guard let mEnd = calendar.date(byAdding: DateComponents(month: 1, second: -1), to: mStart) else { continue }
-            let income = totalIncome(from: mStart, to: mEnd)
-            monthlyNets.append(income)
+        var monthlyIncome = currentSalary + otherIncome
+        
+        // 平均年终奖
+        if !allBonuses.isEmpty {
+            let avg = allBonuses.reduce(0, +) / Double(allBonuses.count)
+            monthlyIncome += avg / 12.0
         }
         
-        // 从第一个有收入的月份开始
-        guard let firstActive = monthlyNets.firstIndex(where: { $0 != 0 }) else {
-            return monthlyNetIncome // fallback
+        // 平均长期激励年化
+        if !allEquities.isEmpty {
+            let avg = allEquities.reduce(0, +) / Double(allEquities.count)
+            monthlyIncome += avg / 12.0
         }
-        let active = Array(monthlyNets[firstActive...])
-        guard !active.isEmpty else { return monthlyNetIncome }
         
-        let avg = active.reduce(0, +) / Double(active.count)
+        
         let investmentMonthlyReturn = totalInvestmentAmount * (weightedAverageReturn / 100.0) / 12.0
-        return avg + investmentMonthlyReturn
+        return monthlyIncome - monthlyRecurringDebt - savingsGoal.monthlyExpense + investmentMonthlyReturn
     }
     
-    /// 积极：最高月工资 + top3年终奖均值/12 + top2长期激励均值/12 + 投资回报
+    /// 积极：当前工资 + 最高年终奖*1.4/12 + 最高长期激励*1.4/12 + 投资回报
     private func optimisticMonthlyNet() -> Double {
-        var monthlyIncome: Double = 0
+        let (currentSalary, otherIncome, allBonuses, allEquities) = collectIncomeComponents()
         
-        for record in records where record.type == .income {
-            guard let bd = record.salaryBreakdown else { continue }
-            
-            // 最高月工资
-            let maxSalary = bd.salaryBaseItems.map { $0.amount }.max() ?? 0
-            monthlyIncome = max(monthlyIncome, maxSalary)
-            
-            // 其他月收入
-            monthlyIncome += bd.otherIncomeItems.reduce(0) { $0 + $1.amount }
-            
-            // top3 年终奖平均值
-            let bonusAmounts = bd.bonusItems.map { $0.amount }.sorted(by: >)
-            let topBonuses = Array(bonusAmounts.prefix(3))
-            if !topBonuses.isEmpty {
-                monthlyIncome += topBonuses.reduce(0, +) / Double(topBonuses.count) / 12.0
-            }
-            
-            // top2 长期激励平均值
-            let equityAmounts = bd.equityItems.map { $0.perVestingAmount * (12.0 / max(Double($0.vestingMonths), 1)) }.sorted(by: >)
-            let topEquities = Array(equityAmounts.prefix(2))
-            if !topEquities.isEmpty {
-                monthlyIncome += topEquities.reduce(0, +) / Double(topEquities.count) / 12.0
-            }
+        var monthlyIncome = currentSalary + otherIncome
+        
+        // 最高年终奖 * 1.4
+        if let maxBonus = allBonuses.max() {
+            monthlyIncome += maxBonus * 1.4 / 12.0
+        }
+        
+        // 最高长期激励年化 * 1.4
+        if let maxEquity = allEquities.max() {
+            monthlyIncome += maxEquity * 1.4 / 12.0
         }
         
         let investmentMonthlyReturn = totalInvestmentAmount * (weightedAverageReturn / 100.0) / 12.0
-        return monthlyIncome + investmentMonthlyReturn
+        return monthlyIncome - monthlyRecurringDebt - savingsGoal.monthlyExpense + investmentMonthlyReturn
     }
     
-    /// 悲观：中位数月工资 + 最低3次年终奖均值/12 + 最低2次长期激励均值/12 + 投资回报/2
+    /// 悲观：当前工资 + 平均年终奖*0.6/12 + 平均长期激励*0.6/12 + 投资回报/2
     private func pessimisticMonthlyNet() -> Double {
-        var monthlyIncome: Double = 0
+        let (currentSalary, otherIncome, allBonuses, allEquities) = collectIncomeComponents()
         
-        for record in records where record.type == .income {
-            guard let bd = record.salaryBreakdown else { continue }
-            
-            // 中位数月工资
-            let salaries = bd.salaryBaseItems.map { $0.amount }.sorted()
-            if !salaries.isEmpty {
-                let mid = salaries.count / 2
-                let median = salaries.count % 2 == 0 ? (salaries[mid - 1] + salaries[mid]) / 2.0 : salaries[mid]
-                monthlyIncome = max(monthlyIncome, median)
-            }
-            
-            // 其他月收入
-            monthlyIncome += bd.otherIncomeItems.reduce(0) { $0 + $1.amount }
-            
-            // 最低3次年终奖平均值
-            let bonusAmounts = bd.bonusItems.map { $0.amount }.sorted()
-            let bottomBonuses = Array(bonusAmounts.prefix(3))
-            if !bottomBonuses.isEmpty {
-                monthlyIncome += bottomBonuses.reduce(0, +) / Double(bottomBonuses.count) / 12.0
-            }
-            
-            // 最低2次长期激励平均值
-            let equityAmounts = bd.equityItems.map { $0.perVestingAmount * (12.0 / max(Double($0.vestingMonths), 1)) }.sorted()
-            let bottomEquities = Array(equityAmounts.prefix(2))
-            if !bottomEquities.isEmpty {
-                monthlyIncome += bottomEquities.reduce(0, +) / Double(bottomEquities.count) / 12.0
-            }
+        var monthlyIncome = currentSalary + otherIncome
+        
+        // 平均年终奖 * 0.6
+        if !allBonuses.isEmpty {
+            let avg = allBonuses.reduce(0, +) / Double(allBonuses.count)
+            monthlyIncome += avg * 0.6 / 12.0
+        }
+        
+        // 平均长期激励年化 * 0.6
+        if !allEquities.isEmpty {
+            let avg = allEquities.reduce(0, +) / Double(allEquities.count)
+            monthlyIncome += avg * 0.6 / 12.0
         }
         
         // 投资回报率减半
         let investmentMonthlyReturn = totalInvestmentAmount * (weightedAverageReturn / 100.0 / 2.0) / 12.0
-        return monthlyIncome + investmentMonthlyReturn
+        return monthlyIncome - monthlyRecurringDebt - savingsGoal.monthlyExpense + investmentMonthlyReturn
+    }
+    
+    /// 汇总所有收入组成部分（工资为税后，年终奖为税后）
+    /// 返回：(当前月度税后工资, 其他月收入, 所有年终奖税后金额列表, 所有长期激励年化金额列表)
+    func collectIncomeComponents() -> (Double, Double, [Double], [Double]) {
+        var currentNetSalary: Double = 0
+        var otherIncome: Double = 0
+        var allBonuses: [Double] = []
+        var allEquities: [Double] = []
+        
+        for record in records where record.type == .income {
+            guard let bd = record.salaryBreakdown else { continue }
+            
+            let isActiveRecord = bd.salaryBaseItems.contains { $0.isActive(at: Date()) }
+            
+            if isActiveRecord {
+                // 纯基本工资税后 = 基本工资 - 社保 - 工资个税/12
+                let baseSalary = bd.currentMonthlyBase
+                let socialInsurance = bd.socialInsurance
+                let salaryTax = TaxCalculator.calculateSalaryTax(breakdown: bd)
+                let netBase = baseSalary - socialInsurance - salaryTax / 12.0
+                currentNetSalary = max(currentNetSalary, netBase)
+                
+                otherIncome += bd.otherIncomeItems.reduce(0) { $0 + $1.amount }
+            }
+            
+            // 所有年终奖（含已过期工作），按单独计税算税后
+            for bonus in bd.bonusItems where bonus.amount > 0 {
+                let afterTax = bonus.separateTax
+                    ? bonus.amount - TaxCalculator.taxForBonus(bonus.amount)
+                    : bonus.amount  // 不单独计税的，税已在工资个税中扣除
+                allBonuses.append(afterTax)
+            }
+            
+            // 所有长期激励年化金额（含已过期工作）
+            for equity in bd.equityItems where equity.perVestingAmount > 0 {
+                let annualAmount = equity.perVestingAmount * (12.0 / max(Double(equity.vestingMonths), 1))
+                allEquities.append(annualAmount)
+            }
+        }
+        
+        return (currentNetSalary, otherIncome, allBonuses, allEquities)
     }
     
     /// 近 6 个月图表数据
@@ -1220,6 +1267,7 @@ struct DailyExpenseView: View {
     
     @State private var showingAddRecord = false
     @State private var showingEditGoal = false
+    @State private var showingGoalDebug = false
     @State private var showingFullTrend = false
     @State private var showingSalaryConfig = false
     @State private var showingSavingsConfig = false
@@ -1796,6 +1844,13 @@ struct DailyExpenseView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 
+                if financeStore.savingsGoal.monthlyExpense > 0 {
+                    Text("月均开销：¥\(financeStore.savingsGoal.monthlyExpense, specifier: "%.2f")")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                
                 ProgressView(value: progress)
                     .tint(.orange)
                     .scaleEffect(y: 2)
@@ -1853,7 +1908,178 @@ struct DailyExpenseView: View {
             RoundedRectangle(cornerRadius: 16)
                 .fill(financeStore.savingsGoal.targetAmount > 0 ? Color(.secondarySystemGroupedBackground) : Color.clear)
         )
+        #if DEBUG
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 0.5)
+                .onEnded { _ in
+                    if financeStore.savingsGoal.targetAmount > 0 {
+                        showingGoalDebug = true
+                    }
+                }
+        )
+        .sheet(isPresented: $showingGoalDebug) {
+            goalDebugSheet
+        }
+        #endif
     }
+    
+    #if DEBUG
+    private var goalDebugSheet: some View {
+        let (netSalary, otherIncome, allBonuses, allEquities) = financeStore.collectIncomeComponents()
+        let investmentReturn = financeStore.totalInvestmentAmount * (financeStore.weightedAverageReturn / 100.0) / 12.0
+        let investmentReturnHalf = financeStore.totalInvestmentAmount * (financeStore.weightedAverageReturn / 100.0 / 2.0) / 12.0
+        let debt = financeStore.monthlyRecurringDebt
+        let currentAssets = financeStore.totalSavingsAmount + financeStore.totalInvestmentAmount
+        let target = financeStore.savingsGoal.targetAmount
+        let remaining = target - currentAssets
+        
+        let avgBonus = allBonuses.isEmpty ? 0.0 : allBonuses.reduce(0, +) / Double(allBonuses.count)
+        let maxBonus = allBonuses.max() ?? 0
+        let avgEquity = allEquities.isEmpty ? 0.0 : allEquities.reduce(0, +) / Double(allEquities.count)
+        let maxEquity = allEquities.max() ?? 0
+        
+        return NavigationStack {
+            List {
+                Section("1. 目标与资产") {
+                    debugRow("目标金额", fmt(target))
+                    debugRow("储蓄总额", fmt(financeStore.totalSavingsAmount))
+                    debugRow("投资总额", fmt(financeStore.totalInvestmentAmount))
+                    debugRow("当前资产合计", fmt(currentAssets))
+                    debugRow("距目标差额", fmt(remaining))
+                    let progress = target > 0 ? min(currentAssets / target, 1.0) : 0
+                    debugRow("进度", "\(String(format: "%.1f", progress * 100))%")
+                }
+                
+                Section("2. 收入组成（来自 collectIncomeComponents）") {
+                    debugRow("当前月度税后工资", fmt(netSalary))
+                    debugRow("其他月收入", fmt(otherIncome))
+                    debugRow("年终奖（税后）共 \(allBonuses.count) 笔", "")
+                    ForEach(Array(allBonuses.enumerated()), id: \.offset) { i, b in
+                        debugRow("  第\(i+1)笔", fmt(b))
+                    }
+                    debugRow("平均年终奖", fmt(avgBonus))
+                    debugRow("最高年终奖", fmt(maxBonus))
+                    debugRow("长期激励（年化）共 \(allEquities.count) 笔", "")
+                    ForEach(Array(allEquities.enumerated()), id: \.offset) { i, e in
+                        debugRow("  第\(i+1)笔", fmt(e))
+                    }
+                    debugRow("平均长期激励年化", fmt(avgEquity))
+                    debugRow("最高长期激励年化", fmt(maxEquity))
+                }
+                
+                Section("3. 负债与投资") {
+                    debugRow("月度固定负债", fmt(debt))
+                    debugRow("剩余负债总额", fmt(financeStore.totalRemainingDebt))
+                    debugRow("投资加权年化", "\(String(format: "%.2f", financeStore.weightedAverageReturn))%")
+                    debugRow("月投资回报（全额）", fmt(investmentReturn))
+                    debugRow("月投资回报（减半）", fmt(investmentReturnHalf))
+                }
+                
+                Section("4. 波动模式计算") {
+                    let bonusM = avgBonus / 12.0
+                    let equityM = avgEquity / 12.0
+                    let total = netSalary + otherIncome + bonusM + equityM - debt + investmentReturn
+                    debugRow("工资(税后)", fmt(netSalary))
+                    debugRow("+ 其他收入", fmt(otherIncome))
+                    debugRow("+ 平均年终奖/12", fmt(bonusM))
+                    debugRow("+ 平均长期激励/12", fmt(equityM))
+                    debugRow("- 月度负债", fmt(debt))
+                    debugRow("+ 月投资回报", fmt(investmentReturn))
+                    debugRow("= 月净收入", fmt(total))
+                    if total > 0 && remaining > 0 {
+                        debugRow("预估月数", "\(Int(ceil(remaining / total))) 个月")
+                    } else {
+                        debugRow("预估", total <= 0 ? "净收入≤0，无法预估" : "已达成")
+                    }
+                }
+                
+                Section("5. 积极模式计算") {
+                    let bonusM = maxBonus * 1.4 / 12.0
+                    let equityM = maxEquity * 1.4 / 12.0
+                    let total = netSalary + otherIncome + bonusM + equityM - debt + investmentReturn
+                    debugRow("工资(税后)", fmt(netSalary))
+                    debugRow("+ 其他收入", fmt(otherIncome))
+                    debugRow("+ 最高年终奖×1.4/12", fmt(bonusM))
+                    debugRow("+ 最高长期激励×1.4/12", fmt(equityM))
+                    debugRow("- 月度负债", fmt(debt))
+                    debugRow("+ 月投资回报", fmt(investmentReturn))
+                    debugRow("= 月净收入", fmt(total))
+                    if total > 0 && remaining > 0 {
+                        debugRow("预估月数", "\(Int(ceil(remaining / total))) 个月")
+                    } else {
+                        debugRow("预估", total <= 0 ? "净收入≤0，无法预估" : "已达成")
+                    }
+                }
+                
+                Section("6. 悲观模式计算") {
+                    let bonusM = avgBonus * 0.6 / 12.0
+                    let equityM = avgEquity * 0.6 / 12.0
+                    let total = netSalary + otherIncome + bonusM + equityM - debt + investmentReturnHalf
+                    debugRow("工资(税后)", fmt(netSalary))
+                    debugRow("+ 其他收入", fmt(otherIncome))
+                    debugRow("+ 平均年终奖×0.6/12", fmt(bonusM))
+                    debugRow("+ 平均长期激励×0.6/12", fmt(equityM))
+                    debugRow("- 月度负债", fmt(debt))
+                    debugRow("+ 月投资回报(减半)", fmt(investmentReturnHalf))
+                    debugRow("= 月净收入", fmt(total))
+                    if total > 0 && remaining > 0 {
+                        debugRow("预估月数", "\(Int(ceil(remaining / total))) 个月")
+                    } else {
+                        debugRow("预估", total <= 0 ? "净收入≤0，无法预估" : "已达成")
+                    }
+                }
+                
+                Section("7. 工资记录明细") {
+                    ForEach(financeStore.records.filter({ $0.type == .income && $0.salaryBreakdown != nil }), id: \.id) { record in
+                        let bd = record.salaryBreakdown!
+                        let isActive = bd.salaryBaseItems.contains { $0.isActive(at: Date()) }
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text(record.title.isEmpty ? "工资记录" : record.title)
+                                    .fontWeight(.bold)
+                                Spacer()
+                                Text(isActive ? "当前激活" : "已过期")
+                                    .foregroundStyle(isActive ? .green : .red)
+                                    .fontWeight(.semibold)
+                            }
+                            ForEach(bd.salaryBaseItems, id: \.id) { item in
+                                let active = item.isActive(at: Date())
+                                debugRow("  工资 \(fmt(item.amount))", active ? "激活" : "过期")
+                            }
+                            debugRow("  年终奖 \(bd.bonusItems.count) 笔", fmt(bd.bonusItems.reduce(0) { $0 + $1.amount }))
+                            debugRow("  长期激励 \(bd.equityItems.count) 笔", "")
+                            debugRow("  年度个税", fmt(bd.effectiveAnnualTax))
+                            debugRow("  月度税后", fmt(bd.totalMonthlyIncome))
+                        }
+                    }
+                }
+            }
+            .font(.system(.caption, design: .monospaced))
+            .navigationTitle("目标计算详情 (Debug)")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("关闭") { showingGoalDebug = false }
+                }
+            }
+        }
+        .presentationDetents([.large])
+    }
+    
+    private func debugRow(_ title: String, _ value: String) -> some View {
+        HStack {
+            Text(title)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(value)
+                .fontWeight(.semibold)
+        }
+    }
+    
+    private func fmt(_ v: Double) -> String {
+        "¥\(String(format: "%.2f", v))"
+    }
+    #endif
     
     // MARK: - 近期财务事件
     
@@ -1937,6 +2163,8 @@ struct DailyExpenseView: View {
             let activeSalary = bd.salaryBaseItems.filter { $0.isActive(at: now) }
             if !activeSalary.isEmpty {
                 let monthlyBase = activeSalary.reduce(0) { $0 + $1.amount }
+                let salaryTax = TaxCalculator.calculateSalaryTax(breakdown: bd)
+                let netSalary = monthlyBase - bd.socialInsurance - salaryTax / 12.0
                 for offset in -6...1 {
                     guard let monthBase = calendar.date(byAdding: .month, value: offset, to: currentMonthStart) else { continue }
                     let payDate = dateForDay(payDay, inMonthOf: monthBase)
@@ -1944,8 +2172,8 @@ struct DailyExpenseView: View {
                         events.append(FinanceEvent(
                             date: payDate,
                             type: .salary,
-                            title: "月薪发放",
-                            amount: monthlyBase,
+                            title: "税后工资",
+                            amount: netSalary,
                             isPast: payDate < today
                         ))
                     }
@@ -2327,29 +2555,41 @@ struct AddFinanceRecordView: View {
             List {
                 // 大类型选择
                 Section {
-                    Picker("类型", selection: $type) {
+                    HStack(spacing: 8) {
                         ForEach(FinanceType.allCases, id: \.self) { t in
-                            Label(t.rawValue, systemImage: t.icon)
-                                .font(.system(.body, design: .rounded))
-                                .fontWeight(.semibold)
-                                .tag(t)
+                            Button {
+                                let oldType = type
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    type = t
+                                }
+                                if !isEditing {
+                                    cachedInputs[oldType] = (title, amountText, note)
+                                    if let cached = cachedInputs[t] {
+                                        title = cached.title
+                                        amountText = cached.amount
+                                        note = cached.note
+                                    } else {
+                                        title = ""
+                                        amountText = ""
+                                        note = ""
+                                    }
+                                }
+                            } label: {
+                                Text(t.rawValue)
+                                    .font(.system(.subheadline, design: .rounded))
+                                    .fontWeight(.bold)
+                                    .foregroundStyle(type == t ? .white : t.color)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .fill(type == t ? t.color : t.color.opacity(0.12))
+                                    )
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
-                    .pickerStyle(.segmented)
                     .listRowSeparator(.hidden)
-                    .onChange(of: type) { oldType, newType in
-                        guard !isEditing else { return }
-                        cachedInputs[oldType] = (title, amountText, note)
-                        if let cached = cachedInputs[newType] {
-                            title = cached.title
-                            amountText = cached.amount
-                            note = cached.note
-                        } else {
-                            title = ""
-                            amountText = ""
-                            note = ""
-                        }
-                    }
                 }
                 
                 switch type {
@@ -2782,34 +3022,54 @@ struct EditGoalView: View {
     @ObservedObject var financeStore: FinanceStore
     @Binding var incomeOutlook: FinanceStore.IncomeOutlook
     
-    @State private var goalName: String = ""
     @State private var goalAmountText: String = ""
+    @State private var monthlyExpenseText: String = ""
     
     var body: some View {
         NavigationStack {
             Form {
-                Section(header: Text("目标名称").font(.system(.subheadline, design: .rounded)).fontWeight(.bold).foregroundStyle(.primary).textCase(nil)) {
-                    TextField("例如：买房首付", text: $goalName)
-                }
                 Section(header: Text("目标金额").font(.system(.subheadline, design: .rounded)).fontWeight(.bold).foregroundStyle(.primary).textCase(nil)) {
                     TextField("输入目标金额", text: $goalAmountText)
                         .keyboardType(.decimalPad)
                 }
+                Section(header: Text("月均开销").font(.system(.subheadline, design: .rounded)).fontWeight(.bold).foregroundStyle(.primary).textCase(nil)) {
+                    TextField("输入每月平均开销", text: $monthlyExpenseText)
+                        .keyboardType(.decimalPad)
+                    Text("计算财务自由目标达成时间时，会从每月净收入中扣除此开销")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Section(header: Text("收入情况").font(.system(.subheadline, design: .rounded)).fontWeight(.bold).foregroundStyle(.primary).textCase(nil)) {
-                    Picker("预估模式", selection: $incomeOutlook) {
+                    HStack(spacing: 8) {
                         ForEach(FinanceStore.IncomeOutlook.allCases, id: \.self) { o in
-                            Text(o.rawValue).tag(o)
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    incomeOutlook = o
+                                }
+                            } label: {
+                                Text(o.rawValue)
+                                    .font(.system(.subheadline, design: .rounded))
+                                    .fontWeight(.bold)
+                                    .foregroundStyle(incomeOutlook == o ? .white : outlookColor(o))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .fill(incomeOutlook == o ? outlookColor(o) : outlookColor(o).opacity(0.12))
+                                    )
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
-                    .pickerStyle(.segmented)
+                    .listRowSeparator(.hidden)
                     
                     switch incomeOutlook {
                     case .fluctuating:
-                        Text("按最近18个月平均收入预估").font(.caption).foregroundStyle(.secondary)
+                        Text("当前工资 + 平均年终奖 + 平均长期激励").font(.caption).foregroundStyle(.secondary)
                     case .optimistic:
-                        Text("按最高工资、top年终奖和长期激励预估").font(.caption).foregroundStyle(.secondary)
+                        Text("当前工资 + 最高年终奖×1.4 + 最高长期激励×1.4").font(.caption).foregroundStyle(.secondary)
                     case .pessimistic:
-                        Text("按中位数工资、最低年终奖和长期激励、投资回报减半预估").font(.caption).foregroundStyle(.secondary)
+                        Text("当前工资 + 平均年终奖×0.6 + 平均长期激励×0.6 + 投资回报减半").font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 Section {
@@ -2827,8 +3087,8 @@ struct EditGoalView: View {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("保存") {
                         let amount = Double(goalAmountText) ?? 0
-                        let name = goalName.trimmingCharacters(in: .whitespaces).isEmpty ? "财务自由目标" : goalName.trimmingCharacters(in: .whitespaces)
-                        financeStore.updateGoal(SavingsGoal(targetAmount: amount, name: name))
+                        let expense = Double(monthlyExpenseText) ?? 0
+                        financeStore.updateGoal(SavingsGoal(targetAmount: amount, name: "财务自由目标", monthlyExpense: expense))
                         dismiss()
                     }
                     .fontWeight(.bold)
@@ -2836,9 +3096,17 @@ struct EditGoalView: View {
                 }
             }
             .onAppear {
-                goalName = financeStore.savingsGoal.name
                 goalAmountText = financeStore.savingsGoal.targetAmount > 0 ? String(format: "%.2f", financeStore.savingsGoal.targetAmount) : ""
+                monthlyExpenseText = financeStore.savingsGoal.monthlyExpense > 0 ? String(format: "%.2f", financeStore.savingsGoal.monthlyExpense) : ""
             }
+        }
+    }
+    
+    private func outlookColor(_ outlook: FinanceStore.IncomeOutlook) -> Color {
+        switch outlook {
+        case .fluctuating: return .green
+        case .optimistic: return .blue
+        case .pessimistic: return .yellow
         }
     }
 }

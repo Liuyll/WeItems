@@ -103,7 +103,6 @@ class ItemStore: ObservableObject {
     
     /// 切换用户后重新加载数据
     func reloadForCurrentUser() {
-        let prevCount = items.count
         loadItems()
         loadCustomDisplayTypes()
         loadUnsyncedFlag()
@@ -221,11 +220,12 @@ class ItemStore: ObservableObject {
     }
     
     /// 标记物品为已售出
-    func markAsSold(itemId: UUID, soldPrice: Double) {
+    func markAsSold(itemId: UUID, soldPrice: Double, soldDate: Date = Date(), recycleMethod: String? = nil) {
         if let index = items.firstIndex(where: { $0.id == itemId }) {
             items[index].isArchived = true
             items[index].soldPrice = soldPrice
-            items[index].soldDate = Date()
+            items[index].soldDate = soldDate
+            items[index].recycleMethod = recycleMethod
             saveItems()
         }
     }

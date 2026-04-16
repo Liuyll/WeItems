@@ -14,14 +14,14 @@ struct ItemDetailView: View {
     var wishlistGroupStore: WishlistGroupStore?
     
     @State private var showingArchiveConfirm = false
-    @State private var showingSoldConfirm = false
-    @State private var soldPriceText = ""
+    @State private var showingSoldSheet = false
     @State private var showingMoveToWishlistConfirm = false
     @State private var showingFulfillWishConfirm = false
     @State private var showingAddToSharedWishlist = false
     @State private var showingEditWish = false
     @State private var toastMessage: String?
     @State private var showToast = false
+    @State private var fullScreenImage: UIImage? = nil
     
     var body: some View {
         NavigationStack {
@@ -34,6 +34,11 @@ struct ItemDetailView: View {
                             .scaledToFit()
                             .frame(maxWidth: .infinity)
                             .clipShape(RoundedRectangle(cornerRadius: 16))
+                            .onTapGesture {
+                                if let data = item.imageData, let ui = UIImage(data: data) {
+                                    fullScreenImage = ui
+                                }
+                            }
                     }
                     
                     // 名称和价格
@@ -60,7 +65,7 @@ struct ItemDetailView: View {
                     // 类型和分组
                     HStack(spacing: 12) {
                         HStack(spacing: 4) {
-                            Image(systemName: typeIcon(for: item.type))
+                            typeIconImage(for: item.type)
                                 .font(.caption)
                             Text(item.type)
                                 .font(.caption)
@@ -288,23 +293,37 @@ struct ItemDetailView: View {
                                 .clipShape(RoundedRectangle(cornerRadius: 12))
                             }
                             
-                            Button {
-                                if let _ = sharedStore {
-                                    showingAddToSharedWishlist = true
-                                } else {
-                                    shareWishToFriends()
-                                }
-                            } label: {
+                            if let sharedList = sharedStore?.lists.first(where: { list in
+                                list.items.contains { $0.sourceItemId == item.id }
+                            }) {
                                 HStack {
-                                    Image(systemName: "person.2.fill")
-                                    Text("让好朋友们帮我实现")
+                                    Text("已在「\(sharedList.name)」清单中共享")
                                         .fontWeight(.semibold)
                                     Spacer()
                                 }
                                 .padding()
-                                .background(Color.pink.opacity(0.1))
-                                .foregroundStyle(.pink)
+                                .background(Color.pink)
+                                .foregroundStyle(.white)
                                 .clipShape(RoundedRectangle(cornerRadius: 12))
+                            } else {
+                                Button {
+                                    if let _ = sharedStore {
+                                        showingAddToSharedWishlist = true
+                                    } else {
+                                        shareWishToFriends()
+                                    }
+                                } label: {
+                                    HStack {
+                                        Image(systemName: "person.2.fill")
+                                        Text("让好朋友们帮我实现")
+                                            .fontWeight(.semibold)
+                                        Spacer()
+                                    }
+                                    .padding()
+                                    .background(Color.pink.opacity(0.1))
+                                    .foregroundStyle(.pink)
+                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                                }
                             }
                         }
                     }
@@ -351,8 +370,7 @@ struct ItemDetailView: View {
                                     dismiss()
                                 }
                             } else {
-                                soldPriceText = ""
-                                showingSoldConfirm = true
+                                showingSoldSheet = true
                             }
                         } label: {
                             HStack {
@@ -413,22 +431,15 @@ struct ItemDetailView: View {
                     EditWishlistItemView(item: item, store: store, wishlistGroupStore: groupStore)
                 }
             }
-            .customInputAlert(
-                isPresented: $showingSoldConfirm,
-                title: "确认售出",
-                message: "输入「\(item.name)」的售出价格，物品将移入售出列表",
-                placeholder: "售出价格",
-                text: $soldPriceText,
-                confirmText: "确认售出",
-                keyboardType: .decimalPad,
-                onConfirm: {
+            .sheet(isPresented: $showingSoldSheet) {
+                SoldItemSheet(itemName: item.name) { soldPrice, soldDate, recycleMethod in
                     withAnimation(.spring(duration: 0.3)) {
-                        let soldPrice = Double(soldPriceText) ?? 0
-                        store.markAsSold(itemId: item.id, soldPrice: soldPrice)
+                        store.markAsSold(itemId: item.id, soldPrice: soldPrice, soldDate: soldDate, recycleMethod: recycleMethod)
                         dismiss()
                     }
                 }
-            )
+                .presentationDetents([.medium])
+            }
             .customConfirmAlert(
                 isPresented: $showingMoveToWishlistConfirm,
                 title: "移入心愿列表",
@@ -442,11 +453,12 @@ struct ItemDetailView: View {
                     }
                 }
             )
-            .customConfirmAlert(
+            .customBlueConfirmAlert(
                 isPresented: $showingFulfillWishConfirm,
-                title: "实现心愿",
                 message: "实现心愿后，该物品将从「心愿列表」中移除，并移至「我的物品」中。是否继续？",
                 confirmText: "确认实现",
+                confirmColor: .green,
+                width: 280,
                 onConfirm: {
                     UserDefaults.standard.set(true, forKey: "hasShownFulfillWishHint")
                     withAnimation(.spring(duration: 0.3)) {
@@ -460,14 +472,16 @@ struct ItemDetailView: View {
                     AddToSharedWishlistSheet(item: item, sharedStore: sharedStore)
                 }
             }
+            .fullScreenImageViewer(uiImage: $fullScreenImage)
         }
     }
-    
-    private func typeIcon(for type: String) -> String {
+    @ViewBuilder
+    private func typeIconImage(for type: String) -> some View {
         if let itemType = ItemType(rawValue: type) {
-            return itemType.icon
+            itemType.iconImage(size: 16)
+        } else {
+            Image(systemName: "tag")
         }
-        return "tag"
     }
     
     private var formattedDate: String {
@@ -554,7 +568,7 @@ struct AddToSharedWishlistSheet: View {
             name: item.name,
             price: item.price,
             displayType: item.effectiveDisplayType,
-            imageData: item.imageData,
+            imageUrl: item.imageUrl,
             purchaseLink: item.purchaseLink.isEmpty ? nil : item.purchaseLink,
             details: item.details.isEmpty ? nil : item.details
         )
@@ -589,7 +603,7 @@ struct AddToSharedWishlistSheet: View {
                                             .foregroundStyle(.primary)
                                         Text("\(list.items.count) 个心愿")
                                             .font(.caption)
-                                            .foregroundStyle(.secondary)
+                                            .foregroundStyle(.pink)
                                     }
                                     
                                     Spacer()
@@ -652,6 +666,85 @@ struct AddToSharedWishlistSheet: View {
                     newListName = ""
                 }
             )
+        }
+    }
+}
+
+// MARK: - 售出信息填写 Sheet
+struct SoldItemSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let itemName: String
+    var onConfirm: (Double, Date, String?) -> Void
+    
+    @State private var priceText = ""
+    @State private var soldDate = Date()
+    @State private var recycleMethod = ""
+    
+    private var isValid: Bool {
+        !priceText.isEmpty && Double(priceText) != nil
+    }
+    
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text("「\(itemName)」的售出信息")
+                        .font(.system(.subheadline, design: .rounded))
+                        .fontWeight(.bold)
+                        .foregroundStyle(.primary)
+                        .listRowSeparator(.hidden)
+                    
+                    HStack {
+                        Text("¥")
+                            .font(.system(.body, design: .rounded))
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.secondary)
+                        TextField("售出价格", text: $priceText)
+                            .font(.system(.subheadline, design: .rounded))
+                            .fontWeight(.semibold)
+                            .keyboardType(.decimalPad)
+                    }
+                    .listRowSeparator(.hidden)
+                    
+                    DatePicker(selection: $soldDate, displayedComponents: .date) {
+                        Text("售出时间")
+                            .font(.system(.subheadline, design: .rounded))
+                            .fontWeight(.semibold)
+                    }
+                    .environment(\.locale, Locale(identifier: "zh_CN"))
+                    .listRowSeparator(.hidden)
+                    
+                    HStack {
+                        Text("回收方式")
+                            .font(.system(.subheadline, design: .rounded))
+                            .fontWeight(.semibold)
+                        Spacer()
+                        TextField("可选", text: $recycleMethod)
+                            .font(.system(.subheadline, design: .rounded))
+                            .fontWeight(.semibold)
+                            .multilineTextAlignment(.trailing)
+                            .foregroundStyle(.secondary)
+                    }
+                    .listRowSeparator(.hidden)
+                }
+            }
+            .navigationTitle("确认售出")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("确认") {
+                        let price = Double(priceText) ?? 0
+                        let method = recycleMethod.trimmingCharacters(in: .whitespaces).isEmpty ? nil : recycleMethod.trimmingCharacters(in: .whitespaces)
+                        onConfirm(price, soldDate, method)
+                        dismiss()
+                    }
+                    .fontWeight(.semibold)
+                    .disabled(!isValid)
+                }
+            }
         }
     }
 }

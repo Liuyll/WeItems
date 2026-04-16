@@ -16,6 +16,8 @@ struct EditItemView: View {
     @State private var showingAddGroup = false
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var ownedDate: Date
+    @State private var showDeleteConfirm = false
+    @State private var fullScreenImage: UIImage? = nil
     
     init(item: Item, store: ItemStore, groupStore: GroupStore) {
         self._item = State(initialValue: item)
@@ -52,7 +54,10 @@ struct EditItemView: View {
                     
                     Picker(selection: $selectedType) {
                         ForEach(ItemType.allCases, id: \.self) { type in
-                            Label(type.rawValue, systemImage: type.icon)
+                            HStack(spacing: 6) {
+                                type.iconImage(size: 16)
+                                Text(type.rawValue)
+                            }
                                 .tag(type)
                         }
                     } label: {
@@ -107,13 +112,9 @@ struct EditItemView: View {
                                     .padding(.vertical, 8)
                                     .background(
                                         Capsule()
-                                            .fill(item.groupId == nil ? Color.blue.opacity(0.15) : Color(.tertiarySystemGroupedBackground))
+                                            .fill(item.groupId == nil ? Color.blue.opacity(0.15) : Color(.systemGray5))
                                     )
                                     .foregroundStyle(item.groupId == nil ? .blue : .primary)
-                                    .overlay(
-                                        Capsule()
-                                            .stroke(item.groupId == nil ? Color.blue.opacity(0.3) : Color.clear, lineWidth: 1)
-                                    )
                             }
                             .buttonStyle(PlainButtonStyle())
                             
@@ -132,13 +133,9 @@ struct EditItemView: View {
                                     .padding(.vertical, 8)
                                     .background(
                                         Capsule()
-                                            .fill(item.groupId == group.id ? group.color.swiftUIColor.opacity(0.15) : Color(.tertiarySystemGroupedBackground))
+                                            .fill(item.groupId == group.id ? group.color.swiftUIColor.opacity(0.15) : Color(.systemGray5))
                                     )
                                     .foregroundStyle(item.groupId == group.id ? group.color.swiftUIColor : .primary)
-                                    .overlay(
-                                        Capsule()
-                                            .stroke(item.groupId == group.id ? group.color.swiftUIColor.opacity(0.3) : Color.clear, lineWidth: 1)
-                                    )
                                 }
                                 .buttonStyle(PlainButtonStyle())
                             }
@@ -164,6 +161,7 @@ struct EditItemView: View {
                             .buttonStyle(PlainButtonStyle())
                         }
                     }
+                    .padding(.vertical, 2)
                     .listRowSeparator(.hidden)
                 } header: {
                     Text("所属分组")
@@ -172,74 +170,126 @@ struct EditItemView: View {
                 }
                 
                 // 图片选择
-                Section("图片") {
-                    VStack(spacing: 12) {
-                        if let imageData = item.imageData,
-                           let uiImage = UIImage(data: imageData) {
-                            Image(uiImage: uiImage)
-                                .resizable()
-                                .scaledToFill()
-                                .frame(height: 200)
-                                .frame(maxWidth: .infinity)
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
-                        } else {
+                Section {
+                    if let imageData = item.imageData,
+                       let uiImage = UIImage(data: imageData) {
+                        Image(uiImage: uiImage)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(height: 220)
+                            .frame(maxWidth: .infinity)
+                            .clipped()
+                            .listRowInsets(EdgeInsets())
+                            .listRowSeparator(.hidden)
+                            .onTapGesture { fullScreenImage = uiImage }
+                        
+                        HStack(spacing: 0) {
                             PhotosPicker(selection: $selectedPhoto, matching: .images) {
-                                RoundedRectangle(cornerRadius: 12)
-                                    .fill(Color.gray.opacity(0.1))
-                                    .frame(height: 200)
-                                    .overlay(
-                                        VStack(spacing: 8) {
-                                            Image(systemName: "photo.badge.plus")
-                                                .font(.system(size: 40))
-                                                .foregroundStyle(.gray)
-                                            Text("选择图片")
-                                                .foregroundStyle(.secondary)
-                                        }
-                                    )
+                                HStack(spacing: 6) {
+                                    Image(systemName: "photo")
+                                        .font(.system(size: 14, weight: .semibold))
+                                    Text("更换")
+                                        .font(.system(.subheadline, design: .rounded))
+                                        .fontWeight(.medium)
+                                }
+                                .foregroundStyle(.blue)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 10)
+                            }
+                            .buttonStyle(.plain)
+                            
+                            Divider()
+                                .frame(height: 20)
+                            
+                            Button {
+                                item.imageData = nil
+                                item.compressedImageData = nil
+                                item.imageChanged = true
+                                selectedPhoto = nil
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "trash")
+                                        .font(.system(size: 14, weight: .semibold))
+                                    Text("删除")
+                                        .font(.system(.subheadline, design: .rounded))
+                                        .fontWeight(.medium)
+                                }
+                                .foregroundStyle(.red)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 10)
                             }
                             .buttonStyle(.plain)
                         }
-                        
-                        if item.imageData != nil {
-                            HStack {
-                                PhotosPicker(selection: $selectedPhoto, matching: .images) {
-                                    Label("更换照片", systemImage: "photo")
-                                        .frame(maxWidth: .infinity)
-                                }
-                                .buttonStyle(BorderlessButtonStyle())
-                                
-                                Divider()
-                                Button(role: .destructive) {
-                                    item.imageData = nil
-                                    item.compressedImageData = nil
+                        .listRowSeparator(.hidden)
+                    } else {
+                        PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                            RoundedRectangle(cornerRadius: 0)
+                                .fill(Color.blue)
+                                .frame(height: 200)
+                                .overlay(
+                                    Image(systemName: "photo.badge.plus")
+                                        .font(.system(size: 40))
+                                        .foregroundStyle(.white)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .listRowInsets(EdgeInsets())
+                        .listRowSeparator(.hidden)
+                    }
+                    
+                    EmptyView()
+                        .onChange(of: selectedPhoto) { _, newValue in
+                            Task {
+                                if let data = try? await newValue?.loadTransferable(type: Data.self) {
+                                    item.imageData = data
                                     item.imageChanged = true
-                                    selectedPhoto = nil
-                                } label: {
-                                    Label("删除图片", systemImage: "trash")
-                                        .frame(maxWidth: .infinity)
-                                }
-                                .buttonStyle(BorderlessButtonStyle())
-                            }
-                        }
-                    }
-                    .onChange(of: selectedPhoto) { _, newValue in
-                        Task {
-                            if let data = try? await newValue?.loadTransferable(type: Data.self) {
-                                item.imageData = data
-                                item.imageChanged = true
-                                if let uiImage = UIImage(data: data) {
-                                    item.compressedImageData = uiImage.jpegData(compressionQuality: 0.7)
+                                    if let uiImage = UIImage(data: data) {
+                                        item.compressedImageData = uiImage.jpegData(compressionQuality: 0.7)
+                                    }
                                 }
                             }
                         }
-                    }
-                    .padding(.vertical, 8)
+                        .frame(height: 0)
+                } header: {
+                    Text("照片")
+                        .font(.system(.footnote, design: .rounded))
+                        .fontWeight(.semibold)
                 }
                 
                 // 详情
-                Section("详情描述") {
+                Section {
                     TextEditor(text: $item.details)
+                        .font(.system(.subheadline, design: .rounded))
+                        .fontWeight(.semibold)
                         .frame(minHeight: 80)
+                } header: {
+                    Text("详情描述")
+                        .font(.system(.footnote, design: .rounded))
+                        .fontWeight(.semibold)
+                }
+                
+                // 删除物品
+                Section {
+                    Button {
+                        showDeleteConfirm = true
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text("删除物品")
+                                .font(.system(.subheadline, design: .rounded))
+                                .fontWeight(.medium)
+                        }
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(
+                            RoundedRectangle(cornerRadius: 14)
+                                .fill(Color.red)
+                        )
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
                 }
                 
             }
@@ -262,6 +312,21 @@ struct EditItemView: View {
             .sheet(isPresented: $showingAddGroup) {
                 AddGroupView(groupStore: groupStore)
             }
+            .customBlueConfirmAlert(
+                isPresented: $showDeleteConfirm,
+                message: "删除后无法恢复，确定要删除「\(item.name)」吗？",
+                confirmText: "删除",
+                cancelText: "取消",
+                confirmColor: .blue,
+                cancelColor: .green,
+                backgroundColor: .red,
+                width: 260,
+                onConfirm: {
+                    store.delete(item)
+                    dismiss()
+                }
+            )
+            .fullScreenImageViewer(uiImage: $fullScreenImage)
         }
     }
     

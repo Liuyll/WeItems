@@ -126,33 +126,6 @@ struct ICloudDataView: View {
     }
 }
 
-// MARK: - 数据行（共享组件）
-
-struct CloudDataRow: View {
-    let icon: String
-    let color: Color
-    let title: String
-    let value: String
-    
-    var body: some View {
-        HStack {
-            Label {
-                Text(title)
-                    .font(.subheadline)
-            } icon: {
-                Image(systemName: icon)
-                    .foregroundStyle(color)
-                    .font(.subheadline)
-            }
-            Spacer()
-            Text(value)
-                .font(.subheadline)
-                .fontWeight(.medium)
-                .foregroundStyle(.secondary)
-        }
-    }
-}
-
 #Preview {
     NavigationStack {
         ICloudDataView()

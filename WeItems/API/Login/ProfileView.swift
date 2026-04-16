@@ -593,7 +593,6 @@ struct ProfileView: View {
                     let response = await client.fetchSharedWishlistByGroupId(wishGroupId: wishGroupId)
                     
                     guard let sharedRecord = response?.data?.records?.first else {
-                        print("[手动同步] 共享清单 \(wishGroupId) 远端无数据，跳过")
                         continue
                     }
                     
@@ -646,7 +645,6 @@ struct ProfileView: View {
                             if let nickname = myRemoteNickname {
                                 sharedWishlistStore.setMyNickname(sharedWishlistStore.lists[existingIndex].id, nickname: nickname)
                             }
-                            print("[手动同步] 已更新共享清单: \(listName) (\(wishGroupId))")
                         } else {
                             // 本地没有该清单，作为新的共享清单添加（非 owner）
                             let newList = SharedWishlist(
@@ -660,7 +658,6 @@ struct ProfileView: View {
                                 myNickname: myRemoteNickname
                             )
                             sharedWishlistStore.add(newList)
-                            print("[手动同步] 已添加共享清单: \(listName) (\(wishGroupId))")
                         }
                     }
                 }
@@ -714,7 +711,6 @@ struct ProfileView: View {
                     for deletedItemId in result.deletedLocalItemIds {
                         if let item = itemStore.items.first(where: { $0.itemId == deletedItemId && $0.listType == .items }) {
                             itemStore.delete(item)
-                            print("[同步] 已删除本地物品: \(item.name)")
                         }
                     }
                     // 远端独有或远端更新的物品，添加到本地
@@ -725,11 +721,9 @@ struct ProfileView: View {
                             // 如果下载到了图片，设置到 imageData
                             if let imageData = downloadedImages[remoteItem.id.uuidString] {
                                 remoteItem.imageData = imageData
-                                print("[同步] 已下载远端物品图片: \(remoteItem.name)")
                             }
                             remoteItem.isSynced = true
                             itemStore.add(remoteItem)
-                            print("[同步] 已添加远端物品: \(remoteItem.name)")
                         }
                     }
                 } else {
@@ -741,7 +735,6 @@ struct ProfileView: View {
                     for deletedItemId in result.deletedLocalItemIds {
                         if let item = itemStore.items.first(where: { $0.itemId == deletedItemId && $0.listType == .wishlist }) {
                             itemStore.delete(item)
-                            print("[同步] 已删除本地心愿: \(item.name)")
                         }
                     }
                     // 远端独有或远端更新的心愿，添加到本地
@@ -751,11 +744,9 @@ struct ProfileView: View {
                             // 如果下载到了图片，设置到 imageData
                             if let imageData = downloadedImages[remoteItem.id.uuidString] {
                                 remoteItem.imageData = imageData
-                                print("[同步] 已下载远端心愿图片: \(remoteItem.name)")
                             }
                             remoteItem.isSynced = true
                             itemStore.add(remoteItem)
-                            print("[同步] 已添加远端心愿: \(remoteItem.name)")
                         }
                     }
                 } else {
@@ -881,7 +872,6 @@ struct ProfileView: View {
                     for deletedItemId in result.deletedLocalItemIds {
                         if let item = itemStore.items.first(where: { $0.itemId == deletedItemId && $0.listType == .items }) {
                             itemStore.delete(item)
-                            print("[iCloud 同步] 已删除本地物品: \(item.name)")
                         }
                     }
                     for var remoteItem in result.remoteOnlyItems {
@@ -889,7 +879,6 @@ struct ProfileView: View {
                         if !itemStore.items.contains(where: { $0.itemId == remoteItem.itemId }) {
                             remoteItem.isSynced = true
                             itemStore.add(remoteItem)
-                            print("[iCloud 同步] 已添加物品: \(remoteItem.name)")
                         }
                     }
                 } else {
@@ -901,7 +890,6 @@ struct ProfileView: View {
                     for deletedItemId in result.deletedLocalItemIds {
                         if let item = itemStore.items.first(where: { $0.itemId == deletedItemId && $0.listType == .wishlist }) {
                             itemStore.delete(item)
-                            print("[iCloud 同步] 已删除本地心愿: \(item.name)")
                         }
                     }
                     for var remoteItem in result.remoteOnlyItems {
@@ -909,7 +897,6 @@ struct ProfileView: View {
                         if !itemStore.items.contains(where: { $0.itemId == remoteItem.itemId }) {
                             remoteItem.isSynced = true
                             itemStore.add(remoteItem)
-                            print("[iCloud 同步] 已添加心愿: \(remoteItem.name)")
                         }
                     }
                 } else {

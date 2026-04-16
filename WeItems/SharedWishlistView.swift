@@ -61,17 +61,12 @@ struct SharedWishlistListView: View {
         .sheet(isPresented: $showingProUpgrade) {
             ProUpgradeView()
         }
-        .customInputAlert(
-            isPresented: $showingImportAlert,
-            title: "导入好朋友的清单",
-            message: "请输入好朋友分享的清单 ID",
-            placeholder: "输入清单 ID",
-            text: $importGroupId,
-            confirmText: "导入",
-            onConfirm: {
+        .sheet(isPresented: $showingImportAlert) {
+            ImportFriendSheet(groupId: $importGroupId) {
                 importFriendWishlist()
             }
-        )
+            .presentationDetents([.medium])
+        }
         .customInfoAlert(
             isPresented: $showingImportError,
             title: "导入失败",
@@ -269,8 +264,11 @@ struct SharedWishlistListView: View {
                 let remoteItems = record.wishinfo?.items ?? []
                 
                 let sharedItems: [SharedWishItem] = remoteItems.map { remote in
+                    var remoteImageUrl: String? = nil
                     var remoteImageData: Data? = nil
-                    if let base64Str = remote.imageBase64, !base64Str.isEmpty {
+                    if let url = remote.imageUrl, !url.isEmpty {
+                        remoteImageUrl = url
+                    } else if let base64Str = remote.imageBase64, !base64Str.isEmpty {
                         remoteImageData = Data(base64Encoded: base64Str)
                     }
                     return SharedWishItem(
@@ -278,6 +276,7 @@ struct SharedWishlistListView: View {
                         price: remote.price ?? 0,
                         isCompleted: remote.isCompleted ?? false,
                         displayType: remote.displayType,
+                        imageUrl: remoteImageUrl,
                         imageData: remoteImageData,
                         purchaseLink: remote.purchaseLink,
                         details: remote.details,
@@ -406,6 +405,60 @@ struct ImportFriendWishlistBlock: View {
     }
 }
 
+// MARK: - 导入好朋友清单 Sheet（粉色背景）
+struct ImportFriendSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var groupId: String
+    var onImport: () -> Void
+    
+    var body: some View {
+        ZStack {
+            Color.pink.ignoresSafeArea()
+            
+            VStack(spacing: 24) {
+                Text("请输入好朋友分享的清单 ID")
+                    .font(.system(.subheadline, design: .rounded))
+                    .fontWeight(.bold)
+                    .foregroundStyle(.white.opacity(0.8))
+                
+                TextField("输入清单 ID", text: $groupId)
+                    .font(.system(.body, design: .rounded))
+                    .fontWeight(.bold)
+                    .padding(14)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(.white)
+                    )
+                    .tint(.green)
+                    .autocorrectionDisabled()
+                    .submitLabel(.done)
+                    .padding(.horizontal, 8)
+                
+                Button {
+                    dismiss()
+                    onImport()
+                } label: {
+                    Text("导入")
+                        .font(.system(.body, design: .rounded))
+                        .fontWeight(.bold)
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(groupId.trimmingCharacters(in: .whitespaces).isEmpty ? Color(white: 0.45) : Color.blue)
+                        )
+                }
+                .buttonStyle(.plain)
+                .disabled(groupId.trimmingCharacters(in: .whitespaces).isEmpty)
+                .padding(.horizontal, 8)
+            }
+            .padding(24)
+        }
+        .presentationBackground(Color.pink)
+    }
+}
+
 // MARK: - 清单行
 struct SharedWishlistRow: View {
     let list: SharedWishlist
@@ -423,10 +476,20 @@ struct SharedWishlistRow: View {
                 .clipShape(RoundedRectangle(cornerRadius: 12))
             
             VStack(alignment: .leading, spacing: 4) {
-                Text(list.name)
-                    .font(.body)
-                    .fontWeight(.semibold)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(list.name)
+                        .font(.body)
+                        .fontWeight(.semibold)
+                        .lineLimit(1)
+                    
+                    Text(list.isOwner ? "ME" : "From \(list.ownerName ?? "?")")
+                        .font(.system(.caption2, design: .rounded))
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(list.isOwner ? .blue : .pink))
+                }
                 
                 HStack(spacing: 8) {
                     Text("\(list.items.count) 个心愿")
@@ -483,6 +546,11 @@ struct SharedWishlistDetailView: View {
     // 快照：进入时保存一份清单数据，用于判断用户是否做了本地修改
     @State private var snapshotItems: [SharedWishItem]? = nil
     @State private var wasAlreadyUnsynced = false
+    
+    // 远端清单是否已被创建者删除
+    @State private var isRemoteDeleted = false
+    @State private var showingDeletedAlert = false
+    @State private var isCheckingRemote = true
     
     private var currentList: SharedWishlist {
         sharedStore.lists.first(where: { $0.id == list.id }) ?? list
@@ -553,7 +621,32 @@ struct SharedWishlistDetailView: View {
                     
                     Spacer()
                     
-                    if !shouldShowUnsynced {
+                    if isCheckingRemote {
+                        HStack(spacing: 4) {
+                            ProgressView()
+                                .controlSize(.mini)
+                                .tint(.white)
+                            Text("同步中")
+                                .font(.caption2)
+                                .fontWeight(.medium)
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(Color.blue))
+                    } else if isRemoteDeleted {
+                        HStack(spacing: 4) {
+                            Image(systemName: "trash.fill")
+                                .font(.caption2)
+                            Text("心愿已删除")
+                                .font(.caption2)
+                                .fontWeight(.medium)
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(Color.red))
+                    } else if !shouldShowUnsynced {
                         Button {
                             syncFromRemote()
                         } label: {
@@ -662,8 +755,12 @@ struct SharedWishlistDetailView: View {
                         ForEach(group.items) { item in
                             HStack(spacing: 12) {
                                 Button {
-                                    withAnimation(.spring(duration: 0.25)) {
-                                        sharedStore.toggleItemCompleted(listId: currentList.id, itemId: item.id)
+                                    if isRemoteDeleted {
+                                        showingDeletedAlert = true
+                                    } else {
+                                        withAnimation(.spring(duration: 0.25)) {
+                                            sharedStore.toggleItemCompleted(listId: currentList.id, itemId: item.id)
+                                        }
                                     }
                                 } label: {
                                     Image(systemName: item.isCompleted ? "checkmark.circle.fill" : "circle")
@@ -701,7 +798,11 @@ struct SharedWishlistDetailView: View {
                             .padding(.vertical, 2)
                             .contentShape(Rectangle())
                             .onTapGesture {
-                                editingItem = item
+                                if isRemoteDeleted {
+                                    showingDeletedAlert = true
+                                } else {
+                                    editingItem = item
+                                }
                             }
                             .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                 if currentList.isOwner {
@@ -785,9 +886,7 @@ struct SharedWishlistDetailView: View {
                             ProgressView()
                                 .tint(.white)
                         } else {
-                            Image(systemName: currentList.isOwner ? "trash.fill" : "rectangle.portrait.and.arrow.right")
-                                .font(.subheadline)
-                            Text(currentList.isOwner ? "移除清单" : "退出分享")
+                            Text(currentList.isOwner ? "删除清单" : "退出分享")
                                 .fontWeight(.semibold)
                         }
                         Spacer()
@@ -804,17 +903,26 @@ struct SharedWishlistDetailView: View {
         }
         .navigationTitle(currentList.name)
         .navigationBarTitleDisplayMode(.inline)
-        .customConfirmAlert(
+        .customBlueConfirmAlert(
             isPresented: $showingDeleteAlert,
-            title: currentList.isOwner ? "确认移除清单？" : "确认退出分享？",
             message: currentList.isOwner
-                ? "移除后将同时删除远端数据，此操作不可撤销"
+                ? "删除后将同时删除远端数据，此操作不可撤销"
                 : "退出后将从本地移除该清单，远端数据不受影响",
-            confirmText: currentList.isOwner ? "移除" : "退出",
-            isDestructive: true,
+            confirmText: currentList.isOwner ? "删除" : "退出",
+            cancelText: "取消",
+            confirmColor: .blue,
+            cancelColor: .green,
+            backgroundColor: .red,
+            width: 260,
             onConfirm: {
                 performDelete()
             }
+        )
+        .customBlueInfoAlert(
+            isPresented: $showingDeletedAlert,
+            message: "该心愿清单已经被创建者删除",
+            buttonText: "知道了",
+            backgroundColor: .yellow
         )
         .onAppear {
             let l = currentList
@@ -823,6 +931,26 @@ struct SharedWishlistDetailView: View {
             if snapshotItems == nil {
                 snapshotItems = l.items
                 wasAlreadyUnsynced = !l.isSynced
+            }
+            
+            // 从远端检查清单是否还存在
+            if let gid = l.wishGroupId, !gid.isEmpty {
+                Task {
+                    if let client = AuthManager.shared.getCloudBaseClient() {
+                        let response = await client.fetchSharedWishlistByGroupId(wishGroupId: gid)
+                        let exists = response?.data?.records?.first != nil
+                        await MainActor.run {
+                            isRemoteDeleted = !exists
+                            isCheckingRemote = false
+                        }
+                    } else {
+                        await MainActor.run {
+                            isCheckingRemote = false
+                        }
+                    }
+                }
+            } else {
+                isCheckingRemote = false
             }
             
             print("========== 共享清单详情 ==========")
@@ -838,7 +966,8 @@ struct SharedWishlistDetailView: View {
             print("totalPrice: \(l.totalPrice)")
             print("items count: \(l.items.count)")
             for (i, item) in l.items.enumerated() {
-                print("  [\(i)] name: \(item.name), price: \(item.price), isCompleted: \(item.isCompleted), displayType: \(item.displayType ?? "nil"), purchaseLink: \(item.purchaseLink ?? "nil"), details: \(item.details ?? "nil")")
+                let imgInfo = item.imageUrl ?? "nil"
+                print("  [\(i)] name: \(item.name), price: \(item.price), isCompleted: \(item.isCompleted), displayType: \(item.displayType ?? "nil"), imageUrl: \(imgInfo)")
             }
             print("==================================")
             loadMembers()
@@ -990,7 +1119,7 @@ struct SharedWishlistDetailView: View {
                 || itemA.purchaseLink != itemB.purchaseLink
                 || itemA.details != itemB.details
                 || itemA.completedBy != itemB.completedBy
-                || itemA.imageData != itemB.imageData {
+                || itemA.imageUrl != itemB.imageUrl {
                 return false
             }
         }
@@ -1036,6 +1165,7 @@ struct SharedWishlistDetailView: View {
     
     
     private func syncToCloud() {
+        if isRemoteDeleted { showingDeletedAlert = true; return }
         isSyncing = true
         let listId = currentList.id
         let existingWishGroupId = currentList.wishGroupId
@@ -1043,6 +1173,7 @@ struct SharedWishlistDetailView: View {
         let name = currentList.name
         let emoji = currentList.emoji
         let ownerName = currentList.ownerName ?? currentList.myNickname
+        let isOwner = currentList.isOwner
         
         Task {
             var syncSucceeded = false
@@ -1064,7 +1195,8 @@ struct SharedWishlistDetailView: View {
                         wishGroupId: wishGroupId,
                         localItems: items,
                         listName: name,
-                        listEmoji: emoji
+                        listEmoji: emoji,
+                        isOwner: isOwner
                     )
                     print("[共享心愿] syncResult==nil?\(syncResult == nil), pushSuccess=\(syncResult?.pushSuccess ?? false)")
                     if let syncResult = syncResult, syncResult.pushSuccess {
@@ -1182,6 +1314,7 @@ struct SharedWishlistDetailView: View {
     /// 点击"已远端同步"标签时触发的手动同步：pull -> merge -> push -> 本地展示
     /// 点击"已远端同步"标签时触发：直接拉取远端数据覆盖本地（以远端为准）
     private func syncFromRemote() {
+        if isRemoteDeleted { showingDeletedAlert = true; return }
         guard let wishGroupId = currentList.wishGroupId else { return }
         isSyncing = true
         let listId = currentList.id
@@ -1199,8 +1332,11 @@ struct SharedWishlistDetailView: View {
                     // 将远端数据转为本地模型，完全覆盖本地
                     let remoteWishItems = record.wishinfo?.items ?? []
                     let remoteItems: [SharedWishItem] = remoteWishItems.map { remote in
+                        var remoteImageUrl: String? = nil
                         var remoteImageData: Data? = nil
-                        if let base64Str = remote.imageBase64, !base64Str.isEmpty {
+                        if let url = remote.imageUrl, !url.isEmpty {
+                            remoteImageUrl = url
+                        } else if let base64Str = remote.imageBase64, !base64Str.isEmpty {
                             remoteImageData = Data(base64Encoded: base64Str)
                         }
                         return SharedWishItem(
@@ -1208,6 +1344,7 @@ struct SharedWishlistDetailView: View {
                             price: remote.price ?? 0,
                             isCompleted: remote.isCompleted ?? false,
                             displayType: remote.displayType,
+                            imageUrl: remoteImageUrl,
                             imageData: remoteImageData,
                             purchaseLink: remote.purchaseLink,
                             details: remote.details,
@@ -1334,6 +1471,7 @@ struct CreateSharedWishlistView: View {
     @State private var ownerName = ""
     @State private var selectedItemIds: Set<UUID> = []
     @State private var filterGroupId: UUID? = nil
+    @State private var syncGroup: Bool = false
     @State private var isSaving = false
     
     private let emojis = ["🎁", "🎂", "🎄", "💝", "🏠", "✈️", "🎮", "📱", "👗", "🎵", "📚", "🍰", "🌟", "💍", "🎯", "🎪"]
@@ -1383,7 +1521,9 @@ struct CreateSharedWishlistView: View {
                                             RoundedRectangle(cornerRadius: 10)
                                                 .stroke(emoji == e ? Color.green : Color.clear, lineWidth: 2)
                                         )
+                                        .contentShape(Rectangle())
                                 }
+                                .buttonStyle(.plain)
                             }
                         }
                     }
@@ -1412,28 +1552,28 @@ struct CreateSharedWishlistView: View {
                             }
                         }
                         
-                        // 全选/取消当前筛选的心愿
-                        if !filteredWishlistItems.isEmpty {
-                            let allFilteredSelected = filteredWishlistItems.allSatisfy { selectedItemIds.contains($0.id) }
-                            Button {
-                                if allFilteredSelected {
-                                    for item in filteredWishlistItems {
-                                        selectedItemIds.remove(item.id)
-                                    }
-                                } else {
+                        // 同步分组开关
+                        if filterGroupId != nil && !filteredWishlistItems.isEmpty {
+                            Toggle(isOn: $syncGroup) {
+                                Text("同步分组")
+                                    .font(.system(.subheadline, design: .rounded))
+                                    .fontWeight(.bold)
+                            }
+                            .tint(.green)
+                            .onChange(of: syncGroup) { _, newValue in
+                                if newValue {
                                     for item in filteredWishlistItems {
                                         selectedItemIds.insert(item.id)
                                     }
                                 }
-                            } label: {
-                                HStack {
-                                    Image(systemName: allFilteredSelected ? "checkmark.circle.fill" : "circle")
-                                        .foregroundStyle(allFilteredSelected ? .green : .gray.opacity(0.3))
-                                    Text(allFilteredSelected ? "取消全选" : "全选当前分组")
-                                        .font(.subheadline)
-                                }
                             }
-                            .buttonStyle(BorderlessButtonStyle())
+                            
+                            if syncGroup {
+                                Text("该分组后续新增、编辑、删除心愿都会自动同步到此共享清单")
+                                    .font(.system(.caption, design: .rounded))
+                                    .fontWeight(.bold)
+                                    .foregroundStyle(.blue)
+                            }
                         }
                     }
                 }
@@ -1483,13 +1623,13 @@ struct CreateSharedWishlistView: View {
     private func save() {
         let selectedItems = wishlistItems.filter { selectedItemIds.contains($0.id) }
         let sharedItems = selectedItems
-            .map { SharedWishItem(sourceItemId: $0.id, name: $0.name, price: $0.price, displayType: $0.effectiveDisplayType, imageData: $0.imageData, purchaseLink: $0.purchaseLink.isEmpty ? nil : $0.purchaseLink, details: $0.details.isEmpty ? nil : $0.details) }
+            .map { SharedWishItem(sourceItemId: $0.id, name: $0.name, price: $0.price, displayType: $0.effectiveDisplayType, imageUrl: $0.imageUrl, purchaseLink: $0.purchaseLink.isEmpty ? nil : $0.purchaseLink, details: $0.details.isEmpty ? nil : $0.details) }
         
         // 生成 16 位随机数 ID
         let wishGroupId = CloudBaseClient.generateWishGroupId()
         
-        let newList = SharedWishlist(name: name, emoji: emoji, items: sharedItems, wishGroupId: wishGroupId, ownerName: ownerName, myNickname: ownerName)
-        print("[CreateSharedWishlist] ownerName: \(ownerName), newList.ownerName: \(newList.ownerName ?? "nil")")
+        let newList = SharedWishlist(name: name, emoji: emoji, items: sharedItems, wishGroupId: wishGroupId, ownerName: ownerName, myNickname: ownerName, linkedGroupId: syncGroup ? filterGroupId : nil)
+        print("[CreateSharedWishlist] ownerName: \(ownerName), isOwner: \(newList.isOwner), syncGroup: \(syncGroup), filterGroupId: \(filterGroupId?.uuidString ?? "nil"), linkedGroupId: \(newList.linkedGroupId?.uuidString ?? "nil")")
         sharedStore.add(newList)
         
         // 调用 API 上传到云端
@@ -1593,7 +1733,9 @@ struct EditSharedWishlistView: View {
                                             RoundedRectangle(cornerRadius: 10)
                                                 .stroke(emoji == e ? Color.green : Color.clear, lineWidth: 2)
                                         )
+                                        .contentShape(Rectangle())
                                 }
+                                .buttonStyle(.plain)
                             }
                         }
                     }
@@ -1704,7 +1846,7 @@ struct EditSharedWishlistView: View {
                     price: item.price,
                     isCompleted: existingMap[item.id] ?? false,
                     displayType: item.effectiveDisplayType,
-                    imageData: item.imageData,
+                    imageUrl: item.imageUrl,
                     purchaseLink: item.purchaseLink.isEmpty ? nil : item.purchaseLink,
                     details: item.details.isEmpty ? nil : item.details
                 )
@@ -1737,6 +1879,8 @@ struct EditSharedWishItemView: View {
     @State private var imageData: Data?
     @State private var showingImagePicker = false
     @State private var selectedPhoto: PhotosPickerItem?
+    @State private var showDeleteConfirm = false
+    @State private var fullScreenImage: UIImage? = nil
     
     init(item: SharedWishItem, listId: UUID, isOwner: Bool, sharedStore: SharedWishlistStore) {
         self.originalItem = item
@@ -1766,178 +1910,210 @@ struct EditSharedWishItemView: View {
         }
     }
     
-    // MARK: - Owner 编辑视图（卡通风格，与编辑心愿一致）
+    // MARK: - Owner 编辑视图（与编辑普通心愿一致）
     private var ownerEditView: some View {
         ScrollView {
             VStack(spacing: 18) {
-                // ✨ 顶部装饰
-                Text("✨ 修改这个心愿 ✨")
-                    .font(.title3)
-                    .fontWeight(.bold)
-                    .foregroundStyle(Color(red: 0.85, green: 0.4, blue: 0.6))
-                    .padding(.top, 8)
-                
-                // 📝 基本信息卡片
-                VStack(alignment: .leading, spacing: 14) {
-                    CartoonSectionHeader(emoji: "📝", title: "基本信息", color: Color(red: 0.3, green: 0.5, blue: 0.8))
-                    
-                    CartoonTextField(placeholder: "心愿名字", text: $name, leadingIcon: "✏️")
-                    
-                    CartoonTextField(placeholder: "价格", text: $priceText, keyboardType: .decimalPad, leadingIcon: "💰")
+                // 📝 心愿详情
+                VStack(alignment: .leading, spacing: 10) {
+                    CartoonSectionHeader(emoji: "📝", title: "心愿详情", color: .blue)
+                    CartoonTextField(placeholder: "心愿名字", text: $name)
+                    CartoonTextField(placeholder: "价格", text: $priceText, keyboardType: .decimalPad)
+                    CartoonTextField(placeholder: "购买链接", text: $purchaseLink, keyboardType: .URL)
                 }
                 .cartoonCard()
                 
-                // 🏷️ 展示类型卡片
+                // 🏷️ 展示类型
                 VStack(alignment: .leading, spacing: 14) {
-                    CartoonSectionHeader(emoji: "🏷️", title: "展示类型", color: Color(red: 0.55, green: 0.4, blue: 0.75))
+                    CartoonSectionHeader(emoji: "🏷️", title: "展示类型", color: .blue)
                     
-                    CartoonTextField(placeholder: "输入展示类型", text: $displayType, leadingIcon: "🔖")
+                    FlowLayout(spacing: 8) {
+                        ForEach(ItemType.allCases, id: \.self) { type in
+                            Button {
+                                displayType = type.rawValue
+                            } label: {
+                                HStack(spacing: 4) {
+                                    type.iconImage(size: 20)
+                                        .font(.caption)
+                                    Text(type.rawValue)
+                                        .font(.system(.subheadline, design: .rounded))
+                                        .fontWeight(displayType == type.rawValue ? .bold : .medium)
+                                }
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 8)
+                                .background(
+                                    Capsule()
+                                        .fill(type.color.opacity(displayType == type.rawValue ? 0.2 : 0.08))
+                                )
+                                .foregroundStyle(displayType == type.rawValue ? type.color : type.color.opacity(0.7))
+                                .overlay(
+                                    Capsule()
+                                        .stroke(displayType == type.rawValue ? type.color.opacity(0.3) : Color.clear, lineWidth: 1)
+                                )
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                        }
+                    }
                 }
                 .cartoonCard()
                 
-                // 📷 图片卡片
+                // 📷 照片 + 描述
                 VStack(alignment: .leading, spacing: 14) {
-                    CartoonSectionHeader(emoji: "📷", title: "心愿美照", color: Color(red: 0.2, green: 0.6, blue: 0.65))
+                    CartoonSectionHeader(emoji: "📷", title: "照片", color: .blue)
                     
-                    ZStack {
+                    VStack(spacing: 0) {
                         if let imageData = imageData,
                            let uiImage = UIImage(data: imageData) {
                             Image(uiImage: uiImage)
                                 .resizable()
                                 .scaledToFill()
-                                .frame(height: 180)
+                                .frame(height: 220)
                                 .frame(maxWidth: .infinity)
-                                .clipShape(RoundedRectangle(cornerRadius: 14))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 14)
-                                        .stroke(Color.pink.opacity(0.15), lineWidth: 1)
-                                )
-                                .overlay(alignment: .bottomTrailing) {
-                                    HStack(spacing: 8) {
-                                        PhotosPicker(selection: $selectedPhoto, matching: .images) {
-                                            HStack(spacing: 4) {
-                                                Image(systemName: "arrow.triangle.2.circlepath")
-                                                    .font(.caption)
-                                                Text("更换")
-                                                    .font(.caption)
-                                                    .fontWeight(.medium)
-                                            }
-                                            .foregroundStyle(.white)
-                                            .padding(.horizontal, 10)
-                                            .padding(.vertical, 6)
-                                            .background(Capsule().fill(Color.black.opacity(0.5)))
-                                        }
-                                        .buttonStyle(PlainButtonStyle())
-                                        
-                                        Button {
-                                            self.imageData = nil
-                                            selectedPhoto = nil
-                                        } label: {
-                                            HStack(spacing: 4) {
-                                                Image(systemName: "trash")
-                                                    .font(.caption)
-                                                Text("删除")
-                                                    .font(.caption)
-                                                    .fontWeight(.medium)
-                                            }
-                                            .foregroundStyle(.white)
-                                            .padding(.horizontal, 10)
-                                            .padding(.vertical, 6)
-                                            .background(Capsule().fill(Color.red.opacity(0.7)))
-                                        }
-                                        .buttonStyle(PlainButtonStyle())
+                                .clipped()
+                                .onTapGesture { fullScreenImage = uiImage }
+                            
+                            HStack(spacing: 0) {
+                                PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "photo")
+                                            .font(.system(size: 14, weight: .semibold))
+                                        Text("更换")
+                                            .font(.system(.subheadline, design: .rounded))
+                                            .fontWeight(.medium)
                                     }
-                                    .padding(10)
+                                    .foregroundStyle(.blue)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 10)
                                 }
+                                .buttonStyle(.plain)
+                                
+                                Divider()
+                                    .frame(height: 20)
+                                
+                                Button {
+                                    self.imageData = nil
+                                    selectedPhoto = nil
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "trash")
+                                            .font(.system(size: 14, weight: .semibold))
+                                        Text("删除")
+                                            .font(.system(.subheadline, design: .rounded))
+                                            .fontWeight(.medium)
+                                    }
+                                    .foregroundStyle(.red)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 10)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        } else if let imageUrl = originalItem.imageUrl, let url = URL(string: imageUrl) {
+                            AsyncImage(url: url) { phase in
+                                switch phase {
+                                case .success(let image):
+                                    image
+                                        .resizable()
+                                        .scaledToFill()
+                                        .frame(height: 220)
+                                        .frame(maxWidth: .infinity)
+                                        .clipped()
+                                case .failure:
+                                    RoundedRectangle(cornerRadius: 0)
+                                        .fill(Color(.tertiarySystemGroupedBackground))
+                                        .frame(height: 200)
+                                        .overlay(
+                                            Image(systemName: "photo")
+                                                .font(.system(size: 40))
+                                                .foregroundStyle(.secondary)
+                                        )
+                                default:
+                                    RoundedRectangle(cornerRadius: 0)
+                                        .fill(Color(.tertiarySystemGroupedBackground))
+                                        .frame(height: 200)
+                                        .overlay(ProgressView())
+                                }
+                            }
+                            
+                            HStack(spacing: 0) {
+                                PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "photo")
+                                            .font(.system(size: 14, weight: .semibold))
+                                        Text("更换")
+                                            .font(.system(.subheadline, design: .rounded))
+                                            .fontWeight(.medium)
+                                    }
+                                    .foregroundStyle(.blue)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 10)
+                                }
+                                .buttonStyle(.plain)
+                                
+                                Divider()
+                                    .frame(height: 20)
+                                
+                                Button {
+                                    self.imageData = nil
+                                    selectedPhoto = nil
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "trash")
+                                            .font(.system(size: 14, weight: .semibold))
+                                        Text("删除")
+                                            .font(.system(.subheadline, design: .rounded))
+                                            .fontWeight(.medium)
+                                    }
+                                    .foregroundStyle(.red)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 10)
+                                }
+                                .buttonStyle(.plain)
+                            }
                         } else {
                             PhotosPicker(selection: $selectedPhoto, matching: .images) {
-                                RoundedRectangle(cornerRadius: 14)
-                                    .fill(Color(.tertiarySystemGroupedBackground))
-                                    .frame(height: 140)
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill(Color.blue)
+                                    .frame(height: 200)
                                     .overlay(
-                                        VStack(spacing: 8) {
-                                            Image(systemName: "photo.badge.plus")
-                                                .font(.system(size: 32))
-                                                .foregroundStyle(Color(red: 0.2, green: 0.6, blue: 0.65))
-                                            Text("点击选择图片")
-                                                .font(.subheadline)
-                                                .fontWeight(.medium)
-                                                .foregroundStyle(Color(red: 0.2, green: 0.6, blue: 0.65))
-                                        }
+                                        Image(systemName: "photo.badge.plus")
+                                            .font(.system(size: 40))
+                                            .foregroundStyle(.white)
                                     )
                             }
-                            .buttonStyle(PlainButtonStyle())
+                            .buttonStyle(.plain)
                         }
+                        
+                        EmptyView()
+                            .onChange(of: selectedPhoto) { _, newValue in
+                                Task {
+                                    if let data = try? await newValue?.loadTransferable(type: Data.self) {
+                                        imageData = data
+                                    }
+                                }
+                            }
+                            .frame(height: 0)
                     }
-                    .onChange(of: selectedPhoto) { _, newValue in
-                        Task {
-                            if let data = try? await newValue?.loadTransferable(type: Data.self) {
-                                imageData = data
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .padding(.bottom, 8)
+                    
+                    // Say Something
+                    CartoonSectionHeader(emoji: "💬", title: "Say Something", color: .blue)
+                    TextEditor(text: $details)
+                        .font(.system(.body, design: .rounded))
+                        .fontWeight(.semibold)
+                        .frame(minHeight: 60)
+                        .scrollContentBackground(.hidden)
+                        .overlay(alignment: .topLeading) {
+                            if details.isEmpty {
+                                Text("说点什么...")
+                                    .font(.system(.body, design: .rounded))
+                                    .foregroundStyle(.tertiary)
+                                    .padding(.top, 8)
+                                    .padding(.leading, 4)
+                                    .allowsHitTesting(false)
                             }
                         }
-                    }
-                }
-                .cartoonCard()
-                
-                // 🔗 购买链接卡片
-                VStack(alignment: .leading, spacing: 14) {
-                    CartoonSectionHeader(emoji: "🔗", title: "购买链接", color: Color(red: 0.3, green: 0.55, blue: 0.85))
-                    
-                    CartoonTextField(placeholder: "在哪里可以买到呢？", text: $purchaseLink, keyboardType: .URL, leadingIcon: "🛒")
-                    
-                    if !purchaseLink.trimmingCharacters(in: .whitespaces).isEmpty,
-                       let url = URL(string: purchaseLink.trimmingCharacters(in: .whitespaces)) {
-                        Link(destination: url) {
-                            HStack(spacing: 10) {
-                                Image(systemName: "safari.fill")
-                                    .font(.body)
-                                    .foregroundStyle(Color(red: 0.3, green: 0.55, blue: 0.85))
-                                Text("打开链接")
-                                    .font(.subheadline)
-                                    .foregroundStyle(Color(red: 0.3, green: 0.55, blue: 0.85))
-                                Spacer()
-                                Image(systemName: "arrow.up.right.square")
-                                    .font(.caption)
-                                    .foregroundStyle(Color(red: 0.3, green: 0.55, blue: 0.85).opacity(0.5))
-                            }
-                            .padding(12)
-                            .background(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .fill(Color(red: 0.3, green: 0.55, blue: 0.85).opacity(0.08))
-                            )
-                        }
-                    }
-                }
-                .cartoonCard()
-                
-                // 📖 心愿描述卡片
-                VStack(alignment: .leading, spacing: 14) {
-                    CartoonSectionHeader(emoji: "📖", title: "心愿描述", color: Color(red: 0.6, green: 0.45, blue: 0.3))
-                    
-                    HStack(alignment: .top, spacing: 10) {
-                        Text("💭")
-                            .font(.body)
-                            .padding(.top, 4)
-                        TextEditor(text: $details)
-                            .frame(minHeight: 80)
-                            .scrollContentBackground(.hidden)
-                            .autocorrectionDisabled()
-                    }
-                    .padding(12)
-                    .background(
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(Color(.tertiarySystemGroupedBackground))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color.pink.opacity(0.12), lineWidth: 1)
-                    )
-                    
-                    if details.isEmpty {
-                        Text("写点什么来记录这个心愿的故事吧~")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    }
+                        .autocorrectionDisabled()
                 }
                 .cartoonCard()
                 
@@ -1977,25 +2153,19 @@ struct EditSharedWishItemView: View {
                 
                 // 🗑️ 删除按钮
                 Button {
-                    sharedStore.deleteItem(listId: listId, itemId: originalItem.id)
-                    dismiss()
+                    showDeleteConfirm = true
                 } label: {
                     HStack(spacing: 6) {
-                        Text("🗑️")
-                        Text("删除这个心愿")
-                            .font(.subheadline)
+                        Text("删除心愿")
+                            .font(.system(.subheadline, design: .rounded))
                             .fontWeight(.medium)
                     }
-                    .foregroundStyle(.red.opacity(0.7))
+                    .foregroundStyle(.white)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)
                     .background(
                         RoundedRectangle(cornerRadius: 14)
-                            .fill(Color.red.opacity(0.06))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14)
-                            .stroke(Color.red.opacity(0.12), lineWidth: 1)
+                            .fill(Color.red)
                     )
                 }
                 .buttonStyle(PlainButtonStyle())
@@ -2022,25 +2192,28 @@ struct EditSharedWishItemView: View {
                 Button {
                     save()
                 } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "sparkles")
-                            .font(.caption)
-                        Text("保存")
-                    }
-                    .fontWeight(.bold)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 7)
-                    .background(
-                        Capsule()
-                            .fill(isValid
-                                  ? Color.pink
-                                  : Color.gray.opacity(0.35))
-                    )
+                    Text("保存")
+                        .fontWeight(.bold)
+                        .foregroundStyle(.pink)
                 }
                 .disabled(!isValid)
             }
         }
+        .customBlueConfirmAlert(
+            isPresented: $showDeleteConfirm,
+            message: "删除后无法恢复，确定要删除「\(name)」吗？",
+            confirmText: "删除",
+            cancelText: "取消",
+            confirmColor: .blue,
+            cancelColor: .green,
+            backgroundColor: .red,
+            width: 260,
+            onConfirm: {
+                sharedStore.deleteItem(listId: listId, itemId: originalItem.id)
+                dismiss()
+            }
+        )
+        .fullScreenImageViewer(uiImage: $fullScreenImage)
     }
     
     // MARK: - 非 Owner 详情视图
@@ -2062,6 +2235,7 @@ struct EditSharedWishItemView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 16))
                             .shadow(color: .black.opacity(0.06), radius: 6, x: 0, y: 3)
                             .padding(.horizontal)
+                            .onTapGesture { fullScreenImage = uiImage }
                     }
                     
                     // 心愿名称 + 状态
@@ -2236,7 +2410,6 @@ struct EditSharedWishItemView: View {
             updated.name = name.trimmingCharacters(in: .whitespaces)
             updated.price = Double(priceText) ?? originalItem.price
             updated.displayType = displayType.trimmingCharacters(in: .whitespaces).isEmpty ? nil : displayType.trimmingCharacters(in: .whitespaces)
-            updated.imageData = imageData
             updated.purchaseLink = purchaseLink.trimmingCharacters(in: .whitespaces).isEmpty ? nil : purchaseLink.trimmingCharacters(in: .whitespaces)
             updated.details = details.trimmingCharacters(in: .whitespaces).isEmpty ? nil : details.trimmingCharacters(in: .whitespaces)
         }
@@ -2413,81 +2586,6 @@ struct ShareToFriendsBlock: View {
         .sheet(isPresented: $showingShareSheet) {
             ShareWishGroupIdSheet(wishGroupId: wishGroupId)
         }
-    }
-}
-
-// MARK: - 烟花粒子模型
-struct FireworkParticle: Identifiable {
-    let id = UUID()
-    var x: CGFloat
-    var y: CGFloat
-    var targetX: CGFloat
-    var targetY: CGFloat
-    var color: Color
-    var size: CGFloat
-    var opacity: Double
-}
-
-// MARK: - 烟花动画视图
-struct FireworksOverlay: View {
-    @State private var bursts: [[FireworkParticle]] = []
-    @State private var animating = false
-    let duration: Double = 3.0
-    
-    var body: some View {
-        GeometryReader { geo in
-            ZStack {
-                ForEach(bursts.flatMap { $0 }) { particle in
-                    Circle()
-                        .fill(particle.color)
-                        .frame(width: particle.size, height: particle.size)
-                        .position(
-                            x: animating ? particle.targetX : particle.x,
-                            y: animating ? particle.targetY : particle.y
-                        )
-                        .opacity(animating ? 0 : particle.opacity)
-                }
-            }
-            .onAppear {
-                generateBursts(in: geo.size)
-                withAnimation(.easeOut(duration: duration)) {
-                    animating = true
-                }
-            }
-        }
-        .allowsHitTesting(false)
-    }
-    
-    private func generateBursts(in size: CGSize) {
-        let colors: [Color] = [.red, .orange, .yellow, .green, .blue, .purple, .pink, .mint, .cyan]
-        let burstCount = 5
-        var allBursts: [[FireworkParticle]] = []
-        
-        for _ in 0..<burstCount {
-            let centerX = CGFloat.random(in: size.width * 0.15...size.width * 0.85)
-            let centerY = CGFloat.random(in: size.height * 0.1...size.height * 0.5)
-            let particleCount = Int.random(in: 12...20)
-            var particles: [FireworkParticle] = []
-            
-            for _ in 0..<particleCount {
-                let angle = Double.random(in: 0...(2 * .pi))
-                let radius = CGFloat.random(in: 40...120)
-                let targetX = centerX + cos(angle) * radius
-                let targetY = centerY + sin(angle) * radius
-                
-                particles.append(FireworkParticle(
-                    x: centerX,
-                    y: centerY,
-                    targetX: targetX,
-                    targetY: targetY,
-                    color: colors.randomElement()!,
-                    size: CGFloat.random(in: 4...8),
-                    opacity: Double.random(in: 0.7...1.0)
-                ))
-            }
-            allBursts.append(particles)
-        }
-        bursts = allBursts
     }
 }
 

@@ -172,7 +172,13 @@ struct WishlistView: View {
                     }
                     
                     // 总价统计
-                    WishlistTotalCard(totalPrice: totalPrice, itemCount: itemCount)
+                    WishlistTotalCard(
+                        totalPrice: totalPrice,
+                        itemCount: itemCount,
+                        sharedListName: selectedGroupId != nil
+                            ? sharedWishlistStore.lists.first(where: { $0.linkedGroupId == selectedGroupId && $0.isOwner })?.name
+                            : nil
+                    )
                         .padding(.horizontal)
                     
                     // 按分类展示（包括自定义类型）
@@ -212,10 +218,10 @@ struct WishlistView: View {
             }
         }
         .sheet(isPresented: $showingAddItem) {
-            AddWishlistItemView(store: store, wishlistGroupStore: wishlistGroupStore, defaultGroupId: selectedGroupId)
+            AddWishlistItemView(store: store, wishlistGroupStore: wishlistGroupStore, sharedWishlistStore: sharedWishlistStore, defaultGroupId: selectedGroupId)
         }
         .sheet(item: $editingItem) { item in
-            EditWishlistItemView(item: item, store: store, wishlistGroupStore: wishlistGroupStore)
+            EditWishlistItemView(item: item, store: store, wishlistGroupStore: wishlistGroupStore, sharedWishlistStore: sharedWishlistStore)
         }
         .sheet(item: $showingItemDetail) { item in
             ItemDetailView(store: store, item: item, group: wishlistGroupStore.group(for: item.wishlistGroupId), sharedStore: sharedWishlistStore, wishlistGroupStore: wishlistGroupStore)
@@ -326,28 +332,46 @@ struct WishlistGroupSelectorView: View {
 struct WishlistTotalCard: View {
     let totalPrice: Double
     let itemCount: Int
+    var sharedListName: String? = nil
     
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("心愿清单 - 预计花费")
-                    .font(.system(.subheadline, design: .rounded))
-                    .foregroundStyle(.secondary)
-                Text("¥\(String(format: "%.2f", totalPrice))")
-                    .font(.system(size: 28, weight: .bold))
-                    .foregroundStyle(.primary)
+        VStack(spacing: 8) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("心愿清单 - 预计花费")
+                        .font(.system(.subheadline, design: .rounded))
+                        .foregroundStyle(.secondary)
+                    Text("¥\(String(format: "%.2f", totalPrice))")
+                        .font(.system(size: 28, weight: .bold))
+                        .foregroundStyle(.primary)
+                }
+                
+                Spacer()
+                
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text("心愿数量")
+                        .font(.system(.subheadline, design: .rounded))
+                        .foregroundStyle(.secondary)
+                    Text("\(itemCount) 个")
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.pink)
+                }
             }
             
-            Spacer()
-            
-            VStack(alignment: .trailing, spacing: 4) {
-                Text("心愿数量")
-                    .font(.system(.subheadline, design: .rounded))
-                    .foregroundStyle(.secondary)
-                Text("\(itemCount) 个")
-                    .font(.title2)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.pink)
+            if let name = sharedListName {
+                HStack(spacing: 4) {
+                    Image(systemName: "person.2.fill")
+                        .font(.caption2)
+                    Text("\(name) 共享 ing")
+                        .font(.system(.caption, design: .rounded))
+                        .fontWeight(.semibold)
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(Capsule().fill(.pink))
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .padding()
@@ -377,11 +401,27 @@ struct TypeSection: View {
         return "tag"  // 自定义类型使用默认图标
     }
     
+    private var typeIconIsCustom: Bool {
+        if let itemType = ItemType(rawValue: typeName) {
+            return itemType.isCustomIcon
+        }
+        return false
+    }
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             // 分类标题
             HStack(spacing: 8) {
-                Image(systemName: typeIcon)
+                Group {
+                    if typeIconIsCustom {
+                        Image(typeIcon)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 22, height: 22)
+                    } else {
+                        Image(systemName: typeIcon)
+                    }
+                }
                     .font(.title3)
                     .foregroundStyle(.pink)
                 Text(typeName)
@@ -460,97 +500,26 @@ struct WishlistCard: View {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(item.isSelected ? Color.green.opacity(0.4) : Color.pink.opacity(0.2), lineWidth: item.isSelected ? 2 : 1)
         )
+        .contentShape(Rectangle())
         .onTapGesture {
             onTap()
         }
-        .onLongPressGesture {
-            onLongPress()
-        }
-    }
-}
-
-// MARK: - 卡通卡片背景修饰器
-struct CartoonCardModifier: ViewModifier {
-    func body(content: Content) -> some View {
-        content
-            .padding(16)
-            .background(
-                RoundedRectangle(cornerRadius: 18)
-                    .fill(Color(.secondarySystemGroupedBackground))
-            )
-            .shadow(color: Color.pink.opacity(0.06), radius: 6, x: 0, y: 3)
-    }
-}
-
-extension View {
-    func cartoonCard() -> some View {
-        modifier(CartoonCardModifier())
-    }
-}
-
-// MARK: - 卡通区块标题
-struct CartoonSectionHeader: View {
-    let emoji: String
-    let title: String
-    let color: Color
-    
-    var body: some View {
-        Text(title)
-            .font(.system(.subheadline, design: .rounded))
-            .fontWeight(.bold)
-            .foregroundStyle(color)
-            .padding(.bottom, 2)
-    }
-}
-
-// MARK: - 卡通输入框
-struct CartoonTextField: View {
-    let placeholder: String
-    @Binding var text: String
-    var keyboardType: UIKeyboardType = .default
-    var leadingIcon: String? = nil
-    var iconColor: Color = .pink
-    var showDivider: Bool = true
-    @FocusState private var isFocused: Bool
-    
-    var body: some View {
-        HStack(spacing: 10) {
-            if let icon = leadingIcon {
-                Text(icon)
-                    .font(.body)
-            }
-            Text(placeholder)
-                .font(.system(.subheadline, design: .rounded))
-                .fontWeight(.heavy)
-                .foregroundStyle(.cyan.opacity(0.8))
-            
-            Spacer()
-            
-            TextField("", text: $text)
-                .keyboardType(keyboardType)
-                .autocorrectionDisabled()
-                .submitLabel(.done)
-                .focused($isFocused)
-                .onSubmit { isFocused = false }
-                .font(.system(.body, design: .rounded))
-                .fontWeight(.semibold)
-                .multilineTextAlignment(.trailing)
-                .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
-        .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(Color(.secondarySystemGroupedBackground))
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 0.5)
+                .onEnded { _ in
+                    onLongPress()
+                }
         )
     }
 }
 
+// MARK: - 卡通卡片背景修饰器
 // 添加心愿物品视图
 struct AddWishlistItemView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var store: ItemStore
     @ObservedObject var wishlistGroupStore: WishlistGroupStore
+    var sharedWishlistStore: SharedWishlistStore? = nil
     
     var defaultGroupId: UUID?
     
@@ -567,9 +536,10 @@ struct AddWishlistItemView: View {
     @State private var showingNewTypeInput = false
     @State private var newTypeInput = ""
     
-    init(store: ItemStore, wishlistGroupStore: WishlistGroupStore, defaultGroupId: UUID? = nil) {
+    init(store: ItemStore, wishlistGroupStore: WishlistGroupStore, sharedWishlistStore: SharedWishlistStore? = nil, defaultGroupId: UUID? = nil) {
         self.store = store
         self.wishlistGroupStore = wishlistGroupStore
+        self.sharedWishlistStore = sharedWishlistStore
         self.defaultGroupId = defaultGroupId
         _selectedGroupId = State(initialValue: defaultGroupId)
     }
@@ -585,6 +555,7 @@ struct AddWishlistItemView: View {
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var selectedImageData: Data?
     @State private var compressedImageData: Data?
+    @State private var fullScreenImage: UIImage? = nil
     
     private var isValid: Bool {
         !name.isEmpty && !price.isEmpty && Double(price) != nil
@@ -601,14 +572,16 @@ struct AddWishlistItemView: View {
                 VStack(spacing: 18) {
                     // 📝 基本信息
                     VStack(alignment: .leading, spacing: 10) {
+                        CartoonSectionHeader(emoji: "📝", title: "心愿详情", color: .blue)
                         CartoonTextField(placeholder: "心愿名字", text: $name)
                         CartoonTextField(placeholder: "价格", text: $price, keyboardType: .decimalPad)
                         CartoonTextField(placeholder: "购买链接", text: $purchaseLink, keyboardType: .URL)
                     }
+                    .cartoonCard()
                     
                     // 🏷️ 展示类型卡片
                     VStack(alignment: .leading, spacing: 14) {
-                        CartoonSectionHeader(emoji: "🏷️", title: "展示类型", color: .secondary)
+                        CartoonSectionHeader(emoji: "🏷️", title: "展示类型", color: .blue)
                         
                         // 分组选择
                         if !wishlistGroupStore.groups.isEmpty {
@@ -681,62 +654,62 @@ struct AddWishlistItemView: View {
                         )
                         
                         if isCustomDisplayType {
-                            // 历史自定义类型
-                            if !store.customDisplayTypes.isEmpty {
-                                VStack(alignment: .leading, spacing: 8) {
+                            // 历史自定义类型 + 新增
+                            VStack(alignment: .leading, spacing: 8) {
+                                if !store.customDisplayTypes.isEmpty {
                                     Text("历史类型")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
-                                    
-                                    FlowLayout(spacing: 8) {
-                                        ForEach(store.customDisplayTypes, id: \.self) { type in
-                                            Button {
-                                                customDisplayType = type
-                                            } label: {
-                                                Text(type)
-                                                    .font(.system(.subheadline, design: .rounded))
-                                                    .fontWeight(customDisplayType == type ? .bold : .medium)
-                                                    .padding(.horizontal, 14)
-                                                    .padding(.vertical, 7)
-                                                    .background(
-                                                        Capsule()
-                                                            .fill(customDisplayType == type
-                                                                  ? Color.purple.opacity(0.18)
-                                                                  : Color(.tertiarySystemGroupedBackground))
-                                                    )
-                                                    .foregroundStyle(customDisplayType == type ? .purple : .primary)
-                                                    .overlay(
-                                                        Capsule()
-                                                            .stroke(customDisplayType == type ? Color.purple.opacity(0.3) : Color.clear, lineWidth: 1)
-                                                    )
-                                            }
-                                            .buttonStyle(PlainButtonStyle())
+                                }
+                                
+                                FlowLayout(spacing: 8) {
+                                    ForEach(store.customDisplayTypes, id: \.self) { type in
+                                        Button {
+                                            customDisplayType = type
+                                        } label: {
+                                            Text(type)
+                                                .font(.system(.subheadline, design: .rounded))
+                                                .fontWeight(customDisplayType == type ? .bold : .medium)
+                                                .padding(.horizontal, 14)
+                                                .padding(.vertical, 7)
+                                                .background(
+                                                    Capsule()
+                                                        .fill(customDisplayType == type
+                                                              ? Color.purple.opacity(0.18)
+                                                              : Color(.tertiarySystemGroupedBackground))
+                                                )
+                                                .foregroundStyle(customDisplayType == type ? .purple : .primary)
+                                                .overlay(
+                                                    Capsule()
+                                                        .stroke(customDisplayType == type ? Color.purple.opacity(0.3) : Color.clear, lineWidth: 1)
+                                                )
                                         }
+                                        .buttonStyle(PlainButtonStyle())
                                     }
+                                    
+                                    // 新增自定义类型 tag
+                                    Button {
+                                        newTypeInput = ""
+                                        showingNewTypeInput = true
+                                    } label: {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "plus")
+                                                .font(.caption)
+                                            Text("新增")
+                                                .font(.system(.subheadline, design: .rounded))
+                                                .fontWeight(.medium)
+                                        }
+                                        .padding(.horizontal, 14)
+                                        .padding(.vertical, 8)
+                                        .background(
+                                            Capsule()
+                                                .stroke(Color.purple.opacity(0.4), lineWidth: 1)
+                                        )
+                                        .foregroundStyle(.purple)
+                                    }
+                                    .buttonStyle(PlainButtonStyle())
                                 }
                             }
-                            
-                            // 新增自定义类型 tag
-                            Button {
-                                newTypeInput = ""
-                                showingNewTypeInput = true
-                            } label: {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "plus")
-                                        .font(.caption)
-                                    Text("新增")
-                                        .font(.system(.subheadline, design: .rounded))
-                                        .fontWeight(.medium)
-                                }
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 8)
-                                .background(
-                                    Capsule()
-                                        .stroke(Color.purple.opacity(0.4), lineWidth: 1)
-                                )
-                                .foregroundStyle(.purple)
-                            }
-                            .buttonStyle(PlainButtonStyle())
                             
                             if !customDisplayType.isEmpty {
                                 Text("当前：\(customDisplayType)")
@@ -751,7 +724,7 @@ struct AddWishlistItemView: View {
                                         selectedTargetType = type
                                     } label: {
                                         HStack {
-                                            Image(systemName: type.icon)
+                                            type.iconImage(size: 16)
                                             Text(type.rawValue)
                                             if selectedTargetType == type {
                                                 Image(systemName: "checkmark")
@@ -766,7 +739,7 @@ struct AddWishlistItemView: View {
                                         .foregroundStyle(.primary)
                                     Spacer()
                                     HStack(spacing: 4) {
-                                        Image(systemName: selectedTargetType.icon)
+                                        selectedTargetType.iconImage(size: 14)
                                             .foregroundStyle(Color(red: 0.55, green: 0.4, blue: 0.75))
                                         Text(selectedTargetType.rawValue)
                                             .foregroundStyle(Color(red: 0.55, green: 0.4, blue: 0.75))
@@ -795,7 +768,7 @@ struct AddWishlistItemView: View {
                                         selectedDisplayType = type
                                     } label: {
                                         HStack(spacing: 4) {
-                                            Image(systemName: type.icon)
+                                            type.iconImage(size: 20)
                                                 .font(.caption)
                                             Text(type.rawValue)
                                                 .font(.system(.subheadline, design: .rounded))
@@ -820,108 +793,108 @@ struct AddWishlistItemView: View {
                     }
                     .cartoonCard()
                     
-                    // 📷 图片卡片
+                    // 📷 照片 + 描述
                     VStack(alignment: .leading, spacing: 14) {
-                        CartoonSectionHeader(emoji: "📷", title: "心愿美照", color: .secondary)
+                        // 照片
+                        CartoonSectionHeader(emoji: "📷", title: "照片", color: .blue)
                         
-                        ZStack {
+                        VStack(spacing: 0) {
                             if let imageData = selectedImageData,
                                let uiImage = UIImage(data: imageData) {
                                 Image(uiImage: uiImage)
                                     .resizable()
                                     .scaledToFill()
-                                    .frame(height: 180)
+                                    .frame(height: 220)
                                     .frame(maxWidth: .infinity)
-                                    .clipShape(RoundedRectangle(cornerRadius: 14))
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 14)
-                                            .stroke(Color.pink.opacity(0.15), lineWidth: 1)
-                                    )
-                                    .overlay(alignment: .bottomTrailing) {
-                                        HStack(spacing: 8) {
-                                            PhotosPicker(selection: $selectedPhoto, matching: .images) {
-                                                HStack(spacing: 4) {
-                                                    Image(systemName: "arrow.triangle.2.circlepath")
-                                                        .font(.caption)
-                                                    Text("更换")
-                                                        .font(.caption)
-                                                        .fontWeight(.medium)
-                                                }
-                                                .foregroundStyle(.white)
-                                                .padding(.horizontal, 10)
-                                                .padding(.vertical, 6)
-                                                .background(Capsule().fill(Color.black.opacity(0.5)))
-                                            }
-                                            .buttonStyle(PlainButtonStyle())
-                                            
-                                            Button {
-                                                selectedImageData = nil
-                                                compressedImageData = nil
-                                                selectedPhoto = nil
-                                            } label: {
-                                                HStack(spacing: 4) {
-                                                    Image(systemName: "trash")
-                                                        .font(.caption)
-                                                    Text("删除")
-                                                        .font(.caption)
-                                                        .fontWeight(.medium)
-                                                }
-                                                .foregroundStyle(.white)
-                                                .padding(.horizontal, 10)
-                                                .padding(.vertical, 6)
-                                                .background(Capsule().fill(Color.red.opacity(0.7)))
-                                            }
-                                            .buttonStyle(PlainButtonStyle())
+                                    .clipped()
+                                    .onTapGesture { fullScreenImage = uiImage }
+                                
+                                HStack(spacing: 0) {
+                                    PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                                        HStack(spacing: 6) {
+                                            Image(systemName: "photo")
+                                                .font(.system(size: 14, weight: .semibold))
+                                            Text("更换")
+                                                .font(.system(.subheadline, design: .rounded))
+                                                .fontWeight(.medium)
                                         }
-                                        .padding(10)
+                                        .foregroundStyle(.blue)
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 10)
                                     }
+                                    .buttonStyle(.plain)
+                                    
+                                    Divider()
+                                        .frame(height: 20)
+                                    
+                                    Button {
+                                        selectedImageData = nil
+                                        compressedImageData = nil
+                                        selectedPhoto = nil
+                                    } label: {
+                                        HStack(spacing: 6) {
+                                            Image(systemName: "trash")
+                                                .font(.system(size: 14, weight: .semibold))
+                                            Text("删除")
+                                                .font(.system(.subheadline, design: .rounded))
+                                                .fontWeight(.medium)
+                                        }
+                                        .foregroundStyle(.red)
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 10)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
                             } else {
                                 PhotosPicker(selection: $selectedPhoto, matching: .images) {
-                                    RoundedRectangle(cornerRadius: 14)
-                                        .fill(Color(.tertiarySystemGroupedBackground))
-                                        .frame(height: 140)
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .fill(Color.blue)
+                                        .frame(height: 200)
                                         .overlay(
                                             Image(systemName: "photo.badge.plus")
-                                                .font(.system(size: 32))
-                                                .foregroundStyle(.secondary)
+                                                .font(.system(size: 40))
+                                                .foregroundStyle(.white)
                                         )
                                 }
-                                .buttonStyle(PlainButtonStyle())
+                                .buttonStyle(.plain)
                             }
-                        }
-                        .onChange(of: selectedPhoto) { _, newValue in
-                            Task {
-                                if let data = try? await newValue?.loadTransferable(type: Data.self) {
-                                    selectedImageData = data
-                                    // 生成 0.7 压缩版，仅用于同步上传
-                                    if let uiImage = UIImage(data: data) {
-                                        compressedImageData = uiImage.jpegData(compressionQuality: 0.7)
+                            
+                            EmptyView()
+                                .onChange(of: selectedPhoto) { _, newValue in
+                                    Task {
+                                        if let data = try? await newValue?.loadTransferable(type: Data.self) {
+                                            selectedImageData = data
+                                            if let uiImage = UIImage(data: data) {
+                                                compressedImageData = uiImage.jpegData(compressionQuality: 0.7)
+                                            }
+                                        }
                                     }
                                 }
-                            }
+                                .frame(height: 0)
                         }
-                    }
-                    .cartoonCard()
-                    
-                    // 📝 心愿描述
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("心愿描述")
-                            .font(.system(.subheadline, design: .rounded))
-                            .fontWeight(.heavy)
-                            .foregroundStyle(.cyan.opacity(0.8))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .padding(.bottom, 8)
+                        
+                        // Say Something
+                        CartoonSectionHeader(emoji: "💬", title: "Say Something", color: .blue)
                         TextEditor(text: $details)
                             .font(.system(.body, design: .rounded))
                             .fontWeight(.semibold)
                             .frame(minHeight: 60)
                             .scrollContentBackground(.hidden)
                             .autocorrectionDisabled()
+                            .overlay(alignment: .topLeading) {
+                                if details.isEmpty {
+                                    Text("说点什么...")
+                                        .font(.system(.body, design: .rounded))
+                                        .foregroundStyle(.tertiary)
+                                        .padding(.top, 8)
+                                        .padding(.leading, 4)
+                                        .allowsHitTesting(false)
+                                }
+                            }
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 14)
-                    .background(
-                        RoundedRectangle(cornerRadius: 14)
-                            .fill(Color(.secondarySystemGroupedBackground))
-                    )
+                    .cartoonCard()
                     
                     Spacer(minLength: 30)
                 }
@@ -938,7 +911,7 @@ struct AddWishlistItemView: View {
                     }
                 }
             }
-            .navigationTitle("许下一个新心愿")
+            .navigationTitle("添加心愿")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
@@ -987,6 +960,7 @@ struct AddWishlistItemView: View {
                     }
                 }
             )
+            .fullScreenImageViewer(uiImage: $fullScreenImage)
         }
     }
     
@@ -1012,6 +986,9 @@ struct AddWishlistItemView: View {
         
         store.add(newItem)
         
+        // 同步到关联的共享清单
+        sharedWishlistStore?.syncWishAdded(newItem)
+        
         // 如果是自定义类型，添加到历史记录
         if isCustomDisplayType && !customDisplayType.isEmpty {
             store.addCustomDisplayType(customDisplayType)
@@ -1026,6 +1003,7 @@ struct EditWishlistItemView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var store: ItemStore
     @ObservedObject var wishlistGroupStore: WishlistGroupStore
+    var sharedWishlistStore: SharedWishlistStore? = nil
     
     let originalItem: Item
     @State private var name: String
@@ -1047,15 +1025,17 @@ struct EditWishlistItemView: View {
     @State private var compressedImageData: Data?
     @State private var imageChanged: Bool = false  // 标记图片是否被用户编辑过
     @State private var selectedGroupId: UUID?
+    @State private var fullScreenImage: UIImage? = nil
     
     @State private var showDeleteConfirm = false
     @State private var showingNewTypeInput = false
     @State private var newTypeInput = ""
     
-    init(item: Item, store: ItemStore, wishlistGroupStore: WishlistGroupStore) {
+    init(item: Item, store: ItemStore, wishlistGroupStore: WishlistGroupStore, sharedWishlistStore: SharedWishlistStore? = nil) {
         self.originalItem = item
         self.store = store
         self.wishlistGroupStore = wishlistGroupStore
+        self.sharedWishlistStore = sharedWishlistStore
         _name = State(initialValue: item.name)
         _price = State(initialValue: item.price)
         _priceText = State(initialValue: item.price == 0 ? "" : String(format: "%.2f", item.price))
@@ -1087,6 +1067,7 @@ struct EditWishlistItemView: View {
                 VStack(spacing: 18) {
                     // 📝 基本信息
                     VStack(alignment: .leading, spacing: 10) {
+                        CartoonSectionHeader(emoji: "📝", title: "心愿详情", color: .blue)
                         CartoonTextField(placeholder: "心愿名字", text: $name)
                         CartoonTextField(placeholder: "价格", text: $priceText, keyboardType: .decimalPad)
                             .onChange(of: priceText) { _, newValue in
@@ -1094,10 +1075,11 @@ struct EditWishlistItemView: View {
                             }
                         CartoonTextField(placeholder: "购买链接", text: $purchaseLink, keyboardType: .URL)
                     }
+                    .cartoonCard()
                     
                     // 🏷️ 展示类型卡片
                     VStack(alignment: .leading, spacing: 14) {
-                        CartoonSectionHeader(emoji: "🏷️", title: "展示类型", color: .secondary)
+                        CartoonSectionHeader(emoji: "🏷️", title: "展示类型", color: .blue)
                         
                         // 分组选择
                         if !wishlistGroupStore.groups.isEmpty {
@@ -1169,61 +1151,61 @@ struct EditWishlistItemView: View {
                         )
                         
                         if isCustomDisplayType {
-                            if !store.customDisplayTypes.isEmpty {
-                                VStack(alignment: .leading, spacing: 8) {
+                            VStack(alignment: .leading, spacing: 8) {
+                                if !store.customDisplayTypes.isEmpty {
                                     Text("历史类型")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
-                                    
-                                    FlowLayout(spacing: 8) {
-                                        ForEach(store.customDisplayTypes, id: \.self) { type in
-                                            Button {
-                                                customDisplayType = type
-                                            } label: {
-                                                Text(type)
-                                                    .font(.system(.subheadline, design: .rounded))
-                                                    .fontWeight(customDisplayType == type ? .bold : .medium)
-                                                    .padding(.horizontal, 14)
-                                                    .padding(.vertical, 7)
-                                                    .background(
-                                                        Capsule()
-                                                            .fill(customDisplayType == type
-                                                                  ? Color.purple.opacity(0.18)
-                                                                  : Color(.tertiarySystemGroupedBackground))
-                                                    )
-                                                    .foregroundStyle(customDisplayType == type ? .purple : .primary)
-                                                    .overlay(
-                                                        Capsule()
-                                                            .stroke(customDisplayType == type ? Color.purple.opacity(0.3) : Color.clear, lineWidth: 1)
-                                                    )
-                                            }
-                                            .buttonStyle(PlainButtonStyle())
+                                }
+                                
+                                FlowLayout(spacing: 8) {
+                                    ForEach(store.customDisplayTypes, id: \.self) { type in
+                                        Button {
+                                            customDisplayType = type
+                                        } label: {
+                                            Text(type)
+                                                .font(.system(.subheadline, design: .rounded))
+                                                .fontWeight(customDisplayType == type ? .bold : .medium)
+                                                .padding(.horizontal, 14)
+                                                .padding(.vertical, 7)
+                                                .background(
+                                                    Capsule()
+                                                        .fill(customDisplayType == type
+                                                              ? Color.purple.opacity(0.18)
+                                                              : Color(.tertiarySystemGroupedBackground))
+                                                )
+                                                .foregroundStyle(customDisplayType == type ? .purple : .primary)
+                                                .overlay(
+                                                    Capsule()
+                                                        .stroke(customDisplayType == type ? Color.purple.opacity(0.3) : Color.clear, lineWidth: 1)
+                                                )
                                         }
+                                        .buttonStyle(PlainButtonStyle())
                                     }
+                                    
+                                    // 新增自定义类型 tag
+                                    Button {
+                                        newTypeInput = ""
+                                        showingNewTypeInput = true
+                                    } label: {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "plus")
+                                                .font(.caption)
+                                            Text("新增")
+                                                .font(.system(.subheadline, design: .rounded))
+                                                .fontWeight(.medium)
+                                        }
+                                        .padding(.horizontal, 14)
+                                        .padding(.vertical, 8)
+                                        .background(
+                                            Capsule()
+                                                .stroke(Color.purple.opacity(0.4), lineWidth: 1)
+                                        )
+                                        .foregroundStyle(.purple)
+                                    }
+                                    .buttonStyle(PlainButtonStyle())
                                 }
                             }
-                            
-                            // 新增自定义类型 tag
-                            Button {
-                                newTypeInput = ""
-                                showingNewTypeInput = true
-                            } label: {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "plus")
-                                        .font(.caption)
-                                    Text("新增")
-                                        .font(.system(.subheadline, design: .rounded))
-                                        .fontWeight(.medium)
-                                }
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 8)
-                                .background(
-                                    Capsule()
-                                        .stroke(Color.purple.opacity(0.4), lineWidth: 1)
-                                )
-                                .foregroundStyle(.purple)
-                            }
-                            .buttonStyle(PlainButtonStyle())
                             
                             if !customDisplayType.isEmpty {
                                 Text("当前：\(customDisplayType)")
@@ -1237,7 +1219,7 @@ struct EditWishlistItemView: View {
                                         selectedTargetType = type
                                     } label: {
                                         HStack {
-                                            Image(systemName: type.icon)
+                                            type.iconImage(size: 16)
                                             Text(type.rawValue)
                                             if selectedTargetType == type {
                                                 Image(systemName: "checkmark")
@@ -1252,7 +1234,7 @@ struct EditWishlistItemView: View {
                                         .foregroundStyle(.primary)
                                     Spacer()
                                     HStack(spacing: 4) {
-                                        Image(systemName: selectedTargetType.icon)
+                                        selectedTargetType.iconImage(size: 14)
                                             .foregroundStyle(Color(red: 0.55, green: 0.4, blue: 0.75))
                                         Text(selectedTargetType.rawValue)
                                             .foregroundStyle(Color(red: 0.55, green: 0.4, blue: 0.75))
@@ -1280,7 +1262,7 @@ struct EditWishlistItemView: View {
                                         selectedDisplayType = type
                                     } label: {
                                         HStack(spacing: 4) {
-                                            Image(systemName: type.icon)
+                                            type.iconImage(size: 20)
                                                 .font(.caption)
                                             Text(type.rawValue)
                                                 .font(.system(.subheadline, design: .rounded))
@@ -1305,145 +1287,129 @@ struct EditWishlistItemView: View {
                     }
                     .cartoonCard()
                     
-                    // 📷 图片卡片
+                    // 📷 照片 + 描述
                     VStack(alignment: .leading, spacing: 14) {
-                        CartoonSectionHeader(emoji: "📷", title: "心愿美照", color: .secondary)
+                        // 照片
+                        CartoonSectionHeader(emoji: "📷", title: "照片", color: .blue)
                         
-                        ZStack {
+                        VStack(spacing: 0) {
                             if let imageData = selectedImageData,
                                let uiImage = UIImage(data: imageData) {
                                 Image(uiImage: uiImage)
                                     .resizable()
                                     .scaledToFill()
-                                    .frame(height: 180)
+                                    .frame(height: 220)
                                     .frame(maxWidth: .infinity)
-                                    .clipShape(RoundedRectangle(cornerRadius: 14))
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 14)
-                                            .stroke(Color.pink.opacity(0.15), lineWidth: 1)
-                                    )
-                                    .overlay(alignment: .bottomTrailing) {
-                                        HStack(spacing: 8) {
-                                            PhotosPicker(selection: $selectedPhoto, matching: .images) {
-                                                HStack(spacing: 4) {
-                                                    Image(systemName: "arrow.triangle.2.circlepath")
-                                                        .font(.caption)
-                                                    Text("更换")
-                                                        .font(.caption)
-                                                        .fontWeight(.medium)
-                                                }
-                                                .foregroundStyle(.white)
-                                                .padding(.horizontal, 10)
-                                                .padding(.vertical, 6)
-                                                .background(Capsule().fill(Color.black.opacity(0.5)))
-                                            }
-                                            .buttonStyle(PlainButtonStyle())
-                                            
-                                            Button {
-                                                selectedImageData = nil
-                                                compressedImageData = nil
-                                                selectedPhoto = nil
-                                                imageChanged = true  // 用户删除了图片
-                                            } label: {
-                                                HStack(spacing: 4) {
-                                                    Image(systemName: "trash")
-                                                        .font(.caption)
-                                                    Text("删除")
-                                                        .font(.caption)
-                                                        .fontWeight(.medium)
-                                                }
-                                                .foregroundStyle(.white)
-                                                .padding(.horizontal, 10)
-                                                .padding(.vertical, 6)
-                                                .background(Capsule().fill(Color.red.opacity(0.7)))
-                                            }
-                                            .buttonStyle(PlainButtonStyle())
+                                    .clipped()
+                                    .onTapGesture { fullScreenImage = uiImage }
+                                
+                                HStack(spacing: 0) {
+                                    PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                                        HStack(spacing: 6) {
+                                            Image(systemName: "photo")
+                                                .font(.system(size: 14, weight: .semibold))
+                                            Text("更换")
+                                                .font(.system(.subheadline, design: .rounded))
+                                                .fontWeight(.medium)
                                         }
-                                        .padding(10)
+                                        .foregroundStyle(.blue)
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 10)
                                     }
+                                    .buttonStyle(.plain)
+                                    
+                                    Divider()
+                                        .frame(height: 20)
+                                    
+                                    Button {
+                                        selectedImageData = nil
+                                        compressedImageData = nil
+                                        selectedPhoto = nil
+                                        imageChanged = true
+                                    } label: {
+                                        HStack(spacing: 6) {
+                                            Image(systemName: "trash")
+                                                .font(.system(size: 14, weight: .semibold))
+                                            Text("删除")
+                                                .font(.system(.subheadline, design: .rounded))
+                                                .fontWeight(.medium)
+                                        }
+                                        .foregroundStyle(.red)
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 10)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
                             } else {
                                 PhotosPicker(selection: $selectedPhoto, matching: .images) {
-                                    RoundedRectangle(cornerRadius: 14)
-                                        .fill(Color(.tertiarySystemGroupedBackground))
-                                        .frame(height: 140)
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .fill(Color.blue)
+                                        .frame(height: 200)
                                         .overlay(
                                             Image(systemName: "photo.badge.plus")
-                                                .font(.system(size: 32))
-                                                .foregroundStyle(.secondary)
+                                                .font(.system(size: 40))
+                                                .foregroundStyle(.white)
                                         )
                                 }
-                                .buttonStyle(PlainButtonStyle())
+                                .buttonStyle(.plain)
                             }
-                        }
-                        .onChange(of: selectedPhoto) { _, newValue in
-                            Task {
-                                if let data = try? await newValue?.loadTransferable(type: Data.self) {
-                                    selectedImageData = data
-                                    imageChanged = true  // 用户更换了图片
-                                    // 生成 0.7 压缩版，仅用于同步上传
-                                    if let uiImage = UIImage(data: data) {
-                                        compressedImageData = uiImage.jpegData(compressionQuality: 0.7)
+                            
+                            EmptyView()
+                                .onChange(of: selectedPhoto) { _, newValue in
+                                    Task {
+                                        if let data = try? await newValue?.loadTransferable(type: Data.self) {
+                                            selectedImageData = data
+                                            imageChanged = true
+                                            if let uiImage = UIImage(data: data) {
+                                                compressedImageData = uiImage.jpegData(compressionQuality: 0.7)
+                                            }
+                                        }
                                     }
                                 }
-                            }
+                                .frame(height: 0)
                         }
-                    }
-                    .cartoonCard()
-                    
-                    // 📝 心愿描述
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("心愿描述")
-                            .font(.system(.subheadline, design: .rounded))
-                            .fontWeight(.heavy)
-                            .foregroundStyle(.cyan.opacity(0.8))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .padding(.bottom, 8)
+                        
+                        // Say Something
+                        CartoonSectionHeader(emoji: "💬", title: "Say Something", color: .blue)
                         TextEditor(text: $details)
                             .font(.system(.body, design: .rounded))
                             .fontWeight(.semibold)
                             .frame(minHeight: 60)
                             .scrollContentBackground(.hidden)
                             .autocorrectionDisabled()
+                            .overlay(alignment: .topLeading) {
+                                if details.isEmpty {
+                                    Text("说点什么...")
+                                        .font(.system(.body, design: .rounded))
+                                        .foregroundStyle(.tertiary)
+                                        .padding(.top, 8)
+                                        .padding(.leading, 4)
+                                        .allowsHitTesting(false)
+                                }
+                            }
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 14)
-                    .background(
-                        RoundedRectangle(cornerRadius: 14)
-                            .fill(Color(.secondarySystemGroupedBackground))
-                    )
+                    .cartoonCard()
                     
                     // 🗑️ 删除按钮
                     Button {
                         showDeleteConfirm = true
                     } label: {
                         HStack(spacing: 6) {
-                            Text("🗑️")
-                            Text("删除这个心愿")
+                            Text("删除心愿")
                                 .font(.system(.subheadline, design: .rounded))
                                 .fontWeight(.medium)
                         }
-                        .foregroundStyle(.red.opacity(0.7))
+                        .foregroundStyle(.white)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 14)
                         .background(
                             RoundedRectangle(cornerRadius: 14)
-                                .fill(Color.red.opacity(0.06))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 14)
-                                .stroke(Color.red.opacity(0.12), lineWidth: 1)
+                                .fill(Color.red)
                         )
                     }
                     .buttonStyle(PlainButtonStyle())
-                    .customConfirmAlert(
-                        isPresented: $showDeleteConfirm,
-                        title: "确定删除？",
-                        message: "删除后无法恢复，确定要删除「\(name)」吗？",
-                        confirmText: "删除",
-                        isDestructive: true,
-                        onConfirm: {
-                            store.delete(originalItem)
-                            dismiss()
-                        }
-                    )
                     
                     Spacer(minLength: 30)
                 }
@@ -1486,6 +1452,22 @@ struct EditWishlistItemView: View {
                     }
                 }
             )
+            .customBlueConfirmAlert(
+                isPresented: $showDeleteConfirm,
+                message: "删除后无法恢复，确定要删除「\(name)」吗？",
+                confirmText: "删除",
+                cancelText: "取消",
+                confirmColor: .blue,
+                cancelColor: .green,
+                backgroundColor: .red,
+                width: 260,
+                onConfirm: {
+                    sharedWishlistStore?.syncWishDeleted(itemId: originalItem.id, groupId: originalItem.wishlistGroupId)
+                    store.delete(originalItem)
+                    dismiss()
+                }
+            )
+            .fullScreenImageViewer(uiImage: $fullScreenImage)
         }
     }
     
@@ -1503,6 +1485,9 @@ struct EditWishlistItemView: View {
         updatedItem.type = isCustomDisplayType ? customDisplayType : selectedDisplayType.rawValue
         updatedItem.wishlistGroupId = selectedGroupId
         store.update(updatedItem)
+        
+        // 同步到关联的共享清单
+        sharedWishlistStore?.syncWishUpdated(updatedItem)
         
         // 如果是自定义类型，添加到历史记录
         if isCustomDisplayType && !customDisplayType.isEmpty {

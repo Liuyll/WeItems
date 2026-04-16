@@ -22,6 +22,7 @@ struct AddItemView: View {
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var selectedImageData: Data?
     @State private var compressedImageData: Data?
+    @State private var fullScreenImage: UIImage? = nil
     
     @State private var showingAddGroup = false
     @State private var showingDuplicateAlert = false
@@ -73,7 +74,10 @@ struct AddItemView: View {
                     
                     Picker(selection: $selectedType) {
                         ForEach(ItemType.allCases, id: \.self) { type in
-                            Label(type.rawValue, systemImage: type.icon)
+                            HStack(spacing: 6) {
+                                type.iconImage(size: 16)
+                                Text(type.rawValue)
+                            }
                                 .tag(type)
                         }
                     } label: {
@@ -125,13 +129,9 @@ struct AddItemView: View {
                                     .padding(.vertical, 8)
                                     .background(
                                         Capsule()
-                                            .fill(selectedGroupId == nil ? Color.blue.opacity(0.15) : Color(.tertiarySystemGroupedBackground))
+                                            .fill(selectedGroupId == nil ? Color.blue.opacity(0.15) : Color(.systemGray5))
                                     )
                                     .foregroundStyle(selectedGroupId == nil ? .blue : .primary)
-                                    .overlay(
-                                        Capsule()
-                                            .stroke(selectedGroupId == nil ? Color.blue.opacity(0.3) : Color.clear, lineWidth: 1)
-                                    )
                             }
                             .buttonStyle(PlainButtonStyle())
                             
@@ -150,13 +150,9 @@ struct AddItemView: View {
                                     .padding(.vertical, 8)
                                     .background(
                                         Capsule()
-                                            .fill(selectedGroupId == group.id ? group.color.swiftUIColor.opacity(0.15) : Color(.tertiarySystemGroupedBackground))
+                                            .fill(selectedGroupId == group.id ? group.color.swiftUIColor.opacity(0.15) : Color(.systemGray5))
                                     )
                                     .foregroundStyle(selectedGroupId == group.id ? group.color.swiftUIColor : .primary)
-                                    .overlay(
-                                        Capsule()
-                                            .stroke(selectedGroupId == group.id ? group.color.swiftUIColor.opacity(0.3) : Color.clear, lineWidth: 1)
-                                    )
                                 }
                                 .buttonStyle(PlainButtonStyle())
                             }
@@ -182,6 +178,7 @@ struct AddItemView: View {
                             .buttonStyle(PlainButtonStyle())
                         }
                     }
+                    .padding(.vertical, 2)
                     .listRowSeparator(.hidden)
                 } header: {
                     Text("所属分组")
@@ -191,75 +188,85 @@ struct AddItemView: View {
                 
                 // 图片选择
                 Section {
-                    VStack(spacing: 16) {
-                        if let imageData = selectedImageData,
-                           let uiImage = UIImage(data: imageData) {
-                            Image(uiImage: uiImage)
-                                .resizable()
-                                .scaledToFill()
-                                .frame(height: 200)
-                                .frame(maxWidth: .infinity)
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
-                        } else {
+                    if let imageData = selectedImageData,
+                       let uiImage = UIImage(data: imageData) {
+                        Image(uiImage: uiImage)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(height: 220)
+                            .frame(maxWidth: .infinity)
+                            .clipped()
+                            .listRowInsets(EdgeInsets())
+                            .listRowSeparator(.hidden)
+                            .onTapGesture { fullScreenImage = uiImage }
+                        
+                        HStack(spacing: 0) {
                             PhotosPicker(selection: $selectedPhoto, matching: .images) {
-                                RoundedRectangle(cornerRadius: 12)
-                                    .fill(Color.gray.opacity(0.1))
-                                    .frame(height: 200)
-                                    .overlay(
-                                        VStack(spacing: 8) {
-                                            Image(systemName: "photo.badge.plus")
-                                                .font(.system(size: 40))
-                                                .foregroundStyle(.gray)
-                                            Text("选择图片")
-                                                .font(.system(.subheadline, design: .rounded))
-                                                .fontWeight(.medium)
-                                                .foregroundStyle(.secondary)
-                                        }
-                                    )
+                                HStack(spacing: 6) {
+                                    Image(systemName: "photo")
+                                        .font(.system(size: 14, weight: .semibold))
+                                    Text("更换")
+                                        .font(.system(.subheadline, design: .rounded))
+                                        .fontWeight(.medium)
+                                }
+                                .foregroundStyle(.blue)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 10)
+                            }
+                            .buttonStyle(.plain)
+                            
+                            Divider()
+                                .frame(height: 20)
+                            
+                            Button {
+                                selectedImageData = nil
+                                compressedImageData = nil
+                                selectedPhoto = nil
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "trash")
+                                        .font(.system(size: 14, weight: .semibold))
+                                    Text("删除")
+                                        .font(.system(.subheadline, design: .rounded))
+                                        .fontWeight(.medium)
+                                }
+                                .foregroundStyle(.red)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 10)
                             }
                             .buttonStyle(.plain)
                         }
-                        
-                        if selectedImageData != nil {
-                            HStack {
-                                PhotosPicker(selection: $selectedPhoto,
-                                           matching: .images) {
-                                    Label("更换照片", systemImage: "photo")
-                                        .font(.system(.body, design: .rounded))
-                                        .fontWeight(.semibold)
-                                        .frame(maxWidth: .infinity)
-                                }
-                                .buttonStyle(BorderlessButtonStyle())
-                                
-                                Divider()
-                                Button(role: .destructive) {
-                                    selectedImageData = nil
-                                    compressedImageData = nil
-                                    selectedPhoto = nil
-                                } label: {
-                                    Label("删除图片", systemImage: "trash")
-                                        .font(.system(.body, design: .rounded))
-                                        .fontWeight(.semibold)
-                                        .frame(maxWidth: .infinity)
-                                }
-                                .buttonStyle(BorderlessButtonStyle())
-                            }
+                        .listRowSeparator(.hidden)
+                    } else {
+                        PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                            RoundedRectangle(cornerRadius: 0)
+                                .fill(Color.blue)
+                                .frame(height: 200)
+                                .overlay(
+                                    Image(systemName: "photo.badge.plus")
+                                        .font(.system(size: 40))
+                                        .foregroundStyle(.white)
+                                )
                         }
+                        .buttonStyle(.plain)
+                        .listRowInsets(EdgeInsets())
+                        .listRowSeparator(.hidden)
                     }
-                    .onChange(of: selectedPhoto) { _, newValue in
-                        Task {
-                            if let data = try? await newValue?.loadTransferable(type: Data.self) {
-                                selectedImageData = data
-                                if let uiImage = UIImage(data: data) {
-                                    compressedImageData = uiImage.jpegData(compressionQuality: 0.7)
+                    
+                    EmptyView()
+                        .onChange(of: selectedPhoto) { _, newValue in
+                            Task {
+                                if let data = try? await newValue?.loadTransferable(type: Data.self) {
+                                    selectedImageData = data
+                                    if let uiImage = UIImage(data: data) {
+                                        compressedImageData = uiImage.jpegData(compressionQuality: 0.7)
+                                    }
                                 }
                             }
                         }
-                    }
-                    .padding(.vertical, 8)
-                    .listRowSeparator(.hidden)
+                        .frame(height: 0)
                 } header: {
-                    Text("图片")
+                    Text("照片")
                         .font(.system(.footnote, design: .rounded))
                         .fontWeight(.semibold)
                 }
@@ -267,7 +274,7 @@ struct AddItemView: View {
                 // 详情
                 Section {
                     TextEditor(text: $details)
-                        .font(.system(.body, design: .rounded))
+                        .font(.system(.subheadline, design: .rounded))
                         .fontWeight(.semibold)
                         .frame(minHeight: 80)
                         .listRowSeparator(.hidden)
@@ -297,6 +304,7 @@ struct AddItemView: View {
             .sheet(isPresented: $showingAddGroup) {
                 AddGroupView(groupStore: groupStore)
             }
+            .fullScreenImageViewer(uiImage: $fullScreenImage)
             .fullScreenCover(item: $celebrationKind, onDismiss: {
                 dismiss()
             }) { kind in

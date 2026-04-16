@@ -514,6 +514,7 @@ struct HomeView: View {
                         price: remote.price ?? 0,
                         isCompleted: remote.isCompleted ?? false,
                         displayType: remote.displayType,
+                        imageUrl: remote.imageUrl,
                         purchaseLink: remote.purchaseLink,
                         details: remote.details,
                         completedBy: remote.completedBy
@@ -570,6 +571,7 @@ struct ItemsView: View {
     
     @State private var selectedGroupId: UUID?
     @State private var editingItem: Item? = nil
+    @State private var editingSoldItem: Item? = nil
     @State private var showingItemDetail: Item? = nil
     @State private var showArchived: Bool = false
     @State private var showingAccountSync = false
@@ -690,12 +692,20 @@ struct ItemsView: View {
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                     .listRowBackground(Color.clear)
+                    .contentShape(Rectangle())
                     .onTapGesture {
                         showingItemDetail = item
                     }
-                    .onLongPressGesture {
-                        editingItem = item
-                    }
+                    .simultaneousGesture(
+                        LongPressGesture(minimumDuration: 0.5)
+                            .onEnded { _ in
+                                if showArchived {
+                                    editingSoldItem = item
+                                } else {
+                                    editingItem = item
+                                }
+                            }
+                    )
                     .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                         Button(role: .destructive) {
                             store.delete(item)
@@ -730,6 +740,9 @@ struct ItemsView: View {
         }
         .sheet(item: $editingItem) { item in
             EditItemView(item: item, store: store, groupStore: groupStore)
+        }
+        .sheet(item: $editingSoldItem) { item in
+            EditSoldInfoSheet(item: item, store: store)
         }
         .sheet(item: $showingItemDetail) { item in
             ItemDetailView(store: store, item: item, group: groupStore.group(for: item.groupId))
@@ -851,7 +864,7 @@ struct TypeFilterView: View {
                             }
                         } label: {
                             HStack(spacing: 4) {
-                                Image(systemName: type.icon)
+                                type.iconImage(size: 14)
                                     .font(.system(size: 10))
                                 Text(type.rawValue)
                                     .font(.caption2)
@@ -1290,7 +1303,7 @@ struct ItemCard: View {
     private var tagsView: some View {
         HStack(spacing: 8) {
             HStack(spacing: 4) {
-                Image(systemName: typeIcon(for: item.type))
+                typeIconImage(for: item.type)
                     .font(.caption)
                 Text(item.type)
                     .font(.caption)
@@ -1317,60 +1330,17 @@ struct ItemCard: View {
         }
     }
     
-    private func typeIcon(for type: String) -> String {
+    @ViewBuilder
+    private func typeIconImage(for type: String) -> some View {
         if let itemType = ItemType(rawValue: type) {
-            return itemType.icon
+            itemType.iconImage(size: 16)
+        } else {
+            Image(systemName: "tag")
         }
-        return "tag"
     }
 }
 
 // 空状态视图
-struct EmptyStateView: View {
-    let icon: String
-    let title: String
-    let subtitle: String
-    
-    var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: icon)
-                .font(.system(size: 60))
-                .foregroundStyle(.gray.opacity(0.5))
-            
-            Text(title)
-                .font(.title3)
-                .fontWeight(.semibold)
-                .foregroundStyle(.primary)
-            
-            Text(subtitle)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-// MARK: - AuthView 包装器
-struct AuthViewWrapper: View {
-    @Environment(\.dismiss) private var dismiss
-    @EnvironmentObject var authManager: AuthManager
-    
-    var body: some View {
-        AuthView(onLoginSuccess: { response in
-            // 登录成功后更新 AuthManager
-            authManager.loginSuccess(
-                accessToken: response.accessToken,
-                refreshToken: response.refreshToken,
-                expiresIn: response.expiresIn,
-                tokenType: response.tokenType,
-                sub: response.sub
-            )
-            // 关闭 sheet
-            dismiss()
-        })
-    }
-}
-
 // MARK: - 自定义底部 TabBar（液态玻璃风格）
 struct CustomTabBar: View {
     @Binding var selectedTab: BottomTab
@@ -1448,6 +1418,94 @@ struct CustomTabBar: View {
                 .fill(.ultraThinMaterial)
                 .shadow(color: .black.opacity(0.12), radius: 12, x: 0, y: 4)
         )
+    }
+}
+
+// MARK: - 编辑售出信息 Sheet
+struct EditSoldInfoSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let item: Item
+    @ObservedObject var store: ItemStore
+    
+    @State private var priceText: String = ""
+    @State private var soldDate: Date = Date()
+    @State private var recycleMethod: String = ""
+    
+    private var isValid: Bool {
+        !priceText.isEmpty && Double(priceText) != nil
+    }
+    
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text("「\(item.name)」的售出信息")
+                        .font(.system(.subheadline, design: .rounded))
+                        .fontWeight(.bold)
+                        .listRowSeparator(.hidden)
+                    
+                    HStack {
+                        Text("¥")
+                            .font(.system(.body, design: .rounded))
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.secondary)
+                        TextField("售出价格", text: $priceText)
+                            .font(.system(.subheadline, design: .rounded))
+                            .fontWeight(.semibold)
+                            .keyboardType(.decimalPad)
+                    }
+                    .listRowSeparator(.hidden)
+                    
+                    DatePicker(selection: $soldDate, displayedComponents: .date) {
+                        Text("售出时间")
+                            .font(.system(.subheadline, design: .rounded))
+                            .fontWeight(.semibold)
+                    }
+                    .environment(\.locale, Locale(identifier: "zh_CN"))
+                    .listRowSeparator(.hidden)
+                    
+                    HStack {
+                        Text("回收方式")
+                            .font(.system(.subheadline, design: .rounded))
+                            .fontWeight(.semibold)
+                        Spacer()
+                        TextField("可选", text: $recycleMethod)
+                            .font(.system(.subheadline, design: .rounded))
+                            .fontWeight(.semibold)
+                            .multilineTextAlignment(.trailing)
+                            .foregroundStyle(.secondary)
+                    }
+                    .listRowSeparator(.hidden)
+                }
+            }
+            .navigationTitle("编辑售出信息")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("保存") {
+                        let price = Double(priceText) ?? 0
+                        let method = recycleMethod.trimmingCharacters(in: .whitespaces).isEmpty ? nil : recycleMethod.trimmingCharacters(in: .whitespaces)
+                        if var updated = store.items.first(where: { $0.id == item.id }) {
+                            updated.soldPrice = price
+                            updated.soldDate = soldDate
+                            updated.recycleMethod = method
+                            store.update(updated)
+                        }
+                        dismiss()
+                    }
+                    .fontWeight(.semibold)
+                    .disabled(!isValid)
+                }
+            }
+            .onAppear {
+                priceText = item.soldPrice != nil ? String(format: "%.2f", item.soldPrice!) : ""
+                soldDate = item.soldDate ?? Date()
+                recycleMethod = item.recycleMethod ?? ""
+            }
+        }
     }
 }
 

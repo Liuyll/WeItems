@@ -17,6 +17,10 @@ struct RemoteDataView: View {
     @State private var totalAssets: Double = 0
     @State private var savingsGoalName = ""
     @State private var savingsGoalAmount: Double = 0
+    #if DEBUG
+    @State private var itemImageCount = 0
+    @State private var wishImageCount = 0
+    #endif
     
     var body: some View {
         Group {
@@ -60,6 +64,16 @@ struct RemoteDataView: View {
                     } header: {
                         Text("资产状况")
                     }
+                    
+                    #if DEBUG
+                    Section {
+                        CloudDataRow(icon: "photo.fill", color: .cyan, title: "物品图片 (COS)", value: "\(itemImageCount) 张")
+                        CloudDataRow(icon: "photo.fill", color: .mint, title: "心愿图片 (COS)", value: "\(wishImageCount) 张")
+                        CloudDataRow(icon: "doc.fill", color: .indigo, title: "COS 文件总计", value: "\(itemImageCount + wishImageCount) 个")
+                    } header: {
+                        Text("COS 存储 (Debug)")
+                    }
+                    #endif
                     
                     Section {
                         HStack(alignment: .top, spacing: 8) {
@@ -110,6 +124,20 @@ struct RemoteDataView: View {
                 savingsGoalName = savingData.goal?.name ?? ""
                 savingsGoalAmount = savingData.goal?.targetAmount ?? 0
             }
+            
+            #if DEBUG
+            // 统计有图片的物品数量
+            itemImageCount = items?.data?.records?.filter { record in
+                if let url = record.item_info?.imageUrl, !url.isEmpty { return true }
+                return false
+            }.count ?? 0
+            
+            // 统计有图片的心愿数量
+            wishImageCount = wishes?.data?.records?.filter { record in
+                if let url = record.wishinfo?.imageUrl, !url.isEmpty { return true }
+                return false
+            }.count ?? 0
+            #endif
             
             isLoading = false
         }

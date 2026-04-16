@@ -791,12 +791,12 @@ class TrendDataCache: ObservableObject {
         
         Task.detached(priority: .utility) {
             let items = itemsSnapshot
-            let myItems = items.filter { $0.listType == .items && !$0.isArchived }
+            let myItems = items.filter { $0.listType == .items }
             let calendar = Calendar.current
             let now = Date()
             
-            // 最早日期
-            let earliestDate = myItems.map(\.createdAt).min()
+            // 最早日期（按拥有时间）
+            let earliestDate = myItems.map { $0.ownedDate ?? $0.createdAt }.min()
             
             // 月度数据
             let monthCount: Int
@@ -814,7 +814,8 @@ class TrendDataCache: ObservableObject {
             
             var monthGrouped: [String: (count: Int, total: Double)] = [:]
             for item in myItems {
-                let key = keyFmt.string(from: item.createdAt)
+                let itemDate = item.ownedDate ?? item.createdAt
+                let key = keyFmt.string(from: itemDate)
                 var e = monthGrouped[key] ?? (0, 0)
                 e.count += 1
                 e.total += item.price
@@ -841,7 +842,8 @@ class TrendDataCache: ObservableObject {
             
             var yearGrouped: [Int: (count: Int, total: Double)] = [:]
             for item in myItems {
-                let year = calendar.component(.year, from: item.createdAt)
+                let itemDate = item.ownedDate ?? item.createdAt
+                let year = calendar.component(.year, from: itemDate)
                 var e = yearGrouped[year] ?? (0, 0)
                 e.count += 1
                 e.total += item.price
@@ -927,11 +929,12 @@ class TrendDataCache: ObservableObject {
             let value = myItems.filter { !$0.isPriceless }.reduce(0) { $0 + $1.price }
             var daily: Double = 0
             for item in myItems.filter({ !$0.isPriceless }) {
-                let days = max(1, calendar.dateComponents([.day], from: item.createdAt, to: now).day ?? 1)
+                let itemDate = item.ownedDate ?? item.createdAt
+                let days = max(1, calendar.dateComponents([.day], from: itemDate, to: now).day ?? 1)
                 daily += item.price / Double(days)
             }
             let thirtyDaysAgo = calendar.date(byAdding: .day, value: -30, to: now) ?? now
-            let recent = myItems.filter { $0.createdAt >= thirtyDaysAgo }.count
+            let recent = myItems.filter { ($0.ownedDate ?? $0.createdAt) >= thirtyDaysAgo }.count
             
             // 回收汇总
             let soldAll = soldItems
@@ -939,15 +942,21 @@ class TrendDataCache: ObservableObject {
             let soldOriginal = soldAll.reduce(0) { $0 + $1.price }
             let soldProfit = soldAmount - soldOriginal
             
+            let capturedMonthly = monthly
+            let capturedYearly = yearly
+            let capturedMonthlySold = monthlySold
+            let capturedYearlySold = yearlySold
+            let capturedDaily = daily
+            
             await MainActor.run {
-                self.monthlyData = monthly
-                self.yearlyData = yearly
-                self.monthlySoldData = monthlySold
-                self.yearlySoldData = yearlySold
+                self.monthlyData = capturedMonthly
+                self.yearlyData = capturedYearly
+                self.monthlySoldData = capturedMonthlySold
+                self.yearlySoldData = capturedYearlySold
                 self.typeStats = types
                 self.totalItems = total
                 self.totalValue = value
-                self.dailyCost = daily
+                self.dailyCost = capturedDaily
                 self.recentCount = recent
                 self.totalSoldAmount = soldAmount
                 self.totalSoldOriginal = soldOriginal

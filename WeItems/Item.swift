@@ -44,6 +44,7 @@ struct Item: Identifiable, Codable {
     // 售出相关
     var soldPrice: Double?        // 售出价格
     var soldDate: Date?           // 售出日期
+    var recycleMethod: String?    // 回收方式
     
     // 同步状态
     var isSynced: Bool            // 是否已同步到远端（本地新建为 false，同步成功或从远端拉取为 true）
@@ -54,7 +55,7 @@ struct Item: Identifiable, Codable {
         case price, type, groupId, listType, createdAt, updatedAt
         case isSelected, isArchived, isLargeItem, isPriceless, ownedDate
         case displayType, targetType, wishlistGroupId
-        case imageUrl, soldPrice, soldDate, isSynced
+        case imageUrl, soldPrice, soldDate, recycleMethod, isSynced
     }
     
     /// 生成唯一 itemId: userid_时间戳_8位随机数
@@ -65,7 +66,7 @@ struct Item: Identifiable, Codable {
         return "\(userId)_\(timestamp)_\(random)"
     }
     
-    init(id: UUID = UUID(), itemId: String? = nil, name: String, details: String, purchaseLink: String, imageData: Data? = nil, compressedImageData: Data? = nil, imageChanged: Bool = false, price: Double, type: String, groupId: UUID? = nil, listType: ListType = .items, createdAt: Date = Date(), updatedAt: Date? = nil, isSelected: Bool = false, isArchived: Bool = false, isLargeItem: Bool = false, isPriceless: Bool = false, ownedDate: Date? = nil, displayType: String? = nil, targetType: String? = nil, wishlistGroupId: UUID? = nil, imageUrl: String? = nil, soldPrice: Double? = nil, soldDate: Date? = nil, isSynced: Bool = false) {
+    init(id: UUID = UUID(), itemId: String? = nil, name: String, details: String, purchaseLink: String, imageData: Data? = nil, compressedImageData: Data? = nil, imageChanged: Bool = false, price: Double, type: String, groupId: UUID? = nil, listType: ListType = .items, createdAt: Date = Date(), updatedAt: Date? = nil, isSelected: Bool = false, isArchived: Bool = false, isLargeItem: Bool = false, isPriceless: Bool = false, ownedDate: Date? = nil, displayType: String? = nil, targetType: String? = nil, wishlistGroupId: UUID? = nil, imageUrl: String? = nil, soldPrice: Double? = nil, soldDate: Date? = nil, recycleMethod: String? = nil, isSynced: Bool = false) {
         self.id = id
         self.itemId = itemId ?? Item.generateItemId()
         self.name = name
@@ -91,6 +92,7 @@ struct Item: Identifiable, Codable {
         self.imageUrl = imageUrl
         self.soldPrice = soldPrice
         self.soldDate = soldDate
+        self.recycleMethod = recycleMethod
         self.isSynced = isSynced
     }
     
@@ -122,6 +124,7 @@ struct Item: Identifiable, Codable {
         imageUrl = try container.decodeIfPresent(String.self, forKey: .imageUrl)
         soldPrice = try container.decodeIfPresent(Double.self, forKey: .soldPrice)
         soldDate = try container.decodeIfPresent(Date.self, forKey: .soldDate)
+        recycleMethod = try container.decodeIfPresent(String.self, forKey: .recycleMethod)
         isSynced = try container.decodeIfPresent(Bool.self, forKey: .isSynced) ?? false
     }
     
@@ -177,11 +180,33 @@ enum ItemType: String, CaseIterable {
         case .digital: return "iphone"
         case .fashion: return "tshirt"
         case .appliance: return "tv"
-        case .largeItem: return "sofa"
-        case .lifeGood: return "heart.fill"
+        case .largeItem: return "largeItem"
+        case .lifeGood: return "lifeGood"
         case .edc: return "wallet.bifold"
         case .outdoor: return "tent"
         case .other: return "square.grid.2x2"
+        }
+    }
+    
+    /// 是否使用自定义图片（非 SF Symbol）
+    var isCustomIcon: Bool {
+        switch self {
+        case .largeItem, .lifeGood: return true
+        default: return false
+        }
+    }
+    
+    /// 返回图标 View（自动区分 SF Symbol 和自定义图片）
+    /// - Parameter size: 自定义图片的尺寸，SF Symbol 不受此参数影响（由 .font 控制）
+    @ViewBuilder
+    func iconImage(size: CGFloat = 16) -> some View {
+        if isCustomIcon {
+            Image(icon)
+                .resizable()
+                .scaledToFit()
+                .frame(width: size, height: size)
+        } else {
+            Image(systemName: icon)
         }
     }
     

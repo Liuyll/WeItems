@@ -286,8 +286,10 @@ class AuthManager: ObservableObject {
         }
         
         if !TokenStorage.shared.needsRefresh() {
-            // access_token 仍有效，不需要网络请求，同步设置状态
-            authState = .authenticated
+            // access_token 仍有效，不需要网络请求，延迟设置状态避免在视图更新中触发
+            DispatchQueue.main.async {
+                self.authState = .authenticated
+            }
             // 确保 CloudBaseClient 已创建
             if cloudBaseClient == nil, let envId = Self.loadEnvId(),
                let accessToken = TokenStorage.shared.getAccessToken() {

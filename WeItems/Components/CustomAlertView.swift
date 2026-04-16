@@ -270,6 +270,10 @@ struct CustomBlueConfirmAlert: ViewModifier {
     var confirmText: String = "确定"
     var cancelText: String = "取消"
     var isDestructive: Bool = false
+    var confirmColor: Color? = nil
+    var cancelColor: Color? = nil
+    var backgroundColor: Color = .blue
+    var width: CGFloat = 240
     var onConfirm: () -> Void
     var onCancel: (() -> Void)? = nil
     
@@ -306,7 +310,7 @@ struct CustomBlueConfirmAlert: ViewModifier {
                             Text(cancelText)
                                 .font(.system(.body, design: .rounded))
                                 .fontWeight(.bold)
-                                .foregroundStyle(.white.opacity(0.7))
+                                .foregroundStyle(cancelColor ?? .white.opacity(0.7))
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.plain)
@@ -320,7 +324,7 @@ struct CustomBlueConfirmAlert: ViewModifier {
                             Text(confirmText)
                                 .font(.system(.body, design: .rounded))
                                 .fontWeight(.heavy)
-                                .foregroundStyle(isDestructive ? .red : .white)
+                                .foregroundStyle(confirmColor ?? (isDestructive ? .red : .white))
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.plain)
@@ -330,10 +334,10 @@ struct CustomBlueConfirmAlert: ViewModifier {
                 .padding(.vertical, 28)
                 .background(
                     RoundedRectangle(cornerRadius: 20)
-                        .fill(Color.blue)
+                        .fill(backgroundColor)
                 )
-                .frame(width: 240)
-                .shadow(color: .blue.opacity(0.3), radius: 20, y: 8)
+                .frame(width: width)
+                .shadow(color: backgroundColor.opacity(0.3), radius: 20, y: 8)
                 .transition(.scale(scale: 0.85).combined(with: .opacity))
             }
         }
@@ -346,6 +350,7 @@ struct CustomBlueInfoAlert: ViewModifier {
     @Binding var isPresented: Bool
     var message: String = ""
     var buttonText: String = "好的"
+    var backgroundColor: Color = .blue
     var onDismiss: (() -> Void)? = nil
     
     func body(content: Content) -> some View {
@@ -390,10 +395,10 @@ struct CustomBlueInfoAlert: ViewModifier {
                 .padding(.vertical, 28)
                 .background(
                     RoundedRectangle(cornerRadius: 20)
-                        .fill(Color.blue)
+                        .fill(backgroundColor)
                 )
                 .frame(width: 240)
-                .shadow(color: .blue.opacity(0.3), radius: 20, y: 8)
+                .shadow(color: backgroundColor.opacity(0.3), radius: 20, y: 8)
                 .transition(.scale(scale: 0.85).combined(with: .opacity))
             }
         }
@@ -426,12 +431,14 @@ extension View {
         isPresented: Binding<Bool>,
         message: String,
         buttonText: String = "好的",
+        backgroundColor: Color = .blue,
         onDismiss: (() -> Void)? = nil
     ) -> some View {
         self.modifier(CustomBlueInfoAlert(
             isPresented: isPresented,
             message: message,
             buttonText: buttonText,
+            backgroundColor: backgroundColor,
             onDismiss: onDismiss
         ))
     }
@@ -466,6 +473,10 @@ extension View {
         confirmText: String = "确定",
         cancelText: String = "取消",
         isDestructive: Bool = false,
+        confirmColor: Color? = nil,
+        cancelColor: Color? = nil,
+        backgroundColor: Color = .blue,
+        width: CGFloat = 240,
         onConfirm: @escaping () -> Void,
         onCancel: (() -> Void)? = nil
     ) -> some View {
@@ -475,6 +486,10 @@ extension View {
             confirmText: confirmText,
             cancelText: cancelText,
             isDestructive: isDestructive,
+            confirmColor: confirmColor,
+            cancelColor: cancelColor,
+            backgroundColor: backgroundColor,
+            width: width,
             onConfirm: onConfirm,
             onCancel: onCancel
         ))

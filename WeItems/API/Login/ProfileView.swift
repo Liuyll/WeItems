@@ -386,12 +386,12 @@ struct ProfileView: View {
                             PrivacySettingsView()
                         } label: {
                             Label {
-                                Text("我的隐私")
+                                Text("权限设置")
                                     .font(.system(.body, design: .rounded))
                                     .fontWeight(.semibold)
                                     .foregroundStyle(.primary)
                             } icon: {
-                                Image(systemName: "hand.raised.fill")
+                                Image(systemName: "lock.shield.fill")
                                     .foregroundStyle(.blue)
                             }
                             .foregroundStyle(.primary)
@@ -434,6 +434,26 @@ struct ProfileView: View {
                         }
                         .listRowSeparator(.hidden)
                     }
+                    
+                    #if DEBUG
+                    Section("Debug 测试") {
+                        NavigationLink {
+                            DebugTestView()
+                                .environmentObject(authManager)
+                        } label: {
+                            Label {
+                                Text("调试工具")
+                                    .font(.system(.body, design: .rounded))
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(.primary)
+                            } icon: {
+                                Image(systemName: "hammer.fill")
+                                    .foregroundStyle(.orange)
+                            }
+                        }
+                        .listRowSeparator(.hidden)
+                    }
+                    #endif
                 }
                 .listStyle(.insetGrouped)
                 

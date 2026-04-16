@@ -13,6 +13,11 @@ struct WeItemsApp: App {
     init() {
         // 启动时触发系统网络权限弹窗（蜂窝/WiFi）
         triggerNetworkPermission()
+        
+        #if DEBUG
+        // 启动内存日志拦截（自动捕获所有 print 输出）
+        DebugLogManager.shared.startCapturing()
+        #endif
     }
     
     @Environment(\.scenePhase) private var scenePhase

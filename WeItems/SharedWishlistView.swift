@@ -280,7 +280,8 @@ struct SharedWishlistListView: View {
                         imageData: remoteImageData,
                         purchaseLink: remote.purchaseLink,
                         details: remote.details,
-                        completedBy: remote.completedBy
+                        completedBy: remote.completedBy,
+                        addedBy: remote.addedBy
                     )
                 }
                 
@@ -524,6 +525,7 @@ struct SharedWishlistDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var isSyncing = false
     @State private var editingItem: SharedWishItem? = nil
+    @State private var viewingItem: SharedWishItem? = nil
     @State private var showingDeleteAlert = false
     @State private var isDeleting = false
     @State private var members: [String] = []
@@ -551,6 +553,7 @@ struct SharedWishlistDetailView: View {
     @State private var isRemoteDeleted = false
     @State private var showingDeletedAlert = false
     @State private var isCheckingRemote = true
+    @State private var showingAddWish = false
     
     private var currentList: SharedWishlist {
         sharedStore.lists.first(where: { $0.id == list.id }) ?? list
@@ -776,8 +779,17 @@ struct SharedWishlistDetailView: View {
                                         .foregroundStyle(item.isCompleted ? .secondary : .primary)
                                     HStack(spacing: 4) {
                                         Text("¥\(String(format: "%.0f", item.price))")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
+                                            .font(.system(.caption, design: .rounded))
+                                            .fontWeight(.bold)
+                                            .foregroundStyle(.pink)
+                                        if let addedBy = item.addedBy, !addedBy.isEmpty {
+                                            Text("·")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                            Text("\(addedBy)的心愿")
+                                                .font(.caption)
+                                                .foregroundStyle(.blue)
+                                        }
                                         if item.isCompleted, let completedBy = item.completedBy, !completedBy.isEmpty {
                                             Text("·")
                                                 .font(.caption)
@@ -801,11 +813,17 @@ struct SharedWishlistDetailView: View {
                                 if isRemoteDeleted {
                                     showingDeletedAlert = true
                                 } else {
-                                    editingItem = item
+                                    viewingItem = item
                                 }
                             }
                             .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                if currentList.isOwner {
+                                let itemCanDelete: Bool = {
+                                    if let addedBy = item.addedBy, !addedBy.isEmpty {
+                                        return addedBy == currentList.myNickname
+                                    }
+                                    return currentList.isOwner
+                                }()
+                                if itemCanDelete {
                                     Button(role: .destructive) {
                                         sharedStore.deleteItem(listId: currentList.id, itemId: item.id)
                                     } label: {
@@ -815,6 +833,27 @@ struct SharedWishlistDetailView: View {
                             }
                         }
                     }
+                }
+            }
+            
+            // 添加心愿按钮
+            if !isRemoteDeleted {
+                Section {
+                    Button {
+                        showingAddWish = true
+                    } label: {
+                        HStack {
+                            Image(systemName: "plus.circle.fill")
+                                .foregroundStyle(.green)
+                            Text("添加心愿")
+                                .font(.system(.body, design: .rounded))
+                                .fontWeight(.semibold)
+                                .foregroundStyle(.green)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, 4)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
             
@@ -972,11 +1011,29 @@ struct SharedWishlistDetailView: View {
             print("==================================")
             loadMembers()
         }
-        .sheet(item: $editingItem) { item in
-            EditSharedWishItemView(
+        .sheet(isPresented: $showingAddWish) {
+            AddSharedWishItemView(listId: currentList.id, sharedStore: sharedStore)
+        }
+        .sheet(item: $viewingItem) { item in
+            SharedWishItemDetailView(
                 item: item,
                 listId: currentList.id,
                 isOwner: currentList.isOwner,
+                sharedStore: sharedStore
+            )
+        }
+        .sheet(item: $editingItem) { item in
+            let myNickname = currentList.myNickname
+            let itemCanEdit: Bool = {
+                if let addedBy = item.addedBy, !addedBy.isEmpty {
+                    return addedBy == myNickname
+                }
+                return currentList.isOwner
+            }()
+            EditSharedWishItemView(
+                item: item,
+                listId: currentList.id,
+                isOwner: itemCanEdit,
                 sharedStore: sharedStore
             )
         }
@@ -1119,7 +1176,9 @@ struct SharedWishlistDetailView: View {
                 || itemA.purchaseLink != itemB.purchaseLink
                 || itemA.details != itemB.details
                 || itemA.completedBy != itemB.completedBy
-                || itemA.imageUrl != itemB.imageUrl {
+                || itemA.addedBy != itemB.addedBy
+                || itemA.imageUrl != itemB.imageUrl
+                || itemA.imageData != itemB.imageData {
                 return false
             }
         }
@@ -1169,7 +1228,7 @@ struct SharedWishlistDetailView: View {
         isSyncing = true
         let listId = currentList.id
         let existingWishGroupId = currentList.wishGroupId
-        let items = currentList.items
+        var items = currentList.items
         let name = currentList.name
         let emoji = currentList.emoji
         let ownerName = currentList.ownerName ?? currentList.myNickname
@@ -1179,6 +1238,33 @@ struct SharedWishlistDetailView: View {
             var syncSucceeded = false
             
             if let client = AuthManager.shared.getCloudBaseClient() {
+                // 先上传没有 imageUrl 但有 imageData 的心愿图片到 COS
+                let itemsNeedingUpload = items.filter { $0.imageData != nil && (($0.imageUrl ?? "").isEmpty) }
+                if !itemsNeedingUpload.isEmpty {
+                    print("[共享心愿] 发现 \(itemsNeedingUpload.count) 个心愿需要上传图片到 COS")
+                    let uploadItems = itemsNeedingUpload.compactMap { item -> CloudBaseClient.UploadItem? in
+                        guard let imageData = item.imageData else { return nil }
+                        let objectId = "shared_wishes/\(item.id.uuidString).jpg"
+                        return CloudBaseClient.UploadItem(data: imageData, objectId: objectId)
+                    }
+                    let results = await client.uploadFiles(items: uploadItems)
+                    for (index, item) in itemsNeedingUpload.enumerated() {
+                        guard index < results.count, results[index].success else { continue }
+                        let downloadUrl = results[index].downloadUrl
+                        if let itemIndex = items.firstIndex(where: { $0.id == item.id }) {
+                            items[itemIndex].imageUrl = downloadUrl
+                            print("[共享心愿] 图片上传成功: \(item.name) -> \(downloadUrl)")
+                        }
+                    }
+                    // 更新本地 store 中的 imageUrl（只更新刚上传的）
+                    let uploadedItemIds = Set(itemsNeedingUpload.map { $0.id })
+                    await MainActor.run {
+                        for item in items where uploadedItemIds.contains(item.id) && item.imageUrl != nil {
+                            sharedStore.updateItemImageUrl(listId: listId, itemId: item.id, imageUrl: item.imageUrl!)
+                        }
+                    }
+                }
+                
                 // 确定 wishGroupId：已有就用已有的，没有就生成新的
                 let wishGroupId = existingWishGroupId ?? CloudBaseClient.generateWishGroupId()
                 let ownerNameStr = ownerName ?? ""
@@ -1331,6 +1417,14 @@ struct SharedWishlistDetailView: View {
                 if let record = record {
                     // 将远端数据转为本地模型，完全覆盖本地
                     let remoteWishItems = record.wishinfo?.items ?? []
+                    // 获取本地 items 的 imageData 映射，用于保留本地图片
+                    let localItems = currentList.items
+                    let localImageDataMap: [String: Data] = Dictionary(uniqueKeysWithValues:
+                        localItems.compactMap { item -> (String, Data)? in
+                            guard let data = item.imageData else { return nil }
+                            return (item.id.uuidString, data)
+                        }
+                    )
                     let remoteItems: [SharedWishItem] = remoteWishItems.map { remote in
                         var remoteImageUrl: String? = nil
                         var remoteImageData: Data? = nil
@@ -1338,6 +1432,11 @@ struct SharedWishlistDetailView: View {
                             remoteImageUrl = url
                         } else if let base64Str = remote.imageBase64, !base64Str.isEmpty {
                             remoteImageData = Data(base64Encoded: base64Str)
+                        }
+                        // 保留本地 imageData（远端没有图片数据时）
+                        if remoteImageData == nil, let remoteId = remote.id,
+                           let localData = localImageDataMap[remoteId] {
+                            remoteImageData = localData
                         }
                         return SharedWishItem(
                             name: remote.name ?? "未知心愿",
@@ -1348,7 +1447,8 @@ struct SharedWishlistDetailView: View {
                             imageData: remoteImageData,
                             purchaseLink: remote.purchaseLink,
                             details: remote.details,
-                            completedBy: remote.completedBy
+                            completedBy: remote.completedBy,
+                            addedBy: remote.addedBy
                         )
                     }
                     
@@ -1902,15 +2002,17 @@ struct EditSharedWishItemView: View {
     
     var body: some View {
         NavigationStack {
-            if isOwner {
-                ownerEditView
-            } else {
-                visitorDetailView
-            }
+            ownerEditView
         }
     }
     
     // MARK: - Owner 编辑视图（与编辑普通心愿一致）
+    @State private var isCustomDisplayType: Bool = false
+    @State private var customDisplayType: String = ""
+    @State private var selectedStandardType: ItemType = .other
+    @State private var showingNewTypeInput = false
+    @State private var newTypeInput = ""
+    
     private var ownerEditView: some View {
         ScrollView {
             VStack(spacing: 18) {
@@ -1923,35 +2025,84 @@ struct EditSharedWishItemView: View {
                 }
                 .cartoonCard()
                 
-                // 🏷️ 展示类型
+                // 🏷️ 展示类型卡片
                 VStack(alignment: .leading, spacing: 14) {
                     CartoonSectionHeader(emoji: "🏷️", title: "展示类型", color: .blue)
                     
-                    FlowLayout(spacing: 8) {
-                        ForEach(ItemType.allCases, id: \.self) { type in
+                    HStack {
+                        Text("自定义类型")
+                            .font(.system(.subheadline, design: .rounded))
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        Toggle("", isOn: $isCustomDisplayType)
+                            .labelsHidden()
+                            .tint(.pink)
+                    }
+                    .padding(12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color(.tertiarySystemGroupedBackground))
+                    )
+                    
+                    if isCustomDisplayType {
+                        FlowLayout(spacing: 8) {
+                            // 新增自定义类型 tag
                             Button {
-                                displayType = type.rawValue
+                                newTypeInput = ""
+                                showingNewTypeInput = true
                             } label: {
                                 HStack(spacing: 4) {
-                                    type.iconImage(size: 20)
+                                    Image(systemName: "plus")
                                         .font(.caption)
-                                    Text(type.rawValue)
+                                    Text("新增")
                                         .font(.system(.subheadline, design: .rounded))
-                                        .fontWeight(displayType == type.rawValue ? .bold : .medium)
+                                        .fontWeight(.medium)
                                 }
                                 .padding(.horizontal, 14)
                                 .padding(.vertical, 8)
                                 .background(
                                     Capsule()
-                                        .fill(type.color.opacity(displayType == type.rawValue ? 0.2 : 0.08))
+                                        .stroke(Color.purple.opacity(0.4), lineWidth: 1)
                                 )
-                                .foregroundStyle(displayType == type.rawValue ? type.color : type.color.opacity(0.7))
-                                .overlay(
-                                    Capsule()
-                                        .stroke(displayType == type.rawValue ? type.color.opacity(0.3) : Color.clear, lineWidth: 1)
-                                )
+                                .foregroundStyle(.purple)
                             }
                             .buttonStyle(PlainButtonStyle())
+                        }
+                        
+                        if !customDisplayType.isEmpty {
+                            Text("当前：\(customDisplayType)")
+                                .font(.system(.caption, design: .rounded))
+                                .foregroundStyle(.purple)
+                        }
+                    } else {
+                        FlowLayout(spacing: 8) {
+                            ForEach(ItemType.allCases, id: \.self) { type in
+                                Button {
+                                    selectedStandardType = type
+                                    displayType = type.rawValue
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        type.iconImage(size: 20)
+                                            .font(.caption)
+                                        Text(type.rawValue)
+                                            .font(.system(.subheadline, design: .rounded))
+                                            .fontWeight(selectedStandardType == type ? .bold : .medium)
+                                    }
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 8)
+                                    .background(
+                                        Capsule()
+                                            .fill(type.color.opacity(selectedStandardType == type ? 0.2 : 0.08))
+                                    )
+                                    .foregroundStyle(selectedStandardType == type ? type.color : type.color.opacity(0.7))
+                                    .overlay(
+                                        Capsule()
+                                            .stroke(selectedStandardType == type ? type.color.opacity(0.3) : Color.clear, lineWidth: 1)
+                                    )
+                                }
+                                .buttonStyle(PlainButtonStyle())
+                            }
                         }
                     }
                 }
@@ -2103,6 +2254,7 @@ struct EditSharedWishItemView: View {
                         .fontWeight(.semibold)
                         .frame(minHeight: 60)
                         .scrollContentBackground(.hidden)
+                        .autocorrectionDisabled()
                         .overlay(alignment: .topLeading) {
                             if details.isEmpty {
                                 Text("说点什么...")
@@ -2113,7 +2265,6 @@ struct EditSharedWishItemView: View {
                                     .allowsHitTesting(false)
                             }
                         }
-                        .autocorrectionDisabled()
                 }
                 .cartoonCard()
                 
@@ -2213,180 +2364,199 @@ struct EditSharedWishItemView: View {
                 dismiss()
             }
         )
+        .customInputAlert(
+            isPresented: $showingNewTypeInput,
+            title: "新增展示类型",
+            message: "输入新的展示类型名称",
+            placeholder: "类型名称",
+            text: $newTypeInput,
+            onConfirm: {
+                let trimmed = newTypeInput.trimmingCharacters(in: .whitespaces)
+                if !trimmed.isEmpty {
+                    customDisplayType = trimmed
+                    displayType = trimmed
+                    isCustomDisplayType = true
+                }
+            }
+        )
         .fullScreenImageViewer(uiImage: $fullScreenImage)
+        .onAppear {
+            // 初始化自定义类型状态
+            let dt = originalItem.displayType ?? ""
+            if let standardType = ItemType(rawValue: dt) {
+                isCustomDisplayType = false
+                selectedStandardType = standardType
+            } else if !dt.isEmpty {
+                isCustomDisplayType = true
+                customDisplayType = dt
+            }
+        }
     }
     
     // MARK: - 非 Owner 详情视图
     private var visitorDetailView: some View {
-        ZStack {
-            Color(.systemGroupedBackground)
-                .ignoresSafeArea()
-            
-            ScrollView {
-                VStack(spacing: 16) {
-                    // 顶部图片（无图片时不显示此区域）
-                    if let imgData = originalItem.imageData, let uiImage = UIImage(data: imgData) {
-                        Image(uiImage: uiImage)
-                            .resizable()
-                            .scaledToFill()
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 220)
-                            .clipped()
-                            .clipShape(RoundedRectangle(cornerRadius: 16))
-                            .shadow(color: .black.opacity(0.06), radius: 6, x: 0, y: 3)
-                            .padding(.horizontal)
-                            .onTapGesture { fullScreenImage = uiImage }
-                    }
-                    
-                    // 心愿名称 + 状态
-                    VStack(spacing: 10) {
-                        Text(originalItem.name)
-                            .font(.title2)
-                            .fontWeight(.bold)
-                            .foregroundStyle(Color(red: 0.25, green: 0.25, blue: 0.35))
-                            .multilineTextAlignment(.center)
-                        
-                        HStack(spacing: 4) {
-                            Text(originalItem.isCompleted ? "🎉" : "✨")
-                                .font(.footnote)
-                            Text(originalItem.isCompleted ? "已实现" : "期待中")
-                                .font(.caption)
-                                .fontWeight(.medium)
-                                .foregroundStyle(originalItem.isCompleted ? Color(red: 0.3, green: 0.75, blue: 0.45) : Color(red: 0.55, green: 0.55, blue: 0.65))
-                            if originalItem.isCompleted, let by = originalItem.completedBy, !by.isEmpty {
-                                Text("· \(by)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                // 图片
+                if let imageUrl = originalItem.imageUrl, !imageUrl.isEmpty {
+                    AsyncImage(url: URL(string: imageUrl)) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image
+                                .resizable()
+                                .scaledToFill()
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 240)
+                                .clipped()
+                                .clipShape(RoundedRectangle(cornerRadius: 16))
+                        case .failure:
+                            RoundedRectangle(cornerRadius: 16)
+                                .fill(Color.gray.opacity(0.1))
+                                .frame(height: 120)
+                                .overlay(
+                                    Image(systemName: "photo")
+                                        .font(.largeTitle)
+                                        .foregroundStyle(.gray.opacity(0.3))
+                                )
+                        default:
+                            RoundedRectangle(cornerRadius: 16)
+                                .fill(Color.gray.opacity(0.1))
+                                .frame(height: 120)
+                                .overlay(ProgressView())
                         }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 5)
-                        .background(
-                            Capsule()
-                                .fill(originalItem.isCompleted ? Color(red: 0.3, green: 0.75, blue: 0.45).opacity(0.1) : Color(.tertiarySystemFill))
-                        )
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-                    .padding(.horizontal, 20)
-                    .background(visitorCardBg)
-                    .padding(.horizontal)
-                    
-                    // 价格 & 类型 横排
-                    HStack(spacing: 12) {
-                        VStack(spacing: 4) {
-                            Text("💰")
-                                .font(.callout)
-                            Text("¥\(String(format: "%.0f", originalItem.price))")
-                                .font(.title3)
-                                .fontWeight(.semibold)
-                                .foregroundStyle(Color(red: 0.9, green: 0.55, blue: 0.2))
-                            Text("预估价格")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                        }
+                } else if let imgData = originalItem.imageData, let uiImage = UIImage(data: imgData) {
+                    Image(uiImage: uiImage)
+                        .resizable()
+                        .scaledToFill()
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                        .background(visitorCardBg)
-                        
-                        if let dType = originalItem.displayType, !dType.isEmpty {
-                            VStack(spacing: 4) {
-                                Text("🏷️")
-                                    .font(.callout)
-                                Text(dType)
-                                    .font(.subheadline)
-                                    .fontWeight(.medium)
-                                    .foregroundStyle(Color(red: 0.55, green: 0.45, blue: 0.7))
-                                Text("类型")
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 14)
-                            .background(visitorCardBg)
-                        }
-                    }
-                    .padding(.horizontal)
-                    
-                    // ── 购买链接 Block ──
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 5) {
-                            Image(systemName: "link")
-                                .font(.caption)
-                                .foregroundStyle(Color(red: 0.3, green: 0.55, blue: 0.85))
-                            Text("购买链接")
-                                .font(.caption)
-                                .fontWeight(.medium)
-                                .foregroundStyle(Color(red: 0.3, green: 0.55, blue: 0.85))
-                        }
-                        
-                        if let link = originalItem.purchaseLink,
-                           !link.trimmingCharacters(in: .whitespaces).isEmpty,
-                           let url = URL(string: link.trimmingCharacters(in: .whitespaces)) {
-                            Link(destination: url) {
-                                HStack(spacing: 10) {
-                                    Image(systemName: "safari.fill")
-                                        .font(.body)
-                                        .foregroundStyle(Color(red: 0.3, green: 0.55, blue: 0.85))
-                                    
-                                    Text(link)
-                                        .font(.subheadline)
-                                        .foregroundStyle(Color(red: 0.3, green: 0.55, blue: 0.85))
-                                        .lineLimit(2)
-                                        .multilineTextAlignment(.leading)
-                                    
-                                    Spacer()
-                                    
-                                    Image(systemName: "arrow.up.right")
-                                        .font(.caption)
-                                        .foregroundStyle(Color(red: 0.3, green: 0.55, blue: 0.85).opacity(0.5))
-                                }
-                            }
-                        } else {
-                            Text("暂无购买链接")
-                                .font(.subheadline)
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(16)
-                    .background(visitorCardBg)
-                    .padding(.horizontal)
-                    
-                    // ── 详细描述 Block ──
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 5) {
-                            Image(systemName: "text.alignleft")
-                                .font(.caption)
-                                .foregroundStyle(Color(red: 0.6, green: 0.45, blue: 0.3))
-                            Text("详细描述")
-                                .font(.caption)
-                                .fontWeight(.medium)
-                                .foregroundStyle(Color(red: 0.6, green: 0.45, blue: 0.3))
-                        }
-                        
-                        if let detail = originalItem.details,
-                           !detail.trimmingCharacters(in: .whitespaces).isEmpty {
-                            Text(detail)
-                                .font(.body)
-                                .foregroundStyle(Color(red: 0.25, green: 0.25, blue: 0.3).opacity(0.85))
-                                .lineSpacing(5)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        } else {
-                            Text("暂无描述")
-                                .font(.subheadline)
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(16)
-                    .background(visitorCardBg)
-                    .padding(.horizontal)
-                    
-                    Spacer(minLength: 30)
+                        .frame(height: 240)
+                        .clipped()
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                        .onTapGesture { fullScreenImage = uiImage }
                 }
-                .padding(.top, 10)
+                
+                // 名称和价格
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(originalItem.name)
+                        .font(.title)
+                        .fontWeight(.bold)
+                    
+                    Text("¥\(String(format: "%.2f", originalItem.price))")
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.blue)
+                }
+                
+                Divider()
+                
+                // 类型和状态 tag
+                HStack(spacing: 8) {
+                    if let dType = originalItem.displayType, !dType.isEmpty {
+                        HStack(spacing: 4) {
+                            if let itemType = ItemType(rawValue: dType) {
+                                itemType.iconImage(size: 16)
+                                    .font(.caption)
+                            } else {
+                                Image(systemName: "tag")
+                                    .font(.caption)
+                            }
+                            Text(dType)
+                                .font(.caption)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Color.blue.opacity(0.1))
+                        .foregroundStyle(.blue)
+                        .clipShape(Capsule())
+                    }
+                    
+                    HStack(spacing: 4) {
+                        if originalItem.isCompleted {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.caption)
+                        }
+                        Text(originalItem.isCompleted ? "已实现" : "未实现")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(originalItem.isCompleted ? Color.green.opacity(0.1) : Color.gray.opacity(0.1))
+                    .foregroundStyle(originalItem.isCompleted ? .green : .secondary)
+                    .clipShape(Capsule())
+                    
+                    if let addedBy = originalItem.addedBy, !addedBy.isEmpty {
+                        HStack(spacing: 4) {
+                            Image(systemName: "person.fill")
+                                .font(.caption)
+                            Text("\(addedBy)的心愿")
+                                .font(.caption)
+                                .fontWeight(.medium)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Color.blue.opacity(0.1))
+                        .foregroundStyle(.blue)
+                        .clipShape(Capsule())
+                    }
+                    
+                    if originalItem.isCompleted, let by = originalItem.completedBy, !by.isEmpty {
+                        Text("被\(by)满足愿望")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Color.green.opacity(0.1))
+                            .foregroundStyle(.green)
+                            .clipShape(Capsule())
+                    }
+                }
+                
+                // 购买链接
+                if let link = originalItem.purchaseLink, !link.trimmingCharacters(in: .whitespaces).isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("购买链接")
+                            .font(.system(.headline, design: .rounded))
+                        Text(link)
+                            .font(.system(.body, design: .rounded))
+                            .foregroundStyle(.blue)
+                            .lineLimit(2)
+                    }
+                }
+                
+                // 详情描述
+                if let detail = originalItem.details, !detail.trimmingCharacters(in: .whitespaces).isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("心愿描述")
+                            .font(.system(.headline, design: .rounded))
+                        Text(detail)
+                            .font(.system(.body, design: .rounded))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                
+                // 实现状态切换（非 owner 也可以标记实现）
+                VStack(spacing: 12) {
+                    HStack {
+                        Text("🎉 已实现")
+                            .font(.subheadline)
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        Toggle("", isOn: $isCompleted)
+                            .labelsHidden()
+                            .tint(.green)
+                    }
+                    .padding(12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color(.tertiarySystemGroupedBackground))
+                    )
+                }
+                
+                Spacer()
             }
+            .padding()
         }
         .navigationTitle("心愿详情")
         .navigationBarTitleDisplayMode(.inline)
@@ -2394,13 +2564,12 @@ struct EditSharedWishItemView: View {
             ToolbarItem(placement: .navigationBarLeading) {
                 Button("关闭") { dismiss() }
             }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button("保存") { save() }
+                    .fontWeight(.bold)
+            }
         }
-    }
-    
-    // MARK: - 卡片背景
-    private var visitorCardBg: some View {
-        RoundedRectangle(cornerRadius: 14)
-            .fill(Color(.secondarySystemGroupedBackground))
+        .fullScreenImageViewer(uiImage: $fullScreenImage)
     }
     
     private func save() {
@@ -2409,9 +2578,11 @@ struct EditSharedWishItemView: View {
             // Owner 可以修改所有字段
             updated.name = name.trimmingCharacters(in: .whitespaces)
             updated.price = Double(priceText) ?? originalItem.price
-            updated.displayType = displayType.trimmingCharacters(in: .whitespaces).isEmpty ? nil : displayType.trimmingCharacters(in: .whitespaces)
+            let finalDisplayType = isCustomDisplayType ? customDisplayType : displayType
+            updated.displayType = finalDisplayType.trimmingCharacters(in: .whitespaces).isEmpty ? nil : finalDisplayType.trimmingCharacters(in: .whitespaces)
             updated.purchaseLink = purchaseLink.trimmingCharacters(in: .whitespaces).isEmpty ? nil : purchaseLink.trimmingCharacters(in: .whitespaces)
             updated.details = details.trimmingCharacters(in: .whitespaces).isEmpty ? nil : details.trimmingCharacters(in: .whitespaces)
+            updated.imageData = imageData
         }
         // owner 和非 owner 都可以修改已实现状态
         updated.isCompleted = isCompleted
@@ -2421,6 +2592,656 @@ struct EditSharedWishItemView: View {
             updated.completedBy = nil
         }
         sharedStore.updateItem(listId: listId, item: updated)
+        dismiss()
+    }
+}
+
+// MARK: - 共享心愿详情页
+struct SharedWishItemDetailView: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var sharedStore: SharedWishlistStore
+    
+    let listId: UUID
+    let isOwner: Bool
+    @State private var item: SharedWishItem
+    @State private var showingEdit = false
+    @State private var showDeleteConfirm = false
+    @State private var fullScreenImage: UIImage? = nil
+    @State private var toastMessage: String?
+    @State private var showToast = false
+    
+    init(item: SharedWishItem, listId: UUID, isOwner: Bool, sharedStore: SharedWishlistStore) {
+        self.listId = listId
+        self.isOwner = isOwner
+        self.sharedStore = sharedStore
+        _item = State(initialValue: item)
+    }
+    
+    // 从 store 中获取最新数据
+    private var currentItem: SharedWishItem {
+        if let list = sharedStore.lists.first(where: { $0.id == listId }),
+           let found = list.items.first(where: { $0.id == item.id }) {
+            return found
+        }
+        return item
+    }
+    
+    /// 当前用户是否可以编辑此心愿（添加者可编辑，旧数据无 addedBy 时 owner 可编辑）
+    private var canEdit: Bool {
+        let myNickname = sharedStore.lists.first(where: { $0.id == listId })?.myNickname
+        if let addedBy = currentItem.addedBy, !addedBy.isEmpty {
+            return addedBy == myNickname
+        }
+        // 旧数据没有 addedBy，owner 可编辑
+        return isOwner
+    }
+    
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 16) {
+                    // 图片
+                    if let imageUrl = currentItem.imageUrl, !imageUrl.isEmpty {
+                        AsyncImage(url: URL(string: imageUrl)) { phase in
+                            switch phase {
+                            case .success(let image):
+                                image
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(maxWidth: .infinity)
+                                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                            case .failure:
+                                RoundedRectangle(cornerRadius: 16)
+                                    .fill(Color.gray.opacity(0.1))
+                                    .frame(height: 120)
+                                    .overlay(
+                                        Image(systemName: "photo")
+                                            .font(.largeTitle)
+                                            .foregroundStyle(.gray.opacity(0.3))
+                                    )
+                            default:
+                                RoundedRectangle(cornerRadius: 16)
+                                    .fill(Color.gray.opacity(0.1))
+                                    .frame(height: 120)
+                                    .overlay(ProgressView())
+                            }
+                        }
+                    } else if let imageData = currentItem.imageData,
+                              let uiImage = UIImage(data: imageData) {
+                        Image(uiImage: uiImage)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxWidth: .infinity)
+                            .clipShape(RoundedRectangle(cornerRadius: 16))
+                            .onTapGesture { fullScreenImage = uiImage }
+                    }
+                    
+                    // 名称和价格
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(currentItem.name)
+                            .font(.title2)
+                            .fontWeight(.bold)
+                        
+                        Text("¥\(String(format: "%.2f", currentItem.price))")
+                            .font(.title3)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.green)
+                        
+                        // 状态
+                        HStack(spacing: 8) {
+                            HStack(spacing: 4) {
+                                if currentItem.isCompleted {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .font(.caption)
+                                }
+                                Text(currentItem.isCompleted ? "已实现" : "未实现")
+                                    .font(.caption)
+                                    .fontWeight(.medium)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(currentItem.isCompleted ? Color.green.opacity(0.1) : Color.gray.opacity(0.1))
+                            .foregroundStyle(currentItem.isCompleted ? .green : .secondary)
+                            .clipShape(Capsule())
+                            
+                            if let addedBy = currentItem.addedBy, !addedBy.isEmpty {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "person.fill")
+                                        .font(.caption)
+                                    Text("\(addedBy)的心愿")
+                                        .font(.caption)
+                                        .fontWeight(.medium)
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(Color.blue.opacity(0.1))
+                                .foregroundStyle(.blue)
+                                .clipShape(Capsule())
+                            }
+                            
+                            if currentItem.isCompleted, let by = currentItem.completedBy, !by.isEmpty {
+                                Text("被\(by)满足愿望")
+                                    .font(.caption)
+                                    .fontWeight(.medium)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 5)
+                                    .background(Color.green.opacity(0.1))
+                                    .foregroundStyle(.green)
+                                    .clipShape(Capsule())
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+                    .background(RoundedRectangle(cornerRadius: 16).fill(Color(.secondarySystemGroupedBackground)))
+                    
+                    // 类型
+                    if let displayType = currentItem.displayType, !displayType.isEmpty {
+                        DetailRow(icon: "tag.fill", color: .blue, title: "类型", value: displayType)
+                    }
+                    
+                    // 购买链接
+                    if let link = currentItem.purchaseLink, !link.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("购买链接")
+                                .font(.system(.headline, design: .rounded))
+                            
+                            Button {
+                                UIPasteboard.general.string = link
+                                toastMessage = "已复制到剪贴板"
+                                withAnimation { showToast = true }
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                                    withAnimation { showToast = false }
+                                }
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "link")
+                                        .font(.system(size: 14))
+                                    Text(shortenURL(link))
+                                        .lineLimit(1)
+                                    Spacer()
+                                    Text("点击复制")
+                                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                                        .foregroundStyle(.blue.opacity(0.8))
+                                    Image(systemName: "doc.on.doc")
+                                        .font(.system(size: 12))
+                                }
+                                .font(.system(.body, design: .rounded))
+                                .padding(12)
+                                .background(Color.blue.opacity(0.08))
+                                .foregroundStyle(.blue)
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding()
+                        .background(RoundedRectangle(cornerRadius: 16).fill(Color(.secondarySystemGroupedBackground)))
+                    }
+                    
+                    // 备注
+                    if let details = currentItem.details, !details.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "note.text")
+                                    .foregroundStyle(.orange)
+                                Text("备注")
+                                    .font(.subheadline)
+                                    .fontWeight(.semibold)
+                            }
+                            Text(details)
+                                .font(.body)
+                                .foregroundStyle(.primary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding()
+                        .background(RoundedRectangle(cornerRadius: 16).fill(Color(.secondarySystemGroupedBackground)))
+                    }
+                    
+                    // 删除按钮（owner 可删）
+                    if isOwner {
+                        Button {
+                            showDeleteConfirm = true
+                        } label: {
+                            HStack {
+                                Spacer()
+                                Text("删除心愿")
+                                    .fontWeight(.semibold)
+                                Spacer()
+                            }
+                            .foregroundStyle(.white)
+                            .padding(.vertical, 14)
+                            .background(Color.red)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                        }
+                        .padding(.top, 8)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            }
+            .background(Color(.systemGroupedBackground))
+            .navigationTitle("心愿详情")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("关闭") { dismiss() }
+                }
+                if canEdit {
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button("编辑") {
+                            showingEdit = true
+                        }
+                    }
+                }
+            }
+            .sheet(isPresented: $showingEdit) {
+                EditSharedWishItemView(
+                    item: currentItem,
+                    listId: listId,
+                    isOwner: canEdit,
+                    sharedStore: sharedStore
+                )
+            }
+            .customBlueConfirmAlert(
+                isPresented: $showDeleteConfirm,
+                message: "确定删除「\(currentItem.name)」吗？",
+                confirmText: "删除",
+                cancelText: "取消",
+                confirmColor: .blue,
+                cancelColor: .green,
+                backgroundColor: .red,
+                width: 260,
+                onConfirm: {
+                    sharedStore.deleteItem(listId: listId, itemId: currentItem.id)
+                    dismiss()
+                }
+            )
+            .fullScreenImageViewer(uiImage: $fullScreenImage)
+            .overlay {
+                if showToast, let msg = toastMessage {
+                    VStack {
+                        Spacer()
+                        Text(msg)
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 12)
+                            .background(Capsule().fill(Color.black.opacity(0.75)))
+                            .padding(.bottom, 40)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                    .animation(.easeInOut(duration: 0.3), value: showToast)
+                }
+            }
+        }
+    }
+    
+    private func shortenURL(_ urlString: String) -> String {
+        guard let url = URL(string: urlString), let host = url.host else {
+            return urlString.count > 30 ? String(urlString.prefix(30)) + "..." : urlString
+        }
+        let path = url.path
+        if path.isEmpty || path == "/" {
+            return host
+        }
+        let shortPath = path.count > 15 ? String(path.prefix(15)) + "..." : path
+        return host + shortPath
+    }
+    
+    private struct DetailRow: View {
+        let icon: String
+        let color: Color
+        let title: String
+        let value: String
+        
+        var body: some View {
+            HStack {
+                HStack(spacing: 6) {
+                    Image(systemName: icon)
+                        .foregroundStyle(color)
+                    Text(title)
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                }
+                Spacer()
+                Text(value)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .padding()
+            .background(RoundedRectangle(cornerRadius: 16).fill(Color(.secondarySystemGroupedBackground)))
+        }
+    }
+}
+
+// MARK: - 共享清单中添加心愿（复用心愿添加的卡通风格设计）
+struct AddSharedWishItemView: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var sharedStore: SharedWishlistStore
+    
+    let listId: UUID
+    @State private var name = ""
+    @State private var priceText = ""
+    @State private var purchaseLink = ""
+    @State private var details = ""
+    @State private var syncToMyWishlist = false
+    
+    // 照片
+    @State private var imageData: Data?
+    @State private var selectedPhoto: PhotosPickerItem?
+    
+    // 展示类型
+    @State private var isCustomDisplayType = false
+    @State private var customDisplayType = ""
+    @State private var selectedDisplayType: ItemType = .other
+    @State private var showingNewTypeInput = false
+    @State private var newTypeInput = ""
+    
+    private var isValid: Bool {
+        !name.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+    
+    private var finalType: String {
+        isCustomDisplayType ? customDisplayType : selectedDisplayType.rawValue
+    }
+    
+    init(listId: UUID, sharedStore: SharedWishlistStore) {
+        self.listId = listId
+        self.sharedStore = sharedStore
+    }
+    
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 18) {
+                    // 📝 基本信息
+                    VStack(alignment: .leading, spacing: 10) {
+                        CartoonSectionHeader(emoji: "📝", title: "心愿详情", color: .green)
+                        CartoonTextField(placeholder: "心愿名字", text: $name)
+                        CartoonTextField(placeholder: "价格", text: $priceText, keyboardType: .decimalPad)
+                        CartoonTextField(placeholder: "购买链接", text: $purchaseLink, keyboardType: .URL)
+                    }
+                    .cartoonCard()
+                    
+                    // 🏷️ 展示类型
+                    VStack(alignment: .leading, spacing: 14) {
+                        CartoonSectionHeader(emoji: "🏷️", title: "展示类型", color: .green)
+                        
+                        // 自定义切换
+                        HStack {
+                            Text("自定义类型")
+                                .font(.system(.subheadline, design: .rounded))
+                                .fontWeight(.semibold)
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            Toggle("", isOn: $isCustomDisplayType)
+                                .labelsHidden()
+                                .tint(.green)
+                        }
+                        .padding(12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(Color(.tertiarySystemGroupedBackground))
+                        )
+                        
+                        if isCustomDisplayType {
+                            // 自定义类型输入 + 新增 tag
+                            FlowLayout(spacing: 8) {
+                                // 新增 tag
+                                Button {
+                                    newTypeInput = ""
+                                    showingNewTypeInput = true
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "plus")
+                                            .font(.caption)
+                                        Text("新增")
+                                            .font(.system(.subheadline, design: .rounded))
+                                            .fontWeight(.medium)
+                                    }
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 8)
+                                    .background(
+                                        Capsule()
+                                            .stroke(Color.green.opacity(0.4), lineWidth: 1)
+                                    )
+                                    .foregroundStyle(.green)
+                                }
+                                .buttonStyle(PlainButtonStyle())
+                            }
+                            
+                            if !customDisplayType.isEmpty {
+                                Text("当前：\(customDisplayType)")
+                                    .font(.system(.caption, design: .rounded))
+                                    .foregroundStyle(.green)
+                            }
+                        } else {
+                            // 标准类型选择
+                            FlowLayout(spacing: 8) {
+                                ForEach(ItemType.allCases, id: \.self) { type in
+                                    Button {
+                                        selectedDisplayType = type
+                                    } label: {
+                                        HStack(spacing: 4) {
+                                            type.iconImage(size: 20)
+                                                .font(.caption)
+                                            Text(type.rawValue)
+                                                .font(.system(.subheadline, design: .rounded))
+                                                .fontWeight(selectedDisplayType == type ? .bold : .medium)
+                                        }
+                                        .padding(.horizontal, 14)
+                                        .padding(.vertical, 8)
+                                        .background(
+                                            Capsule()
+                                                .fill(type.color.opacity(selectedDisplayType == type ? 0.2 : 0.08))
+                                        )
+                                        .foregroundStyle(selectedDisplayType == type ? type.color : type.color.opacity(0.7))
+                                        .overlay(
+                                            Capsule()
+                                                .stroke(selectedDisplayType == type ? type.color.opacity(0.3) : Color.clear, lineWidth: 1)
+                                        )
+                                    }
+                                    .buttonStyle(PlainButtonStyle())
+                                }
+                            }
+                        }
+                    }
+                    .cartoonCard()
+                    
+                    // 📷 照片
+                    VStack(alignment: .leading, spacing: 14) {
+                        CartoonSectionHeader(emoji: "📷", title: "照片", color: .green)
+                        
+                        if let imageData = imageData,
+                           let uiImage = UIImage(data: imageData) {
+                            Image(uiImage: uiImage)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(height: 200)
+                                .frame(maxWidth: .infinity)
+                                .clipped()
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                            
+                            HStack(spacing: 0) {
+                                PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "photo")
+                                            .font(.system(size: 14, weight: .semibold))
+                                        Text("更换")
+                                            .font(.system(.subheadline, design: .rounded))
+                                            .fontWeight(.semibold)
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 10)
+                                }
+                                .buttonStyle(PlainButtonStyle())
+                                .foregroundStyle(.blue)
+                                
+                                Divider()
+                                    .frame(height: 20)
+                                
+                                Button {
+                                    self.imageData = nil
+                                    selectedPhoto = nil
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "trash")
+                                            .font(.system(size: 14, weight: .semibold))
+                                        Text("删除")
+                                            .font(.system(.subheadline, design: .rounded))
+                                            .fontWeight(.semibold)
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 10)
+                                }
+                                .buttonStyle(PlainButtonStyle())
+                                .foregroundStyle(.red)
+                            }
+                        } else {
+                            PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                                VStack(spacing: 8) {
+                                    Image(systemName: "photo.badge.plus")
+                                        .font(.system(size: 28))
+                                        .foregroundStyle(.green.opacity(0.6))
+                                    Text("添加照片")
+                                        .font(.system(.subheadline, design: .rounded))
+                                        .fontWeight(.medium)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 100)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .fill(Color(.tertiarySystemGroupedBackground))
+                                )
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                        }
+                    }
+                    .cartoonCard()
+                    .onChange(of: selectedPhoto) { _, newItem in
+                        Task {
+                            if let data = try? await newItem?.loadTransferable(type: Data.self) {
+                                await MainActor.run { imageData = data }
+                            }
+                        }
+                    }
+                    
+                    // 💬 备注
+                    VStack(alignment: .leading, spacing: 10) {
+                        CartoonSectionHeader(emoji: "💬", title: "Say Something", color: .green)
+                        TextEditor(text: $details)
+                            .font(.system(.body, design: .rounded))
+                            .fontWeight(.semibold)
+                            .frame(minHeight: 60)
+                            .scrollContentBackground(.hidden)
+                            .autocorrectionDisabled()
+                            .overlay(alignment: .topLeading) {
+                                if details.isEmpty {
+                                    Text("说点什么...")
+                                        .font(.system(.body, design: .rounded))
+                                        .foregroundStyle(.tertiary)
+                                        .padding(.top, 8)
+                                        .padding(.leading, 4)
+                                        .allowsHitTesting(false)
+                                }
+                            }
+                    }
+                    .cartoonCard()
+                    
+                    // 同步到我的心愿
+                    VStack(alignment: .leading, spacing: 10) {
+                        Toggle(isOn: $syncToMyWishlist) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("同步到我的心愿")
+                                    .font(.system(.subheadline, design: .rounded))
+                                    .fontWeight(.bold)
+                                Text("同时添加到心愿清单中")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .tint(.green)
+                    }
+                    .cartoonCard()
+                    
+                    Spacer(minLength: 30)
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 20)
+            }
+            .background(Color(.systemGroupedBackground))
+            .navigationTitle("添加心愿")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        save()
+                    } label: {
+                        Text("添加")
+                            .fontWeight(.bold)
+                            .foregroundStyle(.green)
+                    }
+                    .disabled(!isValid)
+                }
+            }
+            .customInputAlert(
+                isPresented: $showingNewTypeInput,
+                title: "新增展示类型",
+                message: "输入新的展示类型名称",
+                placeholder: "类型名称",
+                text: $newTypeInput,
+                onConfirm: {
+                    let trimmed = newTypeInput.trimmingCharacters(in: .whitespaces)
+                    if !trimmed.isEmpty {
+                        customDisplayType = trimmed
+                    }
+                }
+            )
+        }
+    }
+    
+    private func save() {
+        let trimmedName = name.trimmingCharacters(in: .whitespaces)
+        let price = Double(priceText) ?? 0
+        let type = finalType
+        let trimmedLink = purchaseLink.trimmingCharacters(in: .whitespaces)
+        let trimmedDetails = details.trimmingCharacters(in: .whitespaces)
+        
+        let newItem = SharedWishItem(
+            name: trimmedName,
+            price: price,
+            displayType: type.isEmpty ? nil : type,
+            imageData: imageData,
+            purchaseLink: trimmedLink.isEmpty ? nil : trimmedLink,
+            details: trimmedDetails.isEmpty ? nil : trimmedDetails,
+            addedBy: sharedStore.lists.first(where: { $0.id == listId })?.myNickname ?? "我"
+        )
+        
+        sharedStore.addItem(listId: listId, item: newItem)
+        
+        // 同步到我的心愿清单
+        if syncToMyWishlist {
+            let wishItem = Item(
+                name: trimmedName,
+                details: trimmedDetails,
+                purchaseLink: trimmedLink,
+                price: price,
+                type: type.isEmpty ? "其他" : type,
+                listType: .wishlist,
+                displayType: type.isEmpty ? nil : type
+            )
+            NotificationCenter.default.post(
+                name: Notification.Name("AddItemFromSharedWish"),
+                object: wishItem
+            )
+        }
+        
         dismiss()
     }
 }

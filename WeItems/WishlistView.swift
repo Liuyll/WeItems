@@ -63,6 +63,7 @@ struct WishlistView: View {
     @State private var showingItemDetail: Item? = nil
     @State private var showingAddGroup = false
     @State private var showingLogin = false
+    @State private var navigatingSharedList: SharedWishlist? = nil
     @Binding var selectedGroupId: UUID?
     @State private var lastScrollOffset: CGFloat = 0
     
@@ -177,7 +178,12 @@ struct WishlistView: View {
                         itemCount: itemCount,
                         sharedListName: selectedGroupId != nil
                             ? sharedWishlistStore.lists.first(where: { $0.linkedGroupId == selectedGroupId && $0.isOwner })?.name
-                            : nil
+                            : nil,
+                        onSharedTap: {
+                            if let list = sharedWishlistStore.lists.first(where: { $0.linkedGroupId == selectedGroupId && $0.isOwner }) {
+                                navigatingSharedList = list
+                            }
+                        }
                     )
                         .padding(.horizontal)
                     
@@ -231,6 +237,11 @@ struct WishlistView: View {
         }
         .sheet(isPresented: $showingLogin) {
             AuthViewWrapper()
+        }
+        .sheet(item: $navigatingSharedList) { list in
+            NavigationStack {
+                SharedWishlistDetailView(list: list, sharedStore: sharedWishlistStore)
+            }
         }
     }
 }
@@ -333,6 +344,7 @@ struct WishlistTotalCard: View {
     let totalPrice: Double
     let itemCount: Int
     var sharedListName: String? = nil
+    var onSharedTap: (() -> Void)? = nil
     
     var body: some View {
         VStack(spacing: 8) {
@@ -360,18 +372,25 @@ struct WishlistTotalCard: View {
             }
             
             if let name = sharedListName {
-                HStack(spacing: 4) {
-                    Image(systemName: "person.2.fill")
-                        .font(.caption2)
-                    Text("\(name) 共享 ing")
-                        .font(.system(.caption, design: .rounded))
-                        .fontWeight(.semibold)
+                Button {
+                    onSharedTap?()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "person.2.fill")
+                            .font(.caption2)
+                        Text("\(name) 共享 ing")
+                            .font(.system(.caption, design: .rounded))
+                            .fontWeight(.semibold)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 9, weight: .bold))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(.pink))
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .foregroundStyle(.white)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(Capsule().fill(.pink))
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .buttonStyle(.plain)
             }
         }
         .padding()
@@ -975,7 +994,7 @@ struct AddWishlistItemView: View {
             purchaseLink: purchaseLink,
             imageData: selectedImageData,
             compressedImageData: compressedImageData,
-            imageChanged: selectedImageData != nil,  // 新建心愿：有图片即需上传
+            imageChanged: selectedImageData != nil,
             price: priceValue,
             type: finalType,
             listType: .wishlist,
@@ -1077,62 +1096,65 @@ struct EditWishlistItemView: View {
                     }
                     .cartoonCard()
                     
+                    // 📂 所属分组
+                    VStack(alignment: .leading, spacing: 10) {
+                        CartoonSectionHeader(emoji: "📂", title: "所属分组", color: .blue)
+                        
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                Button {
+                                    selectedGroupId = nil
+                                } label: {
+                                    Text("无分组")
+                                        .font(.system(.subheadline, design: .rounded))
+                                        .fontWeight(selectedGroupId == nil ? .bold : .medium)
+                                        .padding(.horizontal, 14)
+                                        .padding(.vertical, 8)
+                                        .background(
+                                            Capsule()
+                                                .fill(selectedGroupId == nil ? Color.pink.opacity(0.18) : Color(.tertiarySystemGroupedBackground))
+                                        )
+                                        .foregroundStyle(selectedGroupId == nil ? .pink : .primary)
+                                        .overlay(
+                                            Capsule()
+                                                .stroke(selectedGroupId == nil ? Color.pink.opacity(0.3) : Color.clear, lineWidth: 1)
+                                        )
+                                }
+                                .buttonStyle(PlainButtonStyle())
+                                
+                                ForEach(wishlistGroupStore.groups) { group in
+                                    Button {
+                                        selectedGroupId = group.id
+                                    } label: {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: group.icon)
+                                                .font(.caption)
+                                            Text(group.name)
+                                                .font(.system(.subheadline, design: .rounded))
+                                                .fontWeight(selectedGroupId == group.id ? .bold : .medium)
+                                        }
+                                        .padding(.horizontal, 14)
+                                        .padding(.vertical, 8)
+                                        .background(
+                                            Capsule()
+                                                .fill(selectedGroupId == group.id ? group.color.swiftUIColor.opacity(0.18) : Color(.tertiarySystemGroupedBackground))
+                                        )
+                                        .foregroundStyle(selectedGroupId == group.id ? group.color.swiftUIColor : .primary)
+                                        .overlay(
+                                            Capsule()
+                                                .stroke(selectedGroupId == group.id ? group.color.swiftUIColor.opacity(0.3) : Color.clear, lineWidth: 1)
+                                        )
+                                    }
+                                    .buttonStyle(PlainButtonStyle())
+                                }
+                            }
+                        }
+                    }
+                    .cartoonCard()
+                    
                     // 🏷️ 展示类型卡片
                     VStack(alignment: .leading, spacing: 14) {
                         CartoonSectionHeader(emoji: "🏷️", title: "展示类型", color: .blue)
-                        
-                        // 分组选择
-                        if !wishlistGroupStore.groups.isEmpty {
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                    HStack(spacing: 8) {
-                                        Button {
-                                            selectedGroupId = nil
-                                        } label: {
-                                            Text("无分组")
-                                                .font(.system(.subheadline, design: .rounded))
-                                                .fontWeight(selectedGroupId == nil ? .bold : .medium)
-                                                .padding(.horizontal, 14)
-                                                .padding(.vertical, 8)
-                                                .background(
-                                                    Capsule()
-                                                        .fill(selectedGroupId == nil ? Color.pink.opacity(0.18) : Color(.tertiarySystemGroupedBackground))
-                                                )
-                                                .foregroundStyle(selectedGroupId == nil ? .pink : .primary)
-                                                .overlay(
-                                                    Capsule()
-                                                        .stroke(selectedGroupId == nil ? Color.pink.opacity(0.3) : Color.clear, lineWidth: 1)
-                                                )
-                                        }
-                                        .buttonStyle(PlainButtonStyle())
-                                        
-                                        ForEach(wishlistGroupStore.groups) { group in
-                                            Button {
-                                                selectedGroupId = group.id
-                                            } label: {
-                                                HStack(spacing: 4) {
-                                                    Image(systemName: group.icon)
-                                                        .font(.caption)
-                                                    Text(group.name)
-                                                        .font(.system(.subheadline, design: .rounded))
-                                                        .fontWeight(selectedGroupId == group.id ? .bold : .medium)
-                                                }
-                                                .padding(.horizontal, 14)
-                                                .padding(.vertical, 8)
-                                                .background(
-                                                    Capsule()
-                                                        .fill(selectedGroupId == group.id ? group.color.swiftUIColor.opacity(0.18) : Color(.tertiarySystemGroupedBackground))
-                                                )
-                                                .foregroundStyle(selectedGroupId == group.id ? group.color.swiftUIColor : .primary)
-                                                .overlay(
-                                                    Capsule()
-                                                        .stroke(selectedGroupId == group.id ? group.color.swiftUIColor.opacity(0.3) : Color.clear, lineWidth: 1)
-                                                )
-                                            }
-                                            .buttonStyle(PlainButtonStyle())
-                                        }
-                                    }
-                                }
-                        }
                         
                         HStack {
                             Text("自定义类型")
@@ -1472,6 +1494,7 @@ struct EditWishlistItemView: View {
     }
     
     private func saveItem() {
+        let oldGroupId = originalItem.wishlistGroupId
         var updatedItem = originalItem
         updatedItem.name = name
         updatedItem.price = price
@@ -1486,8 +1509,8 @@ struct EditWishlistItemView: View {
         updatedItem.wishlistGroupId = selectedGroupId
         store.update(updatedItem)
         
-        // 同步到关联的共享清单
-        sharedWishlistStore?.syncWishUpdated(updatedItem)
+        // 同步到关联的共享清单（传递旧分组ID以处理分组变更）
+        sharedWishlistStore?.syncWishUpdated(updatedItem, oldGroupId: oldGroupId)
         
         // 如果是自定义类型，添加到历史记录
         if isCustomDisplayType && !customDisplayType.isEmpty {

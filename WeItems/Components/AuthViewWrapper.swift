@@ -11,14 +11,7 @@ struct AuthViewWrapper: View {
     @EnvironmentObject var authManager: AuthManager
     
     var body: some View {
-        AuthView(onLoginSuccess: { response in
-            authManager.loginSuccess(
-                accessToken: response.accessToken,
-                refreshToken: response.refreshToken,
-                expiresIn: response.expiresIn,
-                tokenType: response.tokenType,
-                sub: response.sub
-            )
+        AuthView(onLoginSuccess: { _ in
             dismiss()
         })
     }

@@ -70,6 +70,20 @@ class ICloudSyncManager {
         var salaryRecord: FinanceRecord?
         var savingsGoal: SavingsGoal
         var totalAssets: Double
+        var groups: [ItemGroup]?
+        var wishlistGroups: [ItemGroup]?
+        var userSettings: UserSettings?
+    }
+    
+    /// iCloud 储蓄同步结果（双向）
+    struct ICloudSavingSyncResult {
+        let success: Bool
+        let records: [FinanceRecord]?
+        let salaryRecord: FinanceRecord?
+        let goal: SavingsGoal?
+        let groups: [ItemGroup]?
+        let wishlistGroups: [ItemGroup]?
+        let userSettings: UserSettings?
     }
     
     // MARK: - 同步结果
@@ -385,21 +399,27 @@ class ICloudSyncManager {
         records: [FinanceRecord],
         salaryRecord: FinanceRecord?,
         goal: SavingsGoal,
-        totalAssets: Double
-    ) async -> Bool {
+        totalAssets: Double,
+        groups: [ItemGroup] = [],
+        wishlistGroups: [ItemGroup] = [],
+        userSettings: UserSettings? = nil
+    ) async -> ICloudSavingSyncResult {
         guard let docsURL = iCloudDocumentsURL else {
             print("[iCloud 储蓄同步] iCloud 不可用")
-            return false
+            return ICloudSavingSyncResult(success: false, records: nil, salaryRecord: nil, goal: nil, groups: nil, wishlistGroups: nil, userSettings: nil)
         }
+        
+        let fileURL = docsURL.appendingPathComponent(savingInfoFileName)
         
         let savingInfo = ICloudSavingInfo(
             records: records,
             salaryRecord: salaryRecord,
             savingsGoal: goal,
-            totalAssets: totalAssets
+            totalAssets: totalAssets,
+            groups: groups.isEmpty ? nil : groups,
+            wishlistGroups: wishlistGroups.isEmpty ? nil : wishlistGroups,
+            userSettings: userSettings
         )
-        
-        let fileURL = docsURL.appendingPathComponent(savingInfoFileName)
         
         do {
             let encoder = JSONEncoder()
@@ -408,10 +428,19 @@ class ICloudSyncManager {
             let data = try encoder.encode(savingInfo)
             try data.write(to: fileURL, options: .atomic)
             print("[iCloud 储蓄同步] 写入成功")
-            return true
+            
+            return ICloudSavingSyncResult(
+                success: true,
+                records: savingInfo.records,
+                salaryRecord: savingInfo.salaryRecord,
+                goal: savingInfo.savingsGoal,
+                groups: groups.isEmpty ? nil : groups,
+                wishlistGroups: wishlistGroups.isEmpty ? nil : wishlistGroups,
+                userSettings: userSettings
+            )
         } catch {
             print("[iCloud 储蓄同步] 写入失败: \(error)")
-            return false
+            return ICloudSavingSyncResult(success: false, records: nil, salaryRecord: nil, goal: nil, groups: nil, wishlistGroups: nil, userSettings: nil)
         }
     }
     
@@ -519,6 +548,10 @@ class ICloudSyncManager {
         let totalAssets: Double
         let savingsGoalName: String
         let savingsGoalAmount: Double
+        let savingsAmount: Int          // 储蓄记录数
+        let groupsCount: Int            // 物品分组数
+        let wishlistGroupsCount: Int    // 心愿分组数
+        let userSettings: UserSettings? // 个人设置
         let imageCount: Int
         let imagesTotalSize: Int64  // bytes
     }
@@ -542,6 +575,10 @@ class ICloudSyncManager {
         var totalAssets: Double = 0
         var goalName = ""
         var goalAmount: Double = 0
+        var savingsCount = 0
+        var groupsCount = 0
+        var wishlistGroupsCount = 0
+        var userSettings: UserSettings? = nil
         
         if FileManager.default.fileExists(atPath: savingFileURL.path),
            let data = try? Data(contentsOf: savingFileURL) {
@@ -549,10 +586,14 @@ class ICloudSyncManager {
             decoder.dateDecodingStrategy = .iso8601
             if let info = try? decoder.decode(ICloudSavingInfo.self, from: data) {
                 savingRecordsCount = info.records.count
+                savingsCount = info.records.filter { $0.type == .income && $0.incomePeriod == .savings }.count
                 hasSalary = info.salaryRecord != nil
                 totalAssets = info.totalAssets
                 goalName = info.savingsGoal.name
                 goalAmount = info.savingsGoal.targetAmount
+                groupsCount = info.groups?.count ?? 0
+                wishlistGroupsCount = info.wishlistGroups?.count ?? 0
+                userSettings = info.userSettings
             }
         }
         
@@ -579,6 +620,10 @@ class ICloudSyncManager {
             totalAssets: totalAssets,
             savingsGoalName: goalName,
             savingsGoalAmount: goalAmount,
+            savingsAmount: savingsCount,
+            groupsCount: groupsCount,
+            wishlistGroupsCount: wishlistGroupsCount,
+            userSettings: userSettings,
             imageCount: imageCount,
             imagesTotalSize: imagesTotalSize
         )

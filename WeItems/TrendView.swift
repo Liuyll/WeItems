@@ -308,14 +308,13 @@ struct TrendView: View {
             if cache.isLoaded {
                 isReady = true
             } else {
-                // 缓存未就绪或已失效，触发后台预计算
                 cache.preload(store: store)
-                if !isReady {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                        withAnimation(.easeIn(duration: 0.2)) {
-                            isReady = true
-                        }
-                    }
+            }
+        }
+        .onChange(of: cache.isLoaded) { _, loaded in
+            if loaded && !isReady {
+                withAnimation(.easeIn(duration: 0.2)) {
+                    isReady = true
                 }
             }
         }
@@ -763,19 +762,38 @@ struct SoldDataPoint: Identifiable {
 class TrendDataCache: ObservableObject {
     static let shared = TrendDataCache()
     
-    @Published var monthlyData: [TrendDataPoint] = []
-    @Published var yearlyData: [TrendDataPoint] = []
-    @Published var monthlySoldData: [SoldDataPoint] = []
-    @Published var yearlySoldData: [SoldDataPoint] = []
-    @Published var typeStats: [(type: String, count: Int, total: Double, percentage: Double)] = []
-    @Published var totalItems: Int = 0
-    @Published var totalValue: Double = 0
-    @Published var dailyCost: Double = 0
-    @Published var recentCount: Int = 0
-    @Published var totalSoldAmount: Double = 0
-    @Published var totalSoldOriginal: Double = 0
-    @Published var totalSoldProfit: Double = 0
-    @Published var isLoaded = false
+    /// 缓存数据快照（一次性赋值，只触发一次 objectWillChange）
+    struct CacheData {
+        var monthlyData: [TrendDataPoint] = []
+        var yearlyData: [TrendDataPoint] = []
+        var monthlySoldData: [SoldDataPoint] = []
+        var yearlySoldData: [SoldDataPoint] = []
+        var typeStats: [(type: String, count: Int, total: Double, percentage: Double)] = []
+        var totalItems: Int = 0
+        var totalValue: Double = 0
+        var dailyCost: Double = 0
+        var recentCount: Int = 0
+        var totalSoldAmount: Double = 0
+        var totalSoldOriginal: Double = 0
+        var totalSoldProfit: Double = 0
+    }
+    
+    @Published private(set) var data = CacheData()
+    @Published private(set) var isLoaded = false
+    
+    // 便捷访问
+    var monthlyData: [TrendDataPoint] { data.monthlyData }
+    var yearlyData: [TrendDataPoint] { data.yearlyData }
+    var monthlySoldData: [SoldDataPoint] { data.monthlySoldData }
+    var yearlySoldData: [SoldDataPoint] { data.yearlySoldData }
+    var typeStats: [(type: String, count: Int, total: Double, percentage: Double)] { data.typeStats }
+    var totalItems: Int { data.totalItems }
+    var totalValue: Double { data.totalValue }
+    var dailyCost: Double { data.dailyCost }
+    var recentCount: Int { data.recentCount }
+    var totalSoldAmount: Double { data.totalSoldAmount }
+    var totalSoldOriginal: Double { data.totalSoldOriginal }
+    var totalSoldProfit: Double { data.totalSoldProfit }
     
     private init() {}
     
@@ -949,18 +967,20 @@ class TrendDataCache: ObservableObject {
             let capturedDaily = daily
             
             await MainActor.run {
-                self.monthlyData = capturedMonthly
-                self.yearlyData = capturedYearly
-                self.monthlySoldData = capturedMonthlySold
-                self.yearlySoldData = capturedYearlySold
-                self.typeStats = types
-                self.totalItems = total
-                self.totalValue = value
-                self.dailyCost = capturedDaily
-                self.recentCount = recent
-                self.totalSoldAmount = soldAmount
-                self.totalSoldOriginal = soldOriginal
-                self.totalSoldProfit = soldProfit
+                self.data = CacheData(
+                    monthlyData: capturedMonthly,
+                    yearlyData: capturedYearly,
+                    monthlySoldData: capturedMonthlySold,
+                    yearlySoldData: capturedYearlySold,
+                    typeStats: types,
+                    totalItems: total,
+                    totalValue: value,
+                    dailyCost: capturedDaily,
+                    recentCount: recent,
+                    totalSoldAmount: soldAmount,
+                    totalSoldOriginal: soldOriginal,
+                    totalSoldProfit: soldProfit
+                )
                 self.isLoaded = true
             }
         }

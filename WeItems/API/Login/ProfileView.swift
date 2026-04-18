@@ -19,6 +19,8 @@ struct ProfileView: View {
     @EnvironmentObject var itemStore: ItemStore
     @EnvironmentObject var sharedWishlistStore: SharedWishlistStore
     @EnvironmentObject var financeStore: FinanceStore
+    @EnvironmentObject var groupStore: GroupStore
+    @EnvironmentObject var wishlistGroupStore: WishlistGroupStore
     
     var onBack: (() -> Void)? = nil
     
@@ -27,6 +29,8 @@ struct ProfileView: View {
     @State private var isICloudSyncing = false
     @State private var toastMessage: String?
     @State private var showToast = false
+    @AppStorage("remoteNeedsSync") private var remoteNeedsSync = false
+    @AppStorage("iCloudNeedsSync") private var iCloudNeedsSync = false
     @AppStorage("assetFaceIDLock") private var assetFaceIDLock = false
     @AppStorage("itemSortMode") private var itemSortMode: ItemSortMode = .addedDate
     
@@ -174,6 +178,11 @@ struct ProfileView: View {
                                         Image(systemName: isSyncing ? "arrow.triangle.2.circlepath.circle.fill" : "arrow.triangle.2.circlepath")
                                             .foregroundStyle(.green)
                                     }
+                                    if remoteNeedsSync {
+                                        Circle()
+                                            .fill(.red)
+                                            .frame(width: 8, height: 8)
+                                    }
                                     Spacer()
                                     if isSyncing {
                                         ProgressView()
@@ -199,6 +208,11 @@ struct ProfileView: View {
                                     } icon: {
                                         Image(systemName: isICloudSyncing ? "icloud.and.arrow.up.fill" : "icloud.fill")
                                             .foregroundStyle(.cyan)
+                                    }
+                                    if iCloudNeedsSync {
+                                        Circle()
+                                            .fill(.red)
+                                            .frame(width: 8, height: 8)
                                     }
                                     Spacer()
                                     if isICloudSyncing {
@@ -362,60 +376,24 @@ struct ProfileView: View {
                         }
                     }
                     
-                    // 账号管理
-                    Section("账号管理") {
-                        Button {
-                            showingLogoutConfirm = true
-                        } label: {
-                            Label {
-                                Text("退出登录")
-                                    .font(.system(.body, design: .rounded))
-                                    .fontWeight(.semibold)
-                            } icon: {
-                                Image(systemName: "rectangle.portrait.and.arrow.right")
-                            }
-                            .foregroundStyle(.red)
-                        }
-                        .buttonStyle(.plain)
-                        .listRowSeparator(.hidden)
-                    }
-                    
                     // 关于
                     Section("关于") {
+                        // iCloud 自动同步
                         NavigationLink {
                             PrivacySettingsView()
                         } label: {
                             Label {
-                                Text("权限设置")
+                                Text("功能设置")
                                     .font(.system(.body, design: .rounded))
                                     .fontWeight(.semibold)
                                     .foregroundStyle(.primary)
                             } icon: {
-                                Image(systemName: "lock.shield.fill")
+                                Image(systemName: "gearshape.fill")
                                     .foregroundStyle(.blue)
                             }
                             .foregroundStyle(.primary)
                         }
                         .listRowSeparator(.hidden)
-                        
-                        if authManager.isAuthenticated {
-                            NavigationLink {
-                                AccountManagementView()
-                                    .environmentObject(authManager)
-                            } label: {
-                                Label {
-                                    Text("我的账号")
-                                        .font(.system(.body, design: .rounded))
-                                        .fontWeight(.semibold)
-                                        .foregroundStyle(.primary)
-                                } icon: {
-                                    Image(systemName: "person.text.rectangle")
-                                        .foregroundStyle(.purple)
-                                }
-                                .foregroundStyle(.primary)
-                            }
-                            .listRowSeparator(.hidden)
-                        }
                         
                         HStack {
                             Label {
@@ -454,6 +432,43 @@ struct ProfileView: View {
                         .listRowSeparator(.hidden)
                     }
                     #endif
+                    
+                    // 账号管理（始终在最底部）
+                    if authManager.isAuthenticated {
+                        Section("账号管理") {
+                            NavigationLink {
+                                AccountManagementView()
+                                    .environmentObject(authManager)
+                            } label: {
+                                Label {
+                                    Text("我的账号")
+                                        .font(.system(.body, design: .rounded))
+                                        .fontWeight(.semibold)
+                                        .foregroundStyle(.primary)
+                                } icon: {
+                                    Image(systemName: "person.text.rectangle")
+                                        .foregroundStyle(.purple)
+                                }
+                                .foregroundStyle(.primary)
+                            }
+                            .listRowSeparator(.hidden)
+                            
+                            Button {
+                                showingLogoutConfirm = true
+                            } label: {
+                                Label {
+                                    Text("退出登录")
+                                        .font(.system(.body, design: .rounded))
+                                        .fontWeight(.semibold)
+                                } icon: {
+                                    Image(systemName: "rectangle.portrait.and.arrow.right")
+                                }
+                                .foregroundStyle(.red)
+                            }
+                            .buttonStyle(.plain)
+                            .listRowSeparator(.hidden)
+                        }
+                    }
                 }
                 .listStyle(.insetGrouped)
                 
@@ -521,14 +536,16 @@ struct ProfileView: View {
         }
         .animation(.easeInOut(duration: 0.5), value: showingLogin)
     }
-    private func showToastMessage(_ message: String) {
+    private func showToastMessage(_ message: String, autoDismiss: Bool = true) {
         toastMessage = message
         withAnimation {
             showToast = true
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-            withAnimation {
-                showToast = false
+        if autoDismiss {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                withAnimation {
+                    showToast = false
+                }
             }
         }
     }
@@ -541,8 +558,15 @@ struct ProfileView: View {
         }
         
         isSyncing = true
+        showToastMessage("远端同步 ing", autoDismiss: false)
         
         Task {
+            await performSyncTask()
+        }
+    }
+    
+    /// 同步核心逻辑（可被 performSync 和登录后自动同步调用）
+    private func performSyncTask() async {
             // 同步前先确保 token 有效，过期则自动刷新
             let tokenValid = await authManager.ensureValidToken()
             
@@ -568,7 +592,7 @@ struct ProfileView: View {
             async let wishesResult = client.syncWishes(items: itemStore.items, deletedItemRecords: deletedRecords)
             async let userInfoResult = client.fetchUserInfo()
             
-            // 储蓄投资同步：上传到 savinginfo 模型
+            // 储蓄投资+分组同步：上传到 savinginfo 模型
             let nonSalaryRecords = financeStore.records.filter { $0.incomePeriod != .salary }
             let salaryRec = financeStore.salaryRecord
             let largeItemsPrice = itemStore.items.filter { $0.listType == .items && !$0.isArchived && $0.isLargeItem && !$0.isPriceless }.reduce(0) { $0 + $1.price }
@@ -578,12 +602,31 @@ struct ProfileView: View {
                 records: nonSalaryRecords,
                 salaryRecord: salaryRec,
                 goal: financeStore.savingsGoal,
-                totalAssets: financeStore.calculatedTotalAssets(itemsTotalPrice: allItemsPrice)
+                totalAssets: financeStore.calculatedTotalAssets(itemsTotalPrice: allItemsPrice),
+                groups: groupStore.groups,
+                wishlistGroups: wishlistGroupStore.groups,
+                userSettings: UserSettings.fromLocal()
             )
             
             let (itemsSyncResult, wishesSyncResult, userInfoResponse) = await (itemsResult, wishesResult, userInfoResult)
-            let savingSuccess = await savingResult
+            let savingSyncResult = await savingResult
+            let savingSuccess = savingSyncResult != nil
             print("[手动同步] 储蓄投资同步: \(savingSuccess ? "成功" : "失败")")
+            
+            // 回写远端储蓄数据到本地
+            if let result = savingSyncResult {
+                await MainActor.run {
+                    financeStore.suppressUnsyncFlag = true
+                    financeStore.applyRemoteData(records: result.records, salaryRecord: result.salaryRecord, goal: result.goal)
+                    if let remoteGroups = result.groups {
+                        groupStore.applyRemoteGroups(remoteGroups)
+                    }
+                    if let remoteWG = result.wishlistGroups {
+                        wishlistGroupStore.applyRemoteGroups(remoteWG)
+                    }
+                    result.userSettings?.applyToLocal()
+                }
+            }
             
             // 从 userinfo 读取 VIP 信息
             if let records = userInfoResponse?.data?.records, let record = records.first {
@@ -627,14 +670,17 @@ struct ProfileView: View {
                             remoteImageData = Data(base64Encoded: base64Str)
                         }
                         return SharedWishItem(
+                            sourceItemId: remote.sourceItemId.flatMap { UUID(uuidString: $0) },
                             name: remote.name ?? "未知心愿",
                             price: remote.price ?? 0,
                             isCompleted: remote.isCompleted ?? false,
                             displayType: remote.displayType,
+                            imageUrl: remote.imageUrl,
                             imageData: remoteImageData,
                             purchaseLink: remote.purchaseLink,
                             details: remote.details,
-                            completedBy: remote.completedBy
+                            completedBy: remote.completedBy,
+                            addedBy: remote.addedBy
                         )
                     }
                     
@@ -648,6 +694,25 @@ struct ProfileView: View {
                             return name
                         }
                         return nil
+                    }()
+                    
+                    // 判断当前用户是否是该清单的 owner
+                    // owner 是创建清单时第一个加入 number_list 的人，或者 owner_name 与自己的昵称匹配
+                    let isOwner: Bool = {
+                        if !currentUserId.isEmpty {
+                            // 如果 number_list 第一个条目的 number_id 是自己，则是 owner
+                            if let firstMember = numberList.first,
+                               firstMember.number_id == currentUserId {
+                                return true
+                            }
+                            // 或者 owner_name 与自己在清单中的昵称一致
+                            if let on = ownerName, !on.isEmpty,
+                               let mn = myRemoteNickname, !mn.isEmpty,
+                               on == mn {
+                                return true
+                            }
+                        }
+                        return false
                     }()
                     
                     await MainActor.run {
@@ -666,14 +731,14 @@ struct ProfileView: View {
                                 sharedWishlistStore.setMyNickname(sharedWishlistStore.lists[existingIndex].id, nickname: nickname)
                             }
                         } else {
-                            // 本地没有该清单，作为新的共享清单添加（非 owner）
+                            // 本地没有该清单，从远端创建
                             let newList = SharedWishlist(
                                 name: listName,
                                 emoji: listEmoji,
                                 items: sharedItems,
                                 isSynced: true,
                                 wishGroupId: wishGroupId,
-                                isOwner: false,
+                                isOwner: isOwner,
                                 ownerName: ownerName,
                                 myNickname: myRemoteNickname
                             )
@@ -722,6 +787,8 @@ struct ProfileView: View {
             
             await MainActor.run {
                 isSyncing = false
+                itemStore.suppressUnsyncFlag = true
+                financeStore.suppressUnsyncFlag = true
                 
                 var allSuccess = true
                 var message = ""
@@ -782,6 +849,8 @@ struct ProfileView: View {
                     itemStore.markSyncCompleted()
                     itemStore.markAllItemsSynced()
                     itemStore.rebuildCustomDisplayTypesFromWishes()
+                    financeStore.hasUnsyncedChanges = false
+                    remoteNeedsSync = false
                     // 清理已同步的删除记录
                     var syncedDeleteIds = itemsSyncResult?.deletedRemoteItemIds ?? []
                     syncedDeleteIds.append(contentsOf: wishesSyncResult?.deletedRemoteItemIds ?? [])
@@ -793,6 +862,8 @@ struct ProfileView: View {
                     itemStore.markSyncCompleted()
                     itemStore.markAllItemsSynced()
                     itemStore.rebuildCustomDisplayTypesFromWishes()
+                    financeStore.hasUnsyncedChanges = false
+                    remoteNeedsSync = false
                     var syncedDeleteIds = itemsSyncResult?.deletedRemoteItemIds ?? []
                     syncedDeleteIds.append(contentsOf: wishesSyncResult?.deletedRemoteItemIds ?? [])
                     if !syncedDeleteIds.isEmpty {
@@ -802,6 +873,21 @@ struct ProfileView: View {
                 } else {
                     message = "同步失败，请检查网络连接"
                 }
+                
+                // 物品已同步完成，恢复共享清单的 linkedGroupId
+                for i in sharedWishlistStore.lists.indices {
+                    guard sharedWishlistStore.lists[i].isOwner,
+                          sharedWishlistStore.lists[i].linkedGroupId == nil else { continue }
+                    for si in sharedWishlistStore.lists[i].items {
+                        if let sid = si.sourceItemId,
+                           let localItem = itemStore.items.first(where: { $0.id == sid }),
+                           let gid = localItem.wishlistGroupId {
+                            sharedWishlistStore.lists[i].linkedGroupId = gid
+                            break
+                        }
+                    }
+                }
+                sharedWishlistStore.forceSave()
                 
                 // 记录同步历史
                 let record = SyncRecord(
@@ -822,10 +908,12 @@ struct ProfileView: View {
                 )
                 SyncHistoryStore.shared.addRecord(record)
                 
+                itemStore.suppressUnsyncFlag = false
+                financeStore.suppressUnsyncFlag = false
                 showToastMessage(message)
             }
         }
-    }
+    
     /// 执行 iCloud 同步（物品、心愿、储蓄投资）
     /// 逻辑与远端同步一致，但读写 iCloud 存储，图片直接存 iCloud 无需上传 COS
     private func performICloudSync() {
@@ -874,15 +962,38 @@ struct ProfileView: View {
                 records: nonSalaryRecords,
                 salaryRecord: salaryRec,
                 goal: savingsGoal,
-                totalAssets: calcTotalAssets
+                totalAssets: calcTotalAssets,
+                groups: groupStore.groups,
+                wishlistGroups: wishlistGroupStore.groups,
+                userSettings: UserSettings.fromLocal()
             )
             
             let (icloudItemsResult, icloudWishesResult) = await (itemsResult, wishesResult)
-            let icloudSavingSuccess = await savingResult
+            let icloudSavingSyncResult = await savingResult
+            let icloudSavingSuccess = icloudSavingSyncResult.success
             print("[iCloud 同步] 储蓄投资: \(icloudSavingSuccess ? "成功" : "失败")")
+            
+            // 回写 iCloud 储蓄数据到本地
+            if icloudSavingSuccess {
+                await MainActor.run {
+                    financeStore.suppressUnsyncFlag = true
+                    if let records = icloudSavingSyncResult.records {
+                        financeStore.applyRemoteData(records: records, salaryRecord: icloudSavingSyncResult.salaryRecord, goal: icloudSavingSyncResult.goal)
+                    }
+                    if let remoteGroups = icloudSavingSyncResult.groups {
+                        groupStore.applyRemoteGroups(remoteGroups)
+                    }
+                    if let remoteWG = icloudSavingSyncResult.wishlistGroups {
+                        wishlistGroupStore.applyRemoteGroups(remoteWG)
+                    }
+                    icloudSavingSyncResult.userSettings?.applyToLocal()
+                }
+            }
             
             await MainActor.run {
                 isICloudSyncing = false
+                itemStore.suppressUnsyncFlag = true
+                financeStore.suppressUnsyncFlag = true
                 
                 var allSuccess = true
                 var message = ""
@@ -927,11 +1038,17 @@ struct ProfileView: View {
                     itemStore.markSyncCompleted()
                     itemStore.markAllItemsSynced()
                     itemStore.rebuildCustomDisplayTypesFromWishes()
+                    financeStore.hasUnsyncedChanges = false
+                    iCloudNeedsSync = false
+                    UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "iCloudLastSyncTime")
                     message = "iCloud 同步成功"
                 } else if icloudItemsResult != nil || icloudWishesResult != nil {
                     itemStore.markSyncCompleted()
                     itemStore.markAllItemsSynced()
                     itemStore.rebuildCustomDisplayTypesFromWishes()
+                    financeStore.hasUnsyncedChanges = false
+                    iCloudNeedsSync = false
+                    UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "iCloudLastSyncTime")
                     message = "iCloud 部分同步成功"
                 } else {
                     message = "iCloud 同步失败"
@@ -956,6 +1073,8 @@ struct ProfileView: View {
                 )
                 SyncHistoryStore.shared.addRecord(record)
                 
+                itemStore.suppressUnsyncFlag = false
+                financeStore.suppressUnsyncFlag = false
                 showToastMessage(message)
             }
         }
@@ -968,14 +1087,7 @@ private struct ProfileAuthView: View {
     var onClose: () -> Void
     
     var body: some View {
-        AuthView(onLoginSuccess: { response in
-            authManager.loginSuccess(
-                accessToken: response.accessToken,
-                refreshToken: response.refreshToken,
-                expiresIn: response.expiresIn,
-                tokenType: response.tokenType,
-                sub: response.sub
-            )
+        AuthView(onLoginSuccess: { _ in
             onClose()
         }, onSkip: {
             onClose()
@@ -989,4 +1101,6 @@ private struct ProfileAuthView: View {
         .environmentObject(ItemStore())
         .environmentObject(SharedWishlistStore())
         .environmentObject(FinanceStore())
+        .environmentObject(GroupStore())
+        .environmentObject(WishlistGroupStore())
 }

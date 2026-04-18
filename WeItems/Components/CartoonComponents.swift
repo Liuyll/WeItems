@@ -74,7 +74,7 @@ struct CartoonTextField: View {
     var leadingIcon: String? = nil
     var iconColor: Color = .pink
     var showDivider: Bool = true
-    var placeholderColor: Color = .cyan.opacity(0.8)
+    var placeholderColor: Color = .primary
     var backgroundColor: Color = Color(.secondarySystemGroupedBackground)
     var cornerRadius: CGFloat = 14
     var horizontalPadding: CGFloat = 16
@@ -103,7 +103,7 @@ struct CartoonTextField: View {
                 .font(.system(.body, design: .rounded))
                 .fontWeight(.semibold)
                 .multilineTextAlignment(.trailing)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.primary)
         }
         .padding(.horizontal, horizontalPadding)
         .padding(.vertical, verticalPadding)

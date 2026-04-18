@@ -20,14 +20,15 @@ struct SharedWishItem: Identifiable, Codable {
     var purchaseLink: String? // 购买链接
     var details: String?      // 备注/详情
     var completedBy: String?  // 谁实现了这个愿望
+    var addedBy: String?       // 谁添加了这个心愿
     
     // imageData 不参与 Codable 编解码
     enum CodingKeys: String, CodingKey {
         case id, sourceItemId, name, price, isCompleted, displayType
-        case imageUrl, purchaseLink, details, completedBy
+        case imageUrl, purchaseLink, details, completedBy, addedBy
     }
     
-    init(id: UUID = UUID(), sourceItemId: UUID? = nil, name: String, price: Double, isCompleted: Bool = false, displayType: String? = nil, imageUrl: String? = nil, imageData: Data? = nil, purchaseLink: String? = nil, details: String? = nil, completedBy: String? = nil) {
+    init(id: UUID = UUID(), sourceItemId: UUID? = nil, name: String, price: Double, isCompleted: Bool = false, displayType: String? = nil, imageUrl: String? = nil, imageData: Data? = nil, purchaseLink: String? = nil, details: String? = nil, completedBy: String? = nil, addedBy: String? = nil) {
         self.id = id
         self.sourceItemId = sourceItemId
         self.name = name
@@ -39,6 +40,7 @@ struct SharedWishItem: Identifiable, Codable {
         self.purchaseLink = purchaseLink
         self.details = details
         self.completedBy = completedBy
+        self.addedBy = addedBy
     }
     
     // 兼容旧数据（旧数据可能有 imageData 字段）
@@ -55,6 +57,7 @@ struct SharedWishItem: Identifiable, Codable {
         purchaseLink = try container.decodeIfPresent(String.self, forKey: .purchaseLink)
         details = try container.decodeIfPresent(String.self, forKey: .details)
         completedBy = try container.decodeIfPresent(String.self, forKey: .completedBy)
+        addedBy = try container.decodeIfPresent(String.self, forKey: .addedBy)
     }
     
     /// 用于分组的类型名称，无类型时归为"其他"
@@ -162,6 +165,7 @@ class SharedWishlistStore: ObservableObject {
     }
     
     func reloadForCurrentUser() {
+        lists = []
         load()
         // 登录时合并了 anonymous 数据，保存到用户目录
         if UserStorageHelper.shared.isLoggedIn && !lists.isEmpty {
@@ -227,6 +231,15 @@ class SharedWishlistStore: ObservableObject {
         }
     }
     
+    /// 更新心愿的 imageUrl（图片上传到 COS 后回写）
+    func updateItemImageUrl(listId: UUID, itemId: UUID, imageUrl: String) {
+        if let li = lists.firstIndex(where: { $0.id == listId }),
+           let ii = lists[li].items.firstIndex(where: { $0.id == itemId }) {
+            lists[li].items[ii].imageUrl = imageUrl
+            save()
+        }
+    }
+    
     func deleteItem(listId: UUID, itemId: UUID) {
         if let li = lists.firstIndex(where: { $0.id == listId }) {
             lists[li].items.removeAll { $0.id == itemId }
@@ -246,8 +259,15 @@ class SharedWishlistStore: ObservableObject {
     
     /// 心愿被添加时，同步到关联的共享清单
     func syncWishAdded(_ item: Item) {
-        guard let groupId = item.wishlistGroupId,
-              let li = lists.firstIndex(where: { $0.linkedGroupId == groupId && $0.isOwner }) else { return }
+        guard let groupId = item.wishlistGroupId else {
+            print("[SharedSync] syncWishAdded 跳过: item.wishlistGroupId 为 nil, item=\(item.name)")
+            return
+        }
+        guard let li = lists.firstIndex(where: { $0.linkedGroupId == groupId && $0.isOwner }) else {
+            print("[SharedSync] syncWishAdded 跳过: 未找到 linkedGroupId==\(groupId) 且 isOwner 的共享清单, item=\(item.name)")
+            print("[SharedSync]   当前共享清单: \(lists.map { "「\($0.name)」linkedGroupId=\($0.linkedGroupId?.uuidString ?? "nil") isOwner=\($0.isOwner)" })")
+            return
+        }
         let sharedItem = SharedWishItem(
             sourceItemId: item.id,
             name: item.name,
@@ -278,8 +298,49 @@ class SharedWishlistStore: ObservableObject {
     }
     
     /// 心愿被修改时，同步更新共享清单中的对应条目
-    func syncWishUpdated(_ item: Item) {
-        guard let groupId = item.wishlistGroupId else {
+    /// - Parameters:
+    ///   - item: 更新后的心愿（含新的 wishlistGroupId）
+    ///   - oldGroupId: 修改前的分组 ID（用于检测分组变更）
+    func syncWishUpdated(_ item: Item, oldGroupId: UUID? = nil) {
+        let newGroupId = item.wishlistGroupId
+        let groupChanged = (oldGroupId != newGroupId)
+        
+        if groupChanged {
+            // 分组发生了变化：从旧分组的共享清单中移除，添加到新分组的共享清单中
+            if let oldGid = oldGroupId,
+               let oldLi = lists.firstIndex(where: { $0.linkedGroupId == oldGid && $0.isOwner }) {
+                if lists[oldLi].items.contains(where: { $0.sourceItemId == item.id }) {
+                    lists[oldLi].items.removeAll { $0.sourceItemId == item.id }
+                    lists[oldLi].updatedAt = Date()
+                    lists[oldLi].isSynced = false
+                    print("[SharedSync] 心愿「\(item.name)」已从共享清单「\(lists[oldLi].name)」中移除（分组变更）")
+                }
+            }
+            if let newGid = newGroupId,
+               let newLi = lists.firstIndex(where: { $0.linkedGroupId == newGid && $0.isOwner }) {
+                // 避免重复添加
+                if !lists[newLi].items.contains(where: { $0.sourceItemId == item.id }) {
+                    let sharedItem = SharedWishItem(
+                        sourceItemId: item.id,
+                        name: item.name,
+                        price: item.price,
+                        displayType: item.effectiveDisplayType,
+                        imageUrl: item.imageUrl,
+                        purchaseLink: item.purchaseLink.isEmpty ? nil : item.purchaseLink,
+                        details: item.details.isEmpty ? nil : item.details
+                    )
+                    lists[newLi].items.append(sharedItem)
+                    lists[newLi].updatedAt = Date()
+                    lists[newLi].isSynced = false
+                    print("[SharedSync] 心愿「\(item.name)」已同步添加到共享清单「\(lists[newLi].name)」（分组变更）")
+                }
+            }
+            save()
+            return
+        }
+        
+        // 分组未变化：正常更新已有条目
+        guard let groupId = newGroupId else {
             print("[SharedSync] syncWishUpdated 跳过: item.wishlistGroupId 为 nil, item=\(item.name)")
             return
         }
@@ -299,7 +360,21 @@ class SharedWishlistStore: ObservableObject {
             save()
             print("[SharedSync] 心愿「\(item.name)」已同步更新到共享清单「\(lists[li].name)」")
         } else {
-            print("[SharedSync] syncWishUpdated 未匹配: item.id=\(item.id), 共享清单「\(lists[li].name)」中 sourceItemId 列表: \(lists[li].items.map { "\($0.name): \($0.sourceItemId?.uuidString ?? "nil")" })")
+            // 共享清单中没有该心愿，自动新增
+            let sharedItem = SharedWishItem(
+                sourceItemId: item.id,
+                name: item.name,
+                price: item.price,
+                displayType: item.effectiveDisplayType,
+                imageUrl: item.imageUrl,
+                purchaseLink: item.purchaseLink.isEmpty ? nil : item.purchaseLink,
+                details: item.details.isEmpty ? nil : item.details
+            )
+            lists[li].items.append(sharedItem)
+            lists[li].updatedAt = Date()
+            lists[li].isSynced = false
+            save()
+            print("[SharedSync] 心愿「\(item.name)」不在共享清单中，已自动新增到「\(lists[li].name)」")
         }
     }
     
@@ -330,7 +405,20 @@ class SharedWishlistStore: ObservableObject {
     ///   - remoteOwnerName: 远端 owner 名称（可选）
     func applyMergedResult(listId: UUID, mergedItems: [SharedWishItem], isSynced: Bool = true, remoteName: String? = nil, remoteEmoji: String? = nil, remoteOwnerName: String? = nil) {
         if let index = lists.firstIndex(where: { $0.id == listId }) {
-            lists[index].items = mergedItems
+            // 保留本地已有的 imageData（远端数据不含 imageData）
+            let localImageDataMap: [UUID: Data] = Dictionary(uniqueKeysWithValues:
+                lists[index].items.compactMap { item -> (UUID, Data)? in
+                    guard let data = item.imageData else { return nil }
+                    return (item.id, data)
+                }
+            )
+            var finalItems = mergedItems
+            for i in finalItems.indices {
+                if finalItems[i].imageData == nil, let localData = localImageDataMap[finalItems[i].id] {
+                    finalItems[i].imageData = localData
+                }
+            }
+            lists[index].items = finalItems
             lists[index].isSynced = isSynced
             lists[index].updatedAt = Date()
             // 对于非 owner 的清单，用远端的名称和图标更新
@@ -350,6 +438,11 @@ class SharedWishlistStore: ObservableObject {
     }
     
     // MARK: - Persistence
+    
+    /// 外部调用：强制保存当前数据到磁盘
+    func forceSave() {
+        save()
+    }
     
     private func save() {
         do {

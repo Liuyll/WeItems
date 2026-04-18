@@ -350,6 +350,7 @@ struct CustomBlueInfoAlert: ViewModifier {
     @Binding var isPresented: Bool
     var message: String = ""
     var buttonText: String = "好的"
+    var buttonColor: Color = .white
     var backgroundColor: Color = .blue
     var onDismiss: (() -> Void)? = nil
     
@@ -386,7 +387,7 @@ struct CustomBlueInfoAlert: ViewModifier {
                         Text(buttonText)
                             .font(.system(.body, design: .rounded))
                             .fontWeight(.heavy)
-                            .foregroundStyle(.white)
+                            .foregroundStyle(buttonColor)
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.plain)
@@ -431,6 +432,7 @@ extension View {
         isPresented: Binding<Bool>,
         message: String,
         buttonText: String = "好的",
+        buttonColor: Color = .white,
         backgroundColor: Color = .blue,
         onDismiss: (() -> Void)? = nil
     ) -> some View {
@@ -438,6 +440,7 @@ extension View {
             isPresented: isPresented,
             message: message,
             buttonText: buttonText,
+            buttonColor: buttonColor,
             backgroundColor: backgroundColor,
             onDismiss: onDismiss
         ))

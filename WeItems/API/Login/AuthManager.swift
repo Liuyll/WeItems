@@ -19,6 +19,8 @@ class AuthManager: ObservableObject {
     
     /// 用户切换通知（登录/登出时发送）
     static let userDidChangeNotification = Notification.Name("AuthManager.userDidChange")
+    /// 用户主动登录成功通知（仅登录页登录成功时发送，用于触发自动同步）
+    static let userDidLoginNotification = Notification.Name("AuthManager.userDidLogin")
     
     @Published var authState: AuthState = .unknown
     @Published var isLoading = false
@@ -101,9 +103,8 @@ class AuthManager: ObservableObject {
             return
         }
         
-        // 5. 都失败了，清除 token 并标记为未认证
+        // 5. 都失败了，标记为未认证（不清除 token，保留本地数据目录）
         print("[AuthManager] Token 刷新和验证均失败，需要重新登录")
-        TokenStorage.shared.clearToken()
         authState = .unauthenticated
     }
     
@@ -165,8 +166,13 @@ class AuthManager: ObservableObject {
         // 通知 Store 重新加载当前用户数据（会合并 anonymous 数据到用户目录）
         NotificationCenter.default.post(name: Self.userDidChangeNotification, object: nil)
         
-        // 合并完成后清空 anonymous 目录，避免退出登录后残留数据
-        UserStorageHelper.shared.clearAnonymousData()
+        // 延迟清空 anonymous 目录，确保 Store 已完成数据加载和合并
+        // 同时通知登录成功，触发自动同步
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            UserStorageHelper.shared.clearAnonymousData()
+            print("[AuthManager] 发送 userDidLoginNotification，触发自动同步")
+            NotificationCenter.default.post(name: Self.userDidLoginNotification, object: nil)
+        }
         
         // 异步获取/创建 userinfo 并同步 VIP 信息
         Task {
@@ -221,9 +227,13 @@ class AuthManager: ObservableObject {
         IAPManager.shared.clearLocalVIPInfo()
         authState = .unauthenticated
         cloudBaseClient = nil
+        
+        // 清空 anonymous 目录，避免退出后还显示旧数据
+        UserStorageHelper.shared.clearAnonymousData()
+        
         print("[AuthManager] 用户已登出")
         
-        // 通知 Store 重新加载 anonymous 数据
+        // 通知 Store 重新加载 anonymous 数据（此时 anonymous 目录已清空，显示空数据）
         NotificationCenter.default.post(name: Self.userDidChangeNotification, object: nil)
     }
     
@@ -259,7 +269,6 @@ class AuthManager: ObservableObject {
         }
         
         print("[AuthManager] Token 刷新失败，需要重新登录")
-        TokenStorage.shared.clearToken()
         authState = .unauthenticated
         return false
     }

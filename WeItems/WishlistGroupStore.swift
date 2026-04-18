@@ -26,6 +26,7 @@ class WishlistGroupStore: ObservableObject {
     
     /// 切换用户后重新加载数据
     func reloadForCurrentUser() {
+        groups = []
         loadGroups()
         // 登录时合并了 anonymous 数据，保存到用户目录
         if UserStorageHelper.shared.isLoggedIn && !groups.isEmpty {
@@ -56,6 +57,22 @@ class WishlistGroupStore: ObservableObject {
     func group(for id: UUID?) -> ItemGroup? {
         guard let id = id else { return nil }
         return groups.first(where: { $0.id == id })
+    }
+    
+    /// 合并远端分组到本地（远端独有的添加，已有的保留本地版本）
+    func applyRemoteGroups(_ remoteGroups: [ItemGroup]) {
+        let localIds = Set(groups.map { $0.id })
+        var changed = false
+        for remoteGroup in remoteGroups {
+            if !localIds.contains(remoteGroup.id) {
+                groups.append(remoteGroup)
+                changed = true
+            }
+        }
+        if changed {
+            saveGroups()
+            print("[WishlistGroupStore] 合并远端分组: 新增 \(groups.count - localIds.count) 个")
+        }
     }
     
     private func saveGroups() {

@@ -428,7 +428,7 @@ struct ItemDetailView: View {
             }
             .sheet(isPresented: $showingEditWish) {
                 if let groupStore = wishlistGroupStore {
-                    EditWishlistItemView(item: item, store: store, wishlistGroupStore: groupStore)
+                    EditWishlistItemView(item: item, store: store, wishlistGroupStore: groupStore, sharedWishlistStore: sharedStore)
                 }
             }
             .sheet(isPresented: $showingSoldSheet) {
@@ -473,6 +473,11 @@ struct ItemDetailView: View {
                 }
             }
             .fullScreenImageViewer(uiImage: $fullScreenImage)
+            .onChange(of: store.items.count) { _, _ in
+                if !store.items.contains(where: { $0.id == item.id }) {
+                    dismiss()
+                }
+            }
         }
     }
     @ViewBuilder

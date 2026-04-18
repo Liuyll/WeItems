@@ -138,21 +138,12 @@ class CloudBaseClient {
             }
         }
 
-        // 打印完整请求
-        print("\n========== HTTP REQUEST ==========")
-        print("[HTTP] 方法: \(method.uppercased())")
-        print("[HTTP] URL: \(url.absoluteString)")
-        print("[HTTP] Headers:")
-        request.allHTTPHeaderFields?.forEach { key, value in
-            let maskedValue = key.lowercased() == "authorization" ? "Bearer ***" : value
-            print("  \(key): \(maskedValue)")
-        }
-        print("[HTTP] Body:\n\(bodyString)")
-        print("==================================\n")
-
         let task = URLSession.shared.dataTask(with: request) { data, response, error in
             if let error = error {
-                print("\n========== HTTP RESPONSE ==========")
+                print("\n========== HTTP REQUEST (ERROR) ==========")
+                print("[HTTP] 方法: \(method.uppercased())")
+                print("[HTTP] URL: \(url.absoluteString)")
+                print("[HTTP] Body:\n\(bodyString)")
                 print("[HTTP] 请求失败: \(error.localizedDescription)")
                 print("===================================\n")
                 completion(nil)
@@ -163,7 +154,10 @@ class CloudBaseClient {
 
             // 非 200 才打印响应详情
             if statusCode < 200 || statusCode > 299 {
-                print("\n========== HTTP RESPONSE ==========")
+                print("\n========== HTTP REQUEST (ERROR) ==========")
+                print("[HTTP] 方法: \(method.uppercased())")
+                print("[HTTP] URL: \(url.absoluteString)")
+                print("[HTTP] Body:\n\(bodyString)")
                 print("[HTTP] 状态码: \(statusCode)")
                 if let httpResponse = response as? HTTPURLResponse {
                     print("[HTTP] Headers:")
@@ -196,15 +190,9 @@ class CloudBaseClient {
                 return
             }
 
-            // 调试：始终打印原始 JSON 和目标类型
-            let rawJSON = String(data: data, encoding: .utf8) ?? "<无法转换>"
-            print("[HTTP] 状态码: \(statusCode), 目标类型=\(T.self)")
-            print("[HTTP] 原始JSON: \(rawJSON)")
-            
             do {
                 let decoder = JSONDecoder()
                 let result = try decoder.decode(T.self, from: data)
-                print("[HTTP] 解码成功: \(T.self)")
                 completion(result)
             } catch {
                 // 尝试作为Any解码
@@ -451,27 +439,22 @@ class CloudBaseClient {
             }
         }
         
-        print("\n========== 云函数 HTTP REQUEST ==========")
-        print("[云函数] 函数名: \(functionName)")
-        print("[云函数] URL: \(url.absoluteString)")
-        print("[云函数] Method: POST")
-        print("[云函数] Headers:")
-        request.allHTTPHeaderFields?.forEach { key, value in
-            let maskedValue = key.lowercased() == "authorization" ? "Bearer ***" : value
-            print("  \(key): \(maskedValue)")
-        }
-        print("[云函数] Body:\n\(bodyString)")
-        print("==========================================\n")
-        
         let task = URLSession.shared.dataTask(with: request) { responseData, response, error in
             if let error = error {
+                print("\n========== 云函数 REQUEST (ERROR) ==========")
+                print("[云函数] 函数名: \(functionName)")
+                print("[云函数] Body:\n\(bodyString)")
                 print("[云函数] 请求失败: \(error.localizedDescription)")
+                print("==========================================\n")
                 completion(nil)
                 return
             }
             
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
             if statusCode < 200 || statusCode > 299 {
+                print("\n========== 云函数 REQUEST (ERROR) ==========")
+                print("[云函数] 函数名: \(functionName)")
+                print("[云函数] Body:\n\(bodyString)")
                 print("[云函数] 状态码异常: \(statusCode)")
                 if let responseData = responseData, let body = String(data: responseData, encoding: .utf8) {
                     print("[云函数] 响应: \(body)")
@@ -560,7 +543,6 @@ class CloudBaseClient {
             }
         }
         
-        print("[图片上传] 批量上传完成: \(imageUrlMap.count)/\(itemsNeedingUpload.count) 成功")
         return imageUrlMap
     }
     
@@ -604,6 +586,7 @@ class CloudBaseClient {
             "listType": item.listType.rawValue,
             "isSelected": item.isSelected,
             "isArchived": item.isArchived,
+            "isLargeItem": item.isLargeItem,
             "isPriceless": item.isPriceless,
             "createdAt": isoFormatter.string(from: item.createdAt),
             "updatedAt": isoFormatter.string(from: item.updatedAt)
@@ -790,6 +773,7 @@ class CloudBaseClient {
                         updatedAt: isoFormatter.date(from: info?.updatedAt ?? info?.createdAt ?? "") ?? Date(),
                         isSelected: info?.isSelected ?? false,
                         isArchived: info?.isArchived ?? false,
+                        isLargeItem: info?.isLargeItem ?? false,
                         isPriceless: info?.isPriceless ?? false,
                         ownedDate: info?.ownedDate != nil ? isoFormatter.date(from: info!.ownedDate!) : nil,
                         displayType: info?.displayType,
@@ -829,6 +813,7 @@ class CloudBaseClient {
                 updatedAt: isoFormatter.date(from: info?.updatedAt ?? info?.createdAt ?? "") ?? Date(),
                 isSelected: info?.isSelected ?? false,
                 isArchived: info?.isArchived ?? false,
+                isLargeItem: info?.isLargeItem ?? false,
                 isPriceless: info?.isPriceless ?? false,
                 ownedDate: info?.ownedDate != nil ? isoFormatter.date(from: info!.ownedDate!) : nil,
                 displayType: info?.displayType,
@@ -998,8 +983,8 @@ class CloudBaseClient {
                         ]
                     ]
                 ]
-                let result: DeleteResponse? = await request(method: "POST", path: path, body: payload)
-                if result?.code?.stringValue == "SUCCESS" || result?.code?.stringValue == "0" || (result?.data?.count ?? 0) > 0 {
+                let deleteResult: DeleteResponse? = await request(method: "POST", path: path, body: payload)
+                if deleteResult?.code?.stringValue == "SUCCESS" || deleteResult?.code?.stringValue == "0" || (deleteResult?.data?.count ?? 0) > 0 {
                     deletedRemoteItemIds.append(remoteItemId)
                 } else {
                     print("[同步] 远端删除失败: \(remoteItemId)")
@@ -1051,6 +1036,7 @@ class CloudBaseClient {
             let listType: String?
             let isSelected: Bool?
             let isArchived: Bool?
+            let isLargeItem: Bool?
             let isPriceless: Bool?
             let ownedDate: String?
             let soldPrice: Double?
@@ -1080,16 +1066,12 @@ class CloudBaseClient {
     ) {
         let path = "/v1/model/\(envType)/\(modelName)/list"
         
-        print("[远端] 开始获取远端物品列表...")
         
         request(
             method: "GET",
             path: path
         ) { (result: FetchItemsResponse?) in
-            if let result = result {
-                let recordCount = result.data?.records?.count ?? 0
-                print("[远端] 获取成功，共 \(recordCount) 条记录")
-            } else {
+            if result == nil {
                 print("[远端] 获取失败，无响应")
             }
             completion(result)
@@ -1153,7 +1135,6 @@ class CloudBaseClient {
             }
         }
         
-        print("[心愿图片上传] 批量上传完成: \(imageUrlMap.count)/\(itemsNeedingUpload.count) 成功")
         return imageUrlMap
     }
     
@@ -1299,10 +1280,7 @@ class CloudBaseClient {
             method: "GET",
             path: path
         ) { (result: FetchWishesResponse?) in
-            if let result = result {
-                let recordCount = result.data?.records?.count ?? 0
-                print("[远端] 心愿清单获取成功，共 \(recordCount) 条记录")
-            } else {
+            if result == nil {
                 print("[远端] 心愿清单获取失败，无响应")
             }
             completion(result)
@@ -1595,8 +1573,8 @@ class CloudBaseClient {
                         ]
                     ]
                 ]
-                let result: DeleteResponse? = await request(method: "POST", path: path, body: payload)
-                if result?.code?.stringValue == "SUCCESS" || result?.code?.stringValue == "0" || (result?.data?.count ?? 0) > 0 {
+                let deleteResult: DeleteResponse? = await request(method: "POST", path: path, body: payload)
+                if deleteResult?.code?.stringValue == "SUCCESS" || deleteResult?.code?.stringValue == "0" || (deleteResult?.data?.count ?? 0) > 0 {
                     deletedRemoteItemIds.append(remoteItemId)
                 } else {
                     print("[心愿同步] 远端删除失败: \(remoteItemId)")
@@ -1708,7 +1686,6 @@ class CloudBaseClient {
             ]
         ]
         
-        print("[共享心愿] 开始创建共享清单: \(listName), wish_group_id=\(wishGroupId), 心愿数量=\(selectedItems.count)")
         
         let result: CreateResponse? = await request(
             method: "POST",
@@ -1716,9 +1693,7 @@ class CloudBaseClient {
             body: payload
         )
         
-        if let result = result {
-            print("[共享心愿] 创建响应: code=\(result.code?.stringValue ?? "nil"), message=\(result.message ?? "nil"), id=\(result.data?.id ?? "nil")")
-        } else {
+        if result == nil {
             print("[共享心愿] 创建失败, 无响应")
         }
         
@@ -1758,6 +1733,9 @@ class CloudBaseClient {
             if let completedBy = item.completedBy {
                 info["completedBy"] = completedBy
             }
+            if let addedBy = item.addedBy {
+                info["addedBy"] = addedBy
+            }
             if let imageUrl = item.imageUrl, !imageUrl.isEmpty {
                 info["imageUrl"] = imageUrl
             }
@@ -1789,7 +1767,6 @@ class CloudBaseClient {
         
         let payload: [String: Any] = ["data": dataDict]
         
-        print("[共享心愿] 重新同步共享清单: \(listName), wish_group_id=\(wishGroupId)")
         
         let result: CreateResponse? = await request(
             method: "POST",
@@ -1797,9 +1774,7 @@ class CloudBaseClient {
             body: payload
         )
         
-        if let result = result {
-            print("[共享心愿] 同步响应: code=\(result.code?.stringValue ?? "nil"), id=\(result.data?.id ?? "nil")")
-        } else {
+        if result == nil {
             print("[共享心愿] 同步失败, 无响应")
         }
         
@@ -1843,6 +1818,9 @@ class CloudBaseClient {
             if let completedBy = item.completedBy {
                 info["completedBy"] = completedBy
             }
+            if let addedBy = item.addedBy {
+                info["addedBy"] = addedBy
+            }
             if let imageUrl = item.imageUrl, !imageUrl.isEmpty {
                 info["imageUrl"] = imageUrl
             }
@@ -1864,7 +1842,6 @@ class CloudBaseClient {
             ]
         ]
         
-        print("[共享心愿] 更新共享清单: wish_group_id=\(wishGroupId), 心愿数量=\(sharedItems.count)")
         
         let result: UpdateManyResponse? = await request(
             method: "PUT",
@@ -1872,9 +1849,7 @@ class CloudBaseClient {
             body: payload
         )
         
-        if let result = result {
-            print("[共享心愿] 更新响应: code=\(result.code?.stringValue ?? "nil"), count=\(result.data?.count ?? 0)")
-        } else {
+        if result == nil {
             print("[共享心愿] 更新失败, 无响应")
         }
         
@@ -1941,10 +1916,7 @@ class CloudBaseClient {
             body: payload
         )
         
-        if let result = result {
-            let count = result.data?.records?.count ?? 0
-            print("[userinfo] 查询结果: code=\(result.code?.stringValue ?? "nil"), 记录数=\(count)")
-        } else {
+        if result == nil {
             print("[userinfo] 查询失败, 无响应")
         }
         
@@ -1973,9 +1945,7 @@ class CloudBaseClient {
             body: payload
         )
         
-        if let result = result {
-            print("[userinfo] 创建响应: code=\(result.code?.stringValue ?? "nil"), id=\(result.data?.id ?? "nil")")
-        } else {
+        if result == nil {
             print("[userinfo] 创建失败, 无响应")
         }
         
@@ -2002,7 +1972,6 @@ class CloudBaseClient {
             ]
         ]
         
-        print("[userinfo] 更新 share_wish_list: dataId=\(dataId), list=\(shareWishList)")
         
         let result: UpdateManyResponse? = await request(
             method: "PUT",
@@ -2010,9 +1979,7 @@ class CloudBaseClient {
             body: payload
         )
         
-        if let result = result {
-            print("[userinfo] 更新响应: code=\(result.code?.stringValue ?? "nil"), count=\(result.data?.count ?? 0)")
-        } else {
+        if result == nil {
             print("[userinfo] 更新失败, 无响应")
         }
         
@@ -2090,9 +2057,7 @@ class CloudBaseClient {
                 body: payload
             )
             
-            if let result = result {
-                print("[userinfo] third_info 更新结果: code=\(result.code?.stringValue ?? "nil")")
-            } else {
+            if result == nil {
                 print("[userinfo] third_info 更新失败")
             }
         } else {
@@ -2113,9 +2078,6 @@ class CloudBaseClient {
                 body: payload
             )
             
-            if let result = result {
-                print("[userinfo] 创建响应: code=\(result.code?.stringValue ?? "nil"), id=\(result.data?.id ?? "nil")")
-            }
         }
     }
     
@@ -2148,7 +2110,6 @@ class CloudBaseClient {
             ]
         ]
         
-        print("[userinfo] 更新 vip_type: dataId=\(dataId), type=\(vipType)")
         
         let result: UpdateManyResponse? = await request(
             method: "PUT",
@@ -2156,9 +2117,7 @@ class CloudBaseClient {
             body: payload
         )
         
-        if let result = result {
-            print("[userinfo] VIP 更新响应: code=\(result.code?.stringValue ?? "nil"), count=\(result.data?.count ?? 0)")
-        } else {
+        if result == nil {
             print("[userinfo] VIP 更新失败, 无响应")
         }
         
@@ -2226,9 +2185,7 @@ class CloudBaseClient {
             body: payload
         )
         
-        if let result = result {
-            print("[userinfo] 创建响应: code=\(result.code?.stringValue ?? "nil"), id=\(result.data?.id ?? "nil")")
-        } else {
+        if result == nil {
             print("[userinfo] 创建失败, 无响应")
         }
         
@@ -2260,7 +2217,6 @@ class CloudBaseClient {
             ]
         ]
         
-        print("[共享心愿] 查询好友清单: wish_group_id=\(wishGroupId)")
         
         let result: FetchSharedWishlistResponse? = await request(
             method: "POST",
@@ -2268,10 +2224,7 @@ class CloudBaseClient {
             body: payload
         )
         
-        if let result = result {
-            let count = result.data?.records?.count ?? 0
-            print("[共享心愿] 查询结果: code=\(result.code?.stringValue ?? "nil"), 记录数=\(count)")
-        } else {
+        if result == nil {
             print("[共享心愿] 查询失败, 无响应")
         }
         
@@ -2323,6 +2276,7 @@ class CloudBaseClient {
             let purchaseLink: String?
             let details: String?
             let completedBy: String?
+            let addedBy: String?
             let imageBase64: String?  // 旧数据兼容
             let imageUrl: String?     // 新数据
         }
@@ -2475,7 +2429,8 @@ class CloudBaseClient {
                 imageData: remoteImageData,
                 purchaseLink: remoteItem.purchaseLink,
                 details: remoteItem.details,
-                completedBy: remoteItem.completedBy
+                completedBy: remoteItem.completedBy,
+                addedBy: remoteItem.addedBy
             )
             print("[共享心愿同步] 远端独有: \(name)")
             mergedItems.append(newItem)
@@ -2509,6 +2464,9 @@ class CloudBaseClient {
             if let completedBy = item.completedBy {
                 info["completedBy"] = completedBy
             }
+            if let addedBy = item.addedBy {
+                info["addedBy"] = addedBy
+            }
             if let imageUrl = item.imageUrl, !imageUrl.isEmpty {
                 info["imageUrl"] = imageUrl
             }
@@ -2520,7 +2478,11 @@ class CloudBaseClient {
             data: [
                 "docId": docId,
                 "modelName": "sharewish",
-                "updateData": ["wishinfo": ["items": wishInfoArray]]
+                "updateData": [
+                    "wishinfo": ["items": wishInfoArray],
+                    "name": listName,
+                    "emoji": listEmoji
+                ]
             ]
         )
         
@@ -2610,7 +2572,6 @@ class CloudBaseClient {
         // 先拉取当前记录
         let response = await fetchSharedWishlistByGroupId(wishGroupId: wishGroupId, envType: envType, modelName: modelName)
         guard let record = response?.data?.records?.first else {
-            print("[共享心愿] 无法查询到清单，跳过添加成员")
             return
         }
         
@@ -2649,7 +2610,6 @@ class CloudBaseClient {
             ]
         ]
         
-        print("[共享心愿] 添加成员 \(memberName)(\(memberId)) 到清单 \(wishGroupId)")
         
         let result: UpdateManyResponse? = await request(
             method: "PUT",
@@ -2657,9 +2617,7 @@ class CloudBaseClient {
             body: payload
         )
         
-        if let result = result {
-            print("[共享心愿] 添加成员结果: code=\(result.code?.stringValue ?? "nil"), count=\(result.data?.count ?? 0)")
-        } else {
+        if result == nil {
             print("[共享心愿] 添加成员失败")
         }
     }
@@ -3179,8 +3137,6 @@ class CloudBaseClient {
             
             // 等待所有上传完成
             group.notify(queue: .main) {
-                let successCount = results.filter { $0.success }.count
-                print("\n[云存储] 批量上传完成: \(successCount)/\(items.count) 成功\n")
                 completion(results)
             }
         }
@@ -3440,49 +3396,107 @@ class CloudBaseClient {
     /// - anotherinfo: SavingsGoal JSON
     /// - assetsinfo: 资产汇总信息 JSON (totalAssets等)
     @available(iOS 13.0, *)
+    /// 同步储蓄投资+分组数据到云端（双向：先上传再拉取）
+    /// 返回远端数据用于回写本地，nil 表示同步失败
+    struct SavingSyncResult {
+        let records: [FinanceRecord]
+        let salaryRecord: FinanceRecord?
+        let goal: SavingsGoal?
+        let totalAssets: Double?
+        let groups: [ItemGroup]?
+        let wishlistGroups: [ItemGroup]?
+        let userSettings: UserSettings?
+    }
+    
+    @available(iOS 13.0, *)
     func syncSavingInfo(
         records: [FinanceRecord],
         salaryRecord: FinanceRecord?,
         goal: SavingsGoal,
         totalAssets: Double,
+        groups: [ItemGroup] = [],
+        wishlistGroups: [ItemGroup] = [],
+        userSettings: UserSettings? = nil,
         envType: String = "prod",
         modelName: String = "savinginfo"
-    ) async -> Bool {
+    ) async -> SavingSyncResult? {
         guard let sub = TokenStorage.shared.getSub(), !sub.isEmpty else {
             print("[储蓄同步] 无法获取用户 sub，取消同步")
-            return false
+            return nil
         }
         
+        // Step 1: 先拉取远端数据（用于回写时保留远端 docId 等信息）
+        let remoteFetched = await fetchSavingInfo(envType: envType, modelName: modelName)
+        
+        // Step 2: 以本地为准（本地删除的不再从远端追加回来）
+        let mergedRecords = records
+        
+        // 工资记录：以本地为准
+        let mergedSalary = salaryRecord
+        
+        // 目标：以本地为准
+        let mergedGoal = goal
+        
+        // 总资产：以本地为准
+        let mergedTotalAssets = totalAssets
+        
+        // 分组：以本地为准
+        let mergedGroups = groups
+        let mergedWishlistGroups = wishlistGroups
+        
+        // UserSettings：本地有自定义则用本地，否则用远端
+        let mergedSettings: UserSettings? = {
+            if let local = userSettings, !local.isDefault {
+                return local
+            }
+            return remoteFetched?.userSettings ?? userSettings
+        }()
+        
+        print("[储蓄同步] 合并结果: 本地\(records.count)条 + 远端\(remoteFetched?.records.count ?? 0)条 = \(mergedRecords.count)条")
+        
+        // Step 3: 编码合并后的数据
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         
-        // 编码各字段为 JSON 字典
         var itemInfoValue: Any = NSNull()
         var salaryInfoValue: Any = NSNull()
         var anotherInfoValue: Any = NSNull()
         
-        if let data = try? encoder.encode(records),
+        var itemInfoDict: [String: Any] = [:]
+        if let data = try? encoder.encode(mergedRecords),
            let json = try? JSONSerialization.jsonObject(with: data) {
-            itemInfoValue = ["items": json]
+            itemInfoDict["items"] = json
+        }
+        if !mergedGroups.isEmpty, let data = try? encoder.encode(mergedGroups),
+           let json = try? JSONSerialization.jsonObject(with: data) {
+            itemInfoDict["groups"] = json
+        }
+        if !mergedWishlistGroups.isEmpty, let data = try? encoder.encode(mergedWishlistGroups),
+           let json = try? JSONSerialization.jsonObject(with: data) {
+            itemInfoDict["wishlistGroups"] = json
+        }
+        if !itemInfoDict.isEmpty {
+            itemInfoValue = itemInfoDict
         }
         
-        if let salary = salaryRecord,
+        if let salary = mergedSalary,
            let data = try? encoder.encode(salary),
            let json = try? JSONSerialization.jsonObject(with: data) {
             salaryInfoValue = json
         }
         
-        // 将 totalAssets 合并到 anotherinfo 中（与 SavingsGoal 一起存储）
-        if let data = try? encoder.encode(goal),
+        if let data = try? encoder.encode(mergedGoal),
            var json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            json["totalAssets"] = totalAssets
+            json["totalAssets"] = mergedTotalAssets
+            if let settings = mergedSettings,
+               let settingsData = try? encoder.encode(settings),
+               let settingsJson = try? JSONSerialization.jsonObject(with: settingsData) {
+                json["userSettings"] = settingsJson
+            }
             anotherInfoValue = json
-            print("[储蓄同步] 上传 anotherinfo: name=\(goal.name), target=\(goal.targetAmount), totalAssets=\(totalAssets)")
-        } else {
-            print("[储蓄同步] ⚠️ SavingsGoal 编码失败！")
         }
         
-        // 先查询是否已有记录
+        // Step 4: 上传合并后的数据
         let listPath = "/v1/model/\(envType)/\(modelName)/list"
         let listPayload: [String: Any] = [
             "pageSize": 1,
@@ -3504,8 +3518,8 @@ class CloudBaseClient {
             "anotherinfo": anotherInfoValue
         ]
         
+        var uploadSuccess = false
         if let docId = existingId {
-            // 更新已有记录
             let updatePath = "/v1/model/\(envType)/\(modelName)/update"
             let payload: [String: Any] = [
                 "data": saveData,
@@ -3516,22 +3530,30 @@ class CloudBaseClient {
                 ]
             ]
             
-            print("[储蓄同步] 更新远端记录: \(docId)")
-            let result: UpdateManyResponse? = await request(method: "PUT", path: updatePath, body: payload)
-            let success = result?.code?.stringValue == "SUCCESS" || result?.code?.stringValue == "0" || (result?.data?.count ?? 0) > 0
-            print("[储蓄同步] 更新结果: \(success ? "成功" : "失败")")
-            return success
+            let updateResult: UpdateManyResponse? = await request(method: "PUT", path: updatePath, body: payload)
+            uploadSuccess = updateResult?.code?.stringValue == "SUCCESS" || updateResult?.code?.stringValue == "0" || (updateResult?.data?.count ?? 0) > 0
+            print("[储蓄同步] 更新结果: \(uploadSuccess ? "成功" : "失败")")
         } else {
-            // 创建新记录
             let createPath = "/v1/model/\(envType)/\(modelName)/create"
             let payload: [String: Any] = ["data": saveData]
             
-            print("[储蓄同步] 创建远端记录")
-            let result: CreateResponse? = await request(method: "POST", path: createPath, body: payload)
-            let success = result?.code?.stringValue == "SUCCESS" || result?.code?.stringValue == "0" || result?.data?.id != nil
-            print("[储蓄同步] 创建结果: \(success ? "成功" : "失败")")
-            return success
+            let createResult: CreateResponse? = await request(method: "POST", path: createPath, body: payload)
+            uploadSuccess = createResult?.code?.stringValue == "SUCCESS" || createResult?.code?.stringValue == "0" || createResult?.data?.id != nil
+            print("[储蓄同步] 创建结果: \(uploadSuccess ? "成功" : "失败")")
         }
+        
+        guard uploadSuccess else { return nil }
+        
+        // 返回合并后的数据供本地回写
+        return SavingSyncResult(
+            records: mergedRecords,
+            salaryRecord: mergedSalary,
+            goal: mergedGoal,
+            totalAssets: mergedTotalAssets,
+            groups: mergedGroups,
+            wishlistGroups: mergedWishlistGroups,
+            userSettings: mergedSettings
+        )
     }
     
     /// 从远端拉取储蓄投资数据
@@ -3539,7 +3561,7 @@ class CloudBaseClient {
     func fetchSavingInfo(
         envType: String = "prod",
         modelName: String = "savinginfo"
-    ) async -> (records: [FinanceRecord], salaryRecord: FinanceRecord?, goal: SavingsGoal?, totalAssets: Double?)? {
+    ) async -> (records: [FinanceRecord], salaryRecord: FinanceRecord?, goal: SavingsGoal?, totalAssets: Double?, groups: [ItemGroup]?, wishlistGroups: [ItemGroup]?, userSettings: UserSettings?)? {
         let listPath = "/v1/model/\(envType)/\(modelName)/list"
         let listPayload: [String: Any] = [
             "pageSize": 1,
@@ -3584,11 +3606,23 @@ class CloudBaseClient {
             var salaryRecord: FinanceRecord? = nil
             var goal: SavingsGoal? = nil
             var totalAssets: Double? = nil
+            var groups: [ItemGroup]? = nil
+            var wishlistGroups: [ItemGroup]? = nil
+            var userSettings: UserSettings? = nil
             
-            if let itemInfo = first["iteminfo"] as? [String: Any],
-               let itemsArray = itemInfo["items"],
-               let itemData = try? JSONSerialization.data(withJSONObject: itemsArray) {
-                financeRecords = (try? decoder.decode([FinanceRecord].self, from: itemData)) ?? []
+            if let itemInfo = first["iteminfo"] as? [String: Any] {
+                if let itemsArray = itemInfo["items"],
+                   let itemData = try? JSONSerialization.data(withJSONObject: itemsArray) {
+                    financeRecords = (try? decoder.decode([FinanceRecord].self, from: itemData)) ?? []
+                }
+                if let groupsArray = itemInfo["groups"],
+                   let groupsData = try? JSONSerialization.data(withJSONObject: groupsArray) {
+                    groups = try? decoder.decode([ItemGroup].self, from: groupsData)
+                }
+                if let wgArray = itemInfo["wishlistGroups"],
+                   let wgData = try? JSONSerialization.data(withJSONObject: wgArray) {
+                    wishlistGroups = try? decoder.decode([ItemGroup].self, from: wgData)
+                }
             }
             
             if let salaryInfo = first["salaryinfo"], !(salaryInfo is NSNull),
@@ -3596,14 +3630,11 @@ class CloudBaseClient {
                 salaryRecord = try? decoder.decode(FinanceRecord.self, from: salaryData)
             }
             
-            // anotherinfo 中同时包含 SavingsGoal 和 totalAssets
+            // anotherinfo 中同时包含 SavingsGoal、totalAssets 和 userSettings
             if let anotherInfo = first["anotherinfo"] as? [String: Any] {
-                print("[储蓄同步] anotherinfo keys: \(anotherInfo.keys.sorted())")
                 if let goalData = try? JSONSerialization.data(withJSONObject: anotherInfo) {
                     goal = try? decoder.decode(SavingsGoal.self, from: goalData)
-                    print("[储蓄同步] SavingsGoal 解码: \(goal != nil ? "成功 name=\(goal!.name) target=\(goal!.targetAmount)" : "失败")")
                 }
-                // 从 anotherinfo 中提取 totalAssets
                 if let assets = anotherInfo["totalAssets"] as? Double {
                     totalAssets = assets
                 } else if let assets = anotherInfo["totalAssets"] as? Int {
@@ -3611,10 +3642,14 @@ class CloudBaseClient {
                 } else if let assets = anotherInfo["totalAssets"] as? NSNumber {
                     totalAssets = assets.doubleValue
                 }
+                if let settingsObj = anotherInfo["userSettings"],
+                   let settingsData = try? JSONSerialization.data(withJSONObject: settingsObj) {
+                    userSettings = try? decoder.decode(UserSettings.self, from: settingsData)
+                }
             }
             
-            print("[储蓄同步] 拉取成功: \(financeRecords.count) 条记录, 工资配置: \(salaryRecord != nil ? "有" : "无"), 目标: \(goal != nil ? "有" : "无"), 资产: \(totalAssets != nil ? "有" : "无")")
-            return (financeRecords, salaryRecord, goal, totalAssets)
+            print("[储蓄同步] 拉取成功: \(financeRecords.count) 条记录, 工资: \(salaryRecord != nil ? "有" : "无"), 目标: \(goal != nil ? "有" : "无"), 分组: \(groups?.count ?? 0)/\(wishlistGroups?.count ?? 0)")
+            return (financeRecords, salaryRecord, goal, totalAssets, groups, wishlistGroups, userSettings)
         } catch {
             print("[储蓄同步] 拉取异常: \(error.localizedDescription)")
             return nil

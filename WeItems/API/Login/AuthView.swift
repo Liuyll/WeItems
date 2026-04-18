@@ -507,15 +507,12 @@ struct AuthView: View {
                 phoneNumber: username
             )
             
-            // 通知 AuthManager 登录成功，触发用户数据切换
-            await MainActor.run {
-                AuthManager.shared.loginSuccess(
-                    accessToken: response.accessToken,
-                    refreshToken: response.refreshToken,
-                    expiresIn: response.expiresIn,
-                    tokenType: response.tokenType,
-                    sub: response.sub
-                )
+            // 确保 CloudBaseClient 已创建（thirdInfo 同步需要）
+            if AuthManager.shared.getCloudBaseClient() == nil {
+                // loginSuccess 会在 onLoginSuccess 回调中被调用，这里先手动创建 client
+                if let envId = Bundle.main.object(forInfoDictionaryKey: "CLOUDBASE_ENV_ID") as? String ?? Self.loadEnvId() {
+                    let _ = CloudBaseClient(envId: envId, accessToken: response.accessToken)
+                }
             }
             
             // 构造 third_info 并打印
@@ -562,6 +559,13 @@ struct AuthView: View {
             
             await MainActor.run {
                 isLoading = false
+                AuthManager.shared.loginSuccess(
+                    accessToken: response.accessToken,
+                    refreshToken: response.refreshToken,
+                    expiresIn: response.expiresIn,
+                    tokenType: response.tokenType,
+                    sub: response.sub
+                )
                 onLoginSuccess?(response)
                 dismiss()
             }
@@ -667,6 +671,7 @@ struct AuthView: View {
                 password: "Password_\(password)"
             )
             
+            // 先保存 phoneNumber（loginSuccess 不带此参数）
             TokenStorage.shared.saveToken(
                 accessToken: response.accessToken,
                 refreshToken: response.refreshToken,
@@ -679,6 +684,7 @@ struct AuthView: View {
             print("=== 密码登录成功 ===")
             
             await MainActor.run {
+                // 直接调用 loginSuccess 触发数据加载和自动同步
                 AuthManager.shared.loginSuccess(
                     accessToken: response.accessToken,
                     refreshToken: response.refreshToken,
@@ -725,6 +731,7 @@ struct AuthView: View {
                 print("=== 注册成功 ===")
             }
             
+            // 先保存 phoneNumber（loginSuccess 不带此参数）
             TokenStorage.shared.saveToken(
                 accessToken: response.accessToken,
                 refreshToken: response.refreshToken,
@@ -735,6 +742,7 @@ struct AuthView: View {
             )
             
             await MainActor.run {
+                // 直接调用 loginSuccess 触发数据加载和自动同步
                 AuthManager.shared.loginSuccess(
                     accessToken: response.accessToken,
                     refreshToken: response.refreshToken,

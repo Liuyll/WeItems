@@ -14,6 +14,9 @@ class ItemStore: ObservableObject {
     /// 自上次同步以来是否有本地数据变更
     @Published var hasUnsyncedChanges: Bool = false
     
+    /// 同步回写时抑制 hasUnsyncedChanges 标记
+    var suppressUnsyncFlag = false
+    
     private let fileName = "items.json"
     private let customTypesFileName = "custom_display_types.json"
     private let unsyncedFlagFileName = "unsynced_flag"
@@ -103,6 +106,12 @@ class ItemStore: ObservableObject {
     
     /// 切换用户后重新加载数据
     func reloadForCurrentUser() {
+        // 先清空内存数据
+        items = []
+        customDisplayTypes = []
+        hasUnsyncedChanges = false
+        deletedItemRecords = [:]
+        
         loadItems()
         loadCustomDisplayTypes()
         loadUnsyncedFlag()
@@ -422,9 +431,13 @@ class ItemStore: ObservableObject {
     // MARK: - 数据持久化
     
     private func saveItems() {
-        // 标记有未同步的变更
-        hasUnsyncedChanges = true
-        saveUnsyncedFlag(true)
+        // 同步回写期间不标记未同步
+        if !suppressUnsyncFlag {
+            hasUnsyncedChanges = true
+            saveUnsyncedFlag(true)
+            UserDefaults.standard.set(true, forKey: "remoteNeedsSync")
+            UserDefaults.standard.set(true, forKey: "iCloudNeedsSync")
+        }
         
         // 标记趋势缓存失效
         TrendDataCache.shared.invalidate()

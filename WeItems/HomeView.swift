@@ -107,6 +107,13 @@ struct HomeView: View {
     // Pro 升级页面
     @State private var showingProUpgrade = false
     
+    // 登录后自动同步
+    @State private var isAutoSyncing = false
+    @State private var syncToastMessage: String? = nil
+    @State private var showSyncToast = false
+    @State private var showAutoSyncAlert = false
+    @State private var autoSyncMessage = "正在同步中，请稍等"
+    
     // 昵称输入弹窗相关
     @State private var showingNicknameInput = false
     @State private var nicknameInput = ""
@@ -147,7 +154,7 @@ struct HomeView: View {
                     NavigationStack {
                         TrendView(store: store)
                     }
-                    .transition(.move(edge: .bottom))
+                    .transition(.opacity)
                 case .settings:
                     ProfileView(onBack: {
                         withAnimation(.easeInOut(duration: 0.5)) {
@@ -157,6 +164,8 @@ struct HomeView: View {
                         .environmentObject(store)
                         .environmentObject(sharedWishlistStore)
                         .environmentObject(financeStore)
+                        .environmentObject(groupStore)
+                        .environmentObject(wishlistGroupStore)
                         .transition(.move(edge: .leading))
                 }
             }
@@ -181,6 +190,23 @@ struct HomeView: View {
                     .padding(24)
                     .background(RoundedRectangle(cornerRadius: 16).fill(.ultraThinMaterial))
                 }
+            }
+            
+            // 同步 toast
+            if showSyncToast, let message = syncToastMessage {
+                VStack {
+                    Spacer()
+                    Text(message)
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 12)
+                        .background(Capsule().fill(Color.black.opacity(0.75)))
+                        .padding(.bottom, 100)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+                .animation(.easeInOut(duration: 0.3), value: showSyncToast)
             }
         }
         .ignoresSafeArea(.keyboard) // 键盘弹出时不影响 TabBar
@@ -223,6 +249,215 @@ struct HomeView: View {
                     isTabBarVisible = false
                 }
             }
+        }
+    }
+    
+    // MARK: - 登录后自动同步
+    
+    private func showSyncToastMessage(_ message: String, autoDismiss: Bool = true) {
+        syncToastMessage = message
+        withAnimation { showSyncToast = true }
+        if autoDismiss {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                withAnimation { showSyncToast = false }
+            }
+        }
+    }
+    
+    private func performAutoSync() async {
+        let tokenValid = await authManager.ensureValidToken()
+        guard tokenValid, let client = authManager.getCloudBaseClient() else {
+            await MainActor.run {
+                isAutoSyncing = false
+                autoSyncMessage = "同步失败，请重试"
+            }
+            return
+        }
+        
+        let deletedRecords = store.deletedItemRecords
+        async let itemsResult = client.syncItems(items: store.items, deletedItemRecords: deletedRecords)
+        async let wishesResult = client.syncWishes(items: store.items, deletedItemRecords: deletedRecords)
+        async let userInfoResult = client.fetchUserInfo()
+        
+        let nonSalaryRecords = financeStore.records.filter { $0.incomePeriod != .salary }
+        let salaryRec = financeStore.salaryRecord
+        let largeItemsPrice = store.items.filter { $0.listType == .items && !$0.isArchived && $0.isLargeItem && !$0.isPriceless }.reduce(0) { $0 + $1.price }
+        let normalItemsPrice = store.items.filter { $0.listType == .items && !$0.isArchived && !$0.isLargeItem && !$0.isPriceless }.reduce(0) { $0 + $1.price }
+        let allItemsPrice = largeItemsPrice + normalItemsPrice
+        async let savingResult = client.syncSavingInfo(
+            records: nonSalaryRecords,
+            salaryRecord: salaryRec,
+            goal: financeStore.savingsGoal,
+            totalAssets: financeStore.calculatedTotalAssets(itemsTotalPrice: allItemsPrice),
+            groups: groupStore.groups,
+            wishlistGroups: wishlistGroupStore.groups,
+            userSettings: UserSettings.fromLocal()
+        )
+        
+        let (itemsSyncResult, wishesSyncResult, userInfoResponse) = await (itemsResult, wishesResult, userInfoResult)
+        let savingSyncResult = await savingResult
+        
+        // 回写远端储蓄数据到本地
+        if let result = savingSyncResult {
+            await MainActor.run {
+                financeStore.applyRemoteData(records: result.records, salaryRecord: result.salaryRecord, goal: result.goal)
+                if let remoteGroups = result.groups { groupStore.applyRemoteGroups(remoteGroups) }
+                if let remoteWG = result.wishlistGroups { wishlistGroupStore.applyRemoteGroups(remoteWG) }
+                result.userSettings?.applyToLocal()
+            }
+        }
+        
+        // 从 userinfo 读取 VIP 信息
+        if let records = userInfoResponse?.data?.records, let record = records.first {
+            if let vipInfo = record.vip_type, let vipType = vipInfo.type {
+                await MainActor.run {
+                    IAPManager.shared.applyRemoteVIPInfo(type: vipType, startDate: vipInfo.startDate, expireDate: vipInfo.expireDate)
+                }
+            }
+            if record.vip_type == nil && IAPManager.shared.isPro {
+                await IAPManager.shared.syncVIPToCloud()
+            }
+        }
+        
+        // 从 userinfo 同步共享清单
+        if let records = userInfoResponse?.data?.records, let record = records.first,
+           let shareWishList = record.share_wish_list, !shareWishList.isEmpty {
+            for wishGroupId in shareWishList {
+                let response = await client.fetchSharedWishlistByGroupId(wishGroupId: wishGroupId)
+                guard let sharedRecord = response?.data?.records?.first else { continue }
+                
+                let listName = sharedRecord.name ?? "好朋友的清单"
+                let listEmoji = sharedRecord.emoji ?? "🎁"
+                let ownerName = sharedRecord.owner_name
+                let remoteItems = sharedRecord.wishinfo?.items ?? []
+                
+                let sharedItems: [SharedWishItem] = remoteItems.map { remote in
+                    SharedWishItem(
+                        sourceItemId: remote.sourceItemId.flatMap { UUID(uuidString: $0) },
+                        name: remote.name ?? "未知心愿",
+                        price: remote.price ?? 0,
+                        isCompleted: remote.isCompleted ?? false,
+                        displayType: remote.displayType,
+                        imageUrl: remote.imageUrl,
+                        imageData: remote.imageBase64.flatMap { Data(base64Encoded: $0) },
+                        purchaseLink: remote.purchaseLink,
+                        details: remote.details,
+                        completedBy: remote.completedBy,
+                        addedBy: remote.addedBy
+                    )
+                }
+                
+                let currentUserId = TokenStorage.shared.getSub() ?? ""
+                let numberList = sharedRecord.numbers?.number_list ?? []
+                let myRemoteNickname = numberList.first(where: { $0.number_id == currentUserId })?.number_name
+                let isOwner: Bool = {
+                    if !currentUserId.isEmpty {
+                        if let first = numberList.first, first.number_id == currentUserId { return true }
+                        if let on = ownerName, let mn = myRemoteNickname, !on.isEmpty, !mn.isEmpty, on == mn { return true }
+                    }
+                    return false
+                }()
+                
+                await MainActor.run {
+                    if let idx = sharedWishlistStore.lists.firstIndex(where: { $0.wishGroupId == wishGroupId }) {
+                        sharedWishlistStore.applyMergedResult(listId: sharedWishlistStore.lists[idx].id, mergedItems: sharedItems, isSynced: true, remoteName: listName, remoteEmoji: listEmoji, remoteOwnerName: ownerName)
+                        if let nickname = myRemoteNickname { sharedWishlistStore.setMyNickname(sharedWishlistStore.lists[idx].id, nickname: nickname) }
+                    } else {
+                        sharedWishlistStore.add(SharedWishlist(name: listName, emoji: listEmoji, items: sharedItems, isSynced: true, wishGroupId: wishGroupId, isOwner: isOwner, ownerName: ownerName, myNickname: myRemoteNickname))
+                    }
+                }
+            }
+        }
+        
+        // 下载远端物品/心愿的图片
+        var allRemoteItems: [Item] = []
+        if let result = itemsSyncResult { allRemoteItems.append(contentsOf: result.remoteOnlyItems) }
+        if let result = wishesSyncResult { allRemoteItems.append(contentsOf: result.remoteOnlyItems) }
+        
+        var imageUrlsToDownload: [String: String] = [:]
+        for item in allRemoteItems {
+            if let remoteUrl = item.imageUrl, !remoteUrl.isEmpty {
+                imageUrlsToDownload[item.id.uuidString] = remoteUrl
+            }
+        }
+        var downloadedImages: [String: Data] = [:]
+        if !imageUrlsToDownload.isEmpty {
+            print("[自动同步] 开始下载 \(imageUrlsToDownload.count) 张远端图片...")
+            downloadedImages = await client.downloadRemoteImages(imageUrls: imageUrlsToDownload)
+        }
+        
+        // 处理物品/心愿同步结果
+        await MainActor.run {
+            if let result = itemsSyncResult {
+                for deletedId in result.deletedLocalItemIds {
+                    if let item = store.items.first(where: { $0.itemId == deletedId && $0.listType == .items }) { store.delete(item) }
+                }
+                for var remoteItem in result.remoteOnlyItems {
+                    guard !remoteItem.itemId.isEmpty, !store.items.contains(where: { $0.itemId == remoteItem.itemId }) else { continue }
+                    if let imageData = downloadedImages[remoteItem.id.uuidString] { remoteItem.imageData = imageData }
+                    remoteItem.isSynced = true; store.add(remoteItem)
+                }
+            }
+            if let result = wishesSyncResult {
+                for deletedId in result.deletedLocalItemIds {
+                    if let item = store.items.first(where: { $0.itemId == deletedId && $0.listType == .wishlist }) { store.delete(item) }
+                }
+                for var remoteItem in result.remoteOnlyItems {
+                    guard !remoteItem.itemId.isEmpty, !store.items.contains(where: { $0.itemId == remoteItem.itemId }) else { continue }
+                    if let imageData = downloadedImages[remoteItem.id.uuidString] { remoteItem.imageData = imageData }
+                    remoteItem.isSynced = true; store.add(remoteItem)
+                }
+            }
+            
+            if itemsSyncResult != nil || wishesSyncResult != nil {
+                store.markSyncCompleted()
+                store.markAllItemsSynced()
+                store.rebuildCustomDisplayTypesFromWishes()
+            }
+            
+            // 物品已同步完成，现在恢复共享清单的 linkedGroupId
+            print("[自动同步] 开始恢复 linkedGroupId, 共享清单数量: \(sharedWishlistStore.lists.count), 本地心愿数量: \(store.items.filter { $0.listType == .wishlist }.count)")
+            for i in sharedWishlistStore.lists.indices {
+                let list = sharedWishlistStore.lists[i]
+                print("[自动同步] 检查清单[\(i)]「\(list.name)」: isOwner=\(list.isOwner), linkedGroupId=\(list.linkedGroupId?.uuidString ?? "nil"), items=\(list.items.count)")
+                guard list.isOwner, list.linkedGroupId == nil else {
+                    if list.linkedGroupId != nil {
+                        print("[自动同步]   → 已有 linkedGroupId，跳过")
+                    } else if !list.isOwner {
+                        print("[自动同步]   → 非 owner，跳过")
+                    }
+                    continue
+                }
+                var found = false
+                for si in list.items {
+                    let sidStr = si.sourceItemId?.uuidString ?? "nil"
+                    if let sid = si.sourceItemId {
+                        let localItem = store.items.first(where: { $0.id == sid })
+                        if let item = localItem {
+                            let gid = item.wishlistGroupId
+                            print("[自动同步]   心愿「\(si.name)」sourceItemId=\(sidStr) → 本地匹配 item「\(item.name)」wishlistGroupId=\(gid?.uuidString ?? "nil")")
+                            if let gid = gid {
+                                sharedWishlistStore.lists[i].linkedGroupId = gid
+                                print("[自动同步]   ✅ 恢复 linkedGroupId: \(gid)")
+                                found = true
+                                break
+                            }
+                        } else {
+                            print("[自动同步]   心愿「\(si.name)」sourceItemId=\(sidStr) → 本地未找到匹配 item")
+                        }
+                    } else {
+                        print("[自动同步]   心愿「\(si.name)」sourceItemId=nil，跳过")
+                    }
+                }
+                if !found {
+                    print("[自动同步]   ❌ 未能恢复 linkedGroupId")
+                }
+            }
+            // 持久化恢复的 linkedGroupId
+            sharedWishlistStore.forceSave()
+            
+            isAutoSyncing = false
+            showAutoSyncAlert = false
         }
     }
     
@@ -368,7 +603,7 @@ struct HomeView: View {
                     AddItemView(store: store, groupStore: groupStore, defaultGroupId: nil)
                         .id(addItemId)
                 } else if currentMode == .wishlist {
-                    AddWishlistItemView(store: store, wishlistGroupStore: wishlistGroupStore, defaultGroupId: wishlistSelectedGroupId)
+                    AddWishlistItemView(store: store, wishlistGroupStore: wishlistGroupStore, sharedWishlistStore: sharedWishlistStore, defaultGroupId: wishlistSelectedGroupId)
                         .id(addItemId)
                 } else if currentMode == .daily {
                     AddFinanceRecordView(financeStore: financeStore)
@@ -389,11 +624,28 @@ struct HomeView: View {
                 financeStore.reloadForCurrentUser()
                 TrendDataCache.shared.preload(store: store)
             }
+            .onReceive(NotificationCenter.default.publisher(for: AuthManager.userDidLoginNotification)) { _ in
+                print("[HomeView] 收到 userDidLoginNotification, isAuthenticated=\(authManager.isAuthenticated), isAutoSyncing=\(isAutoSyncing)")
+                guard authManager.isAuthenticated && !isAutoSyncing else { return }
+                isAutoSyncing = true
+                autoSyncMessage = "正在同步中，请稍等"
+                showAutoSyncAlert = true
+                Task {
+                    await performAutoSync()
+                }
+            }
             .onAppear {
                 checkClipboardForSharedWishlist()
+                checkICloudAutoSync()
             }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
                 checkClipboardForSharedWishlist()
+                checkICloudAutoSync()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("AddItemFromSharedWish"))) { notification in
+                if let item = notification.object as? Item {
+                    store.add(item)
+                }
             }
             .customConfirmAlert(
                 isPresented: $showingClipboardImportAlert,
@@ -415,6 +667,15 @@ struct HomeView: View {
                 isPresented: $showingClipboardImportError,
                 title: "导入失败",
                 message: clipboardImportError ?? "未知错误"
+            )
+            .customBlueConfirmAlert(
+                isPresented: $showAutoSyncAlert,
+                message: autoSyncMessage,
+                confirmText: "确认",
+                confirmColor: .blue,
+                backgroundColor: .blue,
+                width: 260,
+                onConfirm: {}
             )
             .customInputAlert(
                 isPresented: $showingNicknameInput,
@@ -454,6 +715,73 @@ struct HomeView: View {
     }
     
 
+    
+    // MARK: - iCloud 自动同步
+    @State private var isICloudAutoSyncing = false
+    
+    /// 检查是否需要 iCloud 自动同步：VIP + 开关开启 + 上次同步超过 1 小时 + 有需要同步的变更
+    private func checkICloudAutoSync() {
+        guard IAPManager.shared.isVIPActive else { return }
+        guard isICloudAutoSyncEnabled else { return }
+        guard !isICloudAutoSyncing else { return }
+        guard ICloudSyncManager.shared.isICloudAvailable else { return }
+        
+        // 检查上次 iCloud 同步时间
+        let lastSync = UserDefaults.standard.double(forKey: "iCloudLastSyncTime")
+        let hourAgo = Date().timeIntervalSince1970 - 3600
+        guard lastSync < hourAgo else { return }
+        
+        // 检查是否有未同步的变更（距离上次已超过 1 小时，直接同步即可）
+        guard store.hasUnsyncedChanges else { return }
+        
+        print("[iCloud 自动同步] 距上次同步超过 1 小时，开始自动同步")
+        isICloudAutoSyncing = true
+        
+        Task {
+            let deletedRecords = store.deletedItemRecords
+            
+            async let itemsResult = ICloudSyncManager.shared.syncItems(items: store.items, deletedItemRecords: deletedRecords)
+            async let wishesResult = ICloudSyncManager.shared.syncWishes(items: store.items, deletedItemRecords: deletedRecords)
+            
+            let largeItemsPrice = store.items.filter { $0.listType == .items && !$0.isArchived && $0.isLargeItem && !$0.isPriceless }.reduce(0) { $0 + $1.price }
+            let normalItemsPrice = store.items.filter { $0.listType == .items && !$0.isArchived && !$0.isLargeItem && !$0.isPriceless }.reduce(0) { $0 + $1.price }
+            let allItemsPrice = largeItemsPrice + normalItemsPrice
+            
+            let nonSalaryRecords = financeStore.records.filter { $0.incomePeriod != .salary }
+            let savingResult = await ICloudSyncManager.shared.syncSavingInfo(
+                records: nonSalaryRecords,
+                salaryRecord: financeStore.salaryRecord,
+                goal: financeStore.savingsGoal,
+                totalAssets: financeStore.calculatedTotalAssets(itemsTotalPrice: allItemsPrice),
+                groups: groupStore.groups,
+                wishlistGroups: wishlistGroupStore.groups,
+                userSettings: UserSettings.fromLocal()
+            )
+            
+            let (icloudItemsResult, icloudWishesResult) = await (itemsResult, wishesResult)
+            
+            let allSuccess = icloudItemsResult != nil && icloudWishesResult != nil && savingResult.success
+            
+            await MainActor.run {
+                if allSuccess || icloudItemsResult != nil || icloudWishesResult != nil {
+                    store.markSyncCompleted()
+                    store.markAllItemsSynced()
+                }
+                
+                // 记录同步时间
+                UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "iCloudLastSyncTime")
+                isICloudAutoSyncing = false
+                print("[iCloud 自动同步] 完成: \(allSuccess ? "全部成功" : "部分成功")")
+            }
+        }
+    }
+    
+    private var isICloudAutoSyncEnabled: Bool {
+        if UserDefaults.standard.object(forKey: "iCloudAutoSyncEnabled") == nil {
+            return IAPManager.shared.isVIPActive // VIP 默认开启
+        }
+        return UserDefaults.standard.bool(forKey: "iCloudAutoSyncEnabled")
+    }
     
     /// 检查剪贴板是否包含 sharewish_ 开头的共享清单 ID
     private func checkClipboardForSharedWishlist() {
@@ -517,7 +845,8 @@ struct HomeView: View {
                         imageUrl: remote.imageUrl,
                         purchaseLink: remote.purchaseLink,
                         details: remote.details,
-                        completedBy: remote.completedBy
+                        completedBy: remote.completedBy,
+                        addedBy: remote.addedBy
                     )
                 }
                 
@@ -759,6 +1088,17 @@ struct ItemsView: View {
             if newValue {
                 // 登录成功后关闭 sheet
                 showingAccountSync = false
+                // 备用触发：延迟 1.5 秒检查是否需要自动同步（防止通知未被接收）
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    guard authManager.isAuthenticated && !isAutoSyncing else { return }
+                    print("[HomeView] 备用触发自动同步")
+                    isAutoSyncing = true
+                    autoSyncMessage = "正在同步中，请稍等"
+                    showAutoSyncAlert = true
+                    Task {
+                        await performAutoSync()
+                    }
+                }
             }
         }
         .onChange(of: showArchived) { _, _ in

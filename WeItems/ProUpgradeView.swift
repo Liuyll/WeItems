@@ -47,10 +47,12 @@ struct ProUpgradeView: View {
                     Button("返回") { dismiss() }
                 }
             }
-            .customInfoAlert(
+            .customBlueInfoAlert(
                 isPresented: $purchaseSuccess,
-                title: "购买成功",
-                message: "欢迎成为 Pro 会员！所有高级功能已解锁。",
+                message: "欢迎加入我们\n所有高级功能已解锁",
+                buttonText: "太棒了",
+                buttonColor: .blue,
+                backgroundColor: .green,
                 onDismiss: { dismiss() }
             )
             .sheet(isPresented: $showingLogin) {

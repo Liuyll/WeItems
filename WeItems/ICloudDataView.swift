@@ -33,7 +33,7 @@ struct ICloudDataView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let data = overview {
                 List {
-                    // 物品 & 心愿
+                    // 同步数据
                     Section {
                         CloudDataRow(icon: "cube.fill", color: .blue, title: "我的物品", value: "\(data.itemsCount) 件")
                         CloudDataRow(icon: "heart.fill", color: .pink, title: "心愿清单", value: "\(data.wishesCount) 个")
@@ -43,25 +43,49 @@ struct ICloudDataView: View {
                     
                     // 资产状况
                     Section {
-                        CloudDataRow(icon: "banknote.fill", color: .green, title: "收入/储蓄记录", value: "\(data.savingRecordsCount) 条")
+                        CloudDataRow(icon: "banknote.fill", color: .green, title: "储蓄记录", value: data.savingRecordsCount > 0 ? "已同步（\(data.savingRecordsCount) 条）" : "未同步")
                         CloudDataRow(icon: "briefcase.fill", color: .orange, title: "工资配置", value: data.hasSalaryRecord ? "已同步" : "未同步")
+                        CloudDataRow(icon: "target", color: .red, title: "储蓄目标", value: data.savingsGoalAmount > 0 ? "已同步" : "未同步")
+                    } header: {
+                        Text("资产状况")
+                    }
+                    
+                    // 个人设置
+                    Section {
+                        CloudDataRow(icon: "gearshape.fill", color: .purple, title: "个人设置", value: data.userSettings != nil ? "已同步" : "未同步")
+                    } header: {
+                        Text("个人设置")
+                    }
+                    
+                    #if DEBUG
+                    // Debug 同步详情
+                    Section {
                         if data.totalAssets > 0 {
                             CloudDataRow(icon: "chart.bar.fill", color: .purple, title: "总资产", value: "¥\(formatNumber(data.totalAssets))")
                         }
                         if data.savingsGoalAmount > 0 {
                             CloudDataRow(icon: "target", color: .red, title: data.savingsGoalName, value: "¥\(formatNumber(data.savingsGoalAmount))")
                         }
-                    } header: {
-                        Text("资产状况")
-                    }
-                    
-                    // 存储占用
-                    Section {
+                        if data.savingsAmount > 0 {
+                            CloudDataRow(icon: "leaf.fill", color: .mint, title: "储蓄记录", value: "\(data.savingsAmount) 条")
+                        }
+                        if data.groupsCount > 0 {
+                            CloudDataRow(icon: "folder.fill", color: .blue, title: "物品分组", value: "\(data.groupsCount) 个")
+                        }
+                        if data.wishlistGroupsCount > 0 {
+                            CloudDataRow(icon: "folder.fill", color: .pink, title: "心愿分组", value: "\(data.wishlistGroupsCount) 个")
+                        }
+                        if let settings = data.userSettings {
+                            CloudDataRow(icon: "faceid", color: .orange, title: "资产面容解锁", value: settings.assetFaceIDLock ? "已开启" : "未开启")
+                            CloudDataRow(icon: "doc.on.clipboard", color: .blue, title: "剪贴板权限", value: settings.clipboardReadEnabled ? "已开启" : "未开启")
+                            CloudDataRow(icon: "arrow.up.arrow.down", color: .purple, title: "物品排序", value: settings.itemSortMode)
+                        }
                         CloudDataRow(icon: "photo.fill", color: .cyan, title: "图片文件", value: "\(data.imageCount) 张")
                         CloudDataRow(icon: "internaldrive.fill", color: .gray, title: "图片占用", value: formatFileSize(data.imagesTotalSize))
                     } header: {
-                        Text("iCloud 存储")
+                        Text("Debug 同步详情")
                     }
+                    #endif
                     
                     // 说明
                     Section {

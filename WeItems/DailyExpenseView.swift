@@ -567,6 +567,41 @@ struct FinanceRecord: Identifiable, Codable {
 }
 
 /// 财务自由目标
+/// 用户配置（同步到远端/iCloud）
+struct UserSettings: Codable {
+    var assetFaceIDLock: Bool
+    var clipboardReadEnabled: Bool
+    var itemSortMode: String
+    
+    init(assetFaceIDLock: Bool = false, clipboardReadEnabled: Bool = false, itemSortMode: String = "添加时间") {
+        self.assetFaceIDLock = assetFaceIDLock
+        self.clipboardReadEnabled = clipboardReadEnabled
+        self.itemSortMode = itemSortMode
+    }
+    
+    /// 是否全是默认值（用户未自定义过任何设置）
+    var isDefault: Bool {
+        !assetFaceIDLock && !clipboardReadEnabled && itemSortMode == "添加时间"
+    }
+    
+    /// 从当前本地设置构建
+    static func fromLocal() -> UserSettings {
+        UserSettings(
+            assetFaceIDLock: UserDefaults.standard.bool(forKey: "assetFaceIDLock"),
+            clipboardReadEnabled: PrivacySettings.shared.isClipboardReadEnabled,
+            itemSortMode: UserDefaults.standard.string(forKey: "itemSortMode") ?? "添加时间"
+        )
+    }
+    
+    /// 应用到本地设置
+    func applyToLocal() {
+        UserDefaults.standard.set(assetFaceIDLock, forKey: "assetFaceIDLock")
+        PrivacySettings.shared.isClipboardReadEnabled = clipboardReadEnabled
+        UserDefaults.standard.set(itemSortMode, forKey: "itemSortMode")
+        print("[UserSettings] 已从远端回写: faceID=\(assetFaceIDLock), clipboard=\(clipboardReadEnabled), sort=\(itemSortMode)")
+    }
+}
+
 struct SavingsGoal: Codable {
     var targetAmount: Double
     var name: String
@@ -585,6 +620,10 @@ class FinanceStore: ObservableObject {
     @Published var records: [FinanceRecord] = []
     @Published var savingsGoal: SavingsGoal = SavingsGoal()
     @Published var totalAssets: Double = 0
+    @Published var hasUnsyncedChanges: Bool = false
+    
+    /// 同步回写时抑制 needsSync 标记
+    var suppressUnsyncFlag = false
     
     private var recordsFileURL: URL {
         UserStorageHelper.shared.currentUserDirectory.appendingPathComponent("finance_records.json")
@@ -602,7 +641,17 @@ class FinanceStore: ObservableObject {
     
     /// 用户切换后重新加载数据
     func reloadForCurrentUser() {
+        records = []
+        savingsGoal = SavingsGoal()
+        totalAssets = 0
+        hasUnsyncedChanges = false
         loadAll()
+        // 登录时合并了 anonymous 数据，需要保存到用户目录以持久化
+        if UserStorageHelper.shared.isLoggedIn && !records.isEmpty {
+            saveRecords()
+            saveGoal()
+            saveAssets()
+        }
     }
     
     // MARK: - 计算属性
@@ -1177,20 +1226,93 @@ class FinanceStore: ObservableObject {
         saveGoal()
     }
     
+    /// 从远端/iCloud 合并储蓄数据到本地
+    /// 策略：远端数据完全覆盖本地（以远端为准）
+    func applyRemoteData(records remoteRecords: [FinanceRecord], salaryRecord remoteSalary: FinanceRecord?, goal remoteGoal: SavingsGoal?) {
+        // 合并非工资记录：以 id 为 key，远端有的覆盖本地，远端没有的保留
+        var mergedRecords = self.records
+        for remoteRecord in remoteRecords {
+            if let index = mergedRecords.firstIndex(where: { $0.id == remoteRecord.id }) {
+                mergedRecords[index] = remoteRecord
+            } else {
+                mergedRecords.append(remoteRecord)
+            }
+        }
+        
+        // 合并工资记录
+        if let remoteSalary = remoteSalary {
+            if let index = mergedRecords.firstIndex(where: { $0.type == .income && $0.incomePeriod == .salary && $0.salaryBreakdown != nil }) {
+                mergedRecords[index] = remoteSalary
+            } else {
+                mergedRecords.append(remoteSalary)
+            }
+        }
+        
+        records = mergedRecords.sorted { $0.date > $1.date }
+        saveRecords()
+        
+        // 合并目标
+        if let remoteGoal = remoteGoal, remoteGoal.targetAmount > 0 {
+            savingsGoal = remoteGoal
+            saveGoal()
+        }
+        
+        print("[FinanceStore] 远端数据已合并: \(remoteRecords.count) 条记录, 工资: \(remoteSalary != nil), 目标: \(remoteGoal?.name ?? "无")")
+    }
+    
     // MARK: - 持久化
     
     private func loadAll() {
+        // 先重置所有内存数据
+        records = []
+        savingsGoal = SavingsGoal()
+        totalAssets = 0
+        
+        var allRecords: [FinanceRecord] = []
+        
+        // 1. 加载当前用户目录
         if let data = try? Data(contentsOf: recordsFileURL),
            let decoded = try? JSONDecoder().decode([FinanceRecord].self, from: data) {
-            records = decoded.sorted { $0.date > $1.date }
+            allRecords = decoded
         }
+        
+        // 2. 已登录用户额外合并 anonymous 目录数据
+        if UserStorageHelper.shared.isLoggedIn {
+            let anonFile = UserStorageHelper.shared.anonymousDirectory.appendingPathComponent("finance_records.json")
+            if let data = try? Data(contentsOf: anonFile),
+               let anonRecords = try? JSONDecoder().decode([FinanceRecord].self, from: data) {
+                let existingIds = Set(allRecords.map { $0.id })
+                for record in anonRecords where !existingIds.contains(record.id) {
+                    allRecords.append(record)
+                }
+            }
+        }
+        
+        records = allRecords.sorted { $0.date > $1.date }
+        
+        // 加载储蓄目标
         if let data = try? Data(contentsOf: goalFileURL),
            let decoded = try? JSONDecoder().decode(SavingsGoal.self, from: data) {
             savingsGoal = decoded
+        } else if UserStorageHelper.shared.isLoggedIn {
+            // 回退到 anonymous 目录
+            let anonGoal = UserStorageHelper.shared.anonymousDirectory.appendingPathComponent("savings_goal.json")
+            if let data = try? Data(contentsOf: anonGoal),
+               let decoded = try? JSONDecoder().decode(SavingsGoal.self, from: data) {
+                savingsGoal = decoded
+            }
         }
+        
+        // 加载总资产
         if let data = try? Data(contentsOf: assetsFileURL),
            let decoded = try? JSONDecoder().decode(Double.self, from: data) {
             totalAssets = decoded
+        } else if UserStorageHelper.shared.isLoggedIn {
+            let anonAssets = UserStorageHelper.shared.anonymousDirectory.appendingPathComponent("total_assets.json")
+            if let data = try? Data(contentsOf: anonAssets),
+               let decoded = try? JSONDecoder().decode(Double.self, from: data) {
+                totalAssets = decoded
+            }
         }
     }
     
@@ -1198,17 +1320,32 @@ class FinanceStore: ObservableObject {
         if let data = try? JSONEncoder().encode(records) {
             try? data.write(to: recordsFileURL)
         }
+        if !suppressUnsyncFlag {
+            hasUnsyncedChanges = true
+            UserDefaults.standard.set(true, forKey: "remoteNeedsSync")
+            UserDefaults.standard.set(true, forKey: "iCloudNeedsSync")
+        }
     }
     
     private func saveGoal() {
         if let data = try? JSONEncoder().encode(savingsGoal) {
             try? data.write(to: goalFileURL)
         }
+        if !suppressUnsyncFlag {
+            hasUnsyncedChanges = true
+            UserDefaults.standard.set(true, forKey: "remoteNeedsSync")
+            UserDefaults.standard.set(true, forKey: "iCloudNeedsSync")
+        }
     }
     
     private func saveAssets() {
         if let data = try? JSONEncoder().encode(totalAssets) {
             try? data.write(to: assetsFileURL)
+        }
+        if !suppressUnsyncFlag {
+            hasUnsyncedChanges = true
+            UserDefaults.standard.set(true, forKey: "remoteNeedsSync")
+            UserDefaults.standard.set(true, forKey: "iCloudNeedsSync")
         }
     }
 }
@@ -2459,6 +2596,7 @@ struct AddFinanceRecordView: View {
     
     /// 编辑模式：传入已有记录
     var editingRecord: FinanceRecord? = nil
+    @State private var showDeleteConfirm = false
     private var isEditing: Bool { editingRecord != nil }
     
     @State private var title = ""
@@ -2832,10 +2970,7 @@ struct AddFinanceRecordView: View {
                 if isEditing {
                     Section {
                         Button(role: .destructive) {
-                            if let record = editingRecord {
-                                financeStore.deleteRecord(record)
-                            }
-                            dismiss()
+                            showDeleteConfirm = true
                         } label: {
                             HStack {
                                 Spacer()
@@ -2878,6 +3013,22 @@ struct AddFinanceRecordView: View {
                     countAsIncome = (newValue == .oneTime)
                 }
             }
+            .customBlueConfirmAlert(
+                isPresented: $showDeleteConfirm,
+                message: "删除后无法恢复，确定要删除「\(title)」吗？",
+                confirmText: "删除",
+                cancelText: "取消",
+                confirmColor: .blue,
+                cancelColor: .green,
+                backgroundColor: .red,
+                width: 260,
+                onConfirm: {
+                    if let record = editingRecord {
+                        financeStore.deleteRecord(record)
+                    }
+                    dismiss()
+                }
+            )
         }
     }
     
@@ -3256,6 +3407,7 @@ struct FullTrendView: View {
 struct SalaryConfigView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var financeStore: FinanceStore
+    @State private var showDeleteConfirm = false
     
     @State private var title = "工资收入"
     @State private var salaryBaseItems: [SalaryBaseItem] = [SalaryBaseItem()]
@@ -3466,10 +3618,7 @@ struct SalaryConfigView: View {
                 if financeStore.salaryRecord != nil {
                     Section {
                         Button(role: .destructive) {
-                            if let record = financeStore.salaryRecord {
-                                financeStore.deleteRecord(record)
-                            }
-                            dismiss()
+                            showDeleteConfirm = true
                         } label: {
                             HStack { Spacer(); Text("删除工资配置"); Spacer() }
                         }
@@ -3494,6 +3643,22 @@ struct SalaryConfigView: View {
                 }
             }
             .onAppear { loadExisting() }
+            .customBlueConfirmAlert(
+                isPresented: $showDeleteConfirm,
+                message: "删除后无法恢复，确定要删除工资配置吗？",
+                confirmText: "删除",
+                cancelText: "取消",
+                confirmColor: .blue,
+                cancelColor: .green,
+                backgroundColor: .red,
+                width: 260,
+                onConfirm: {
+                    if let record = financeStore.salaryRecord {
+                        financeStore.deleteRecord(record)
+                    }
+                    dismiss()
+                }
+            )
         }
     }
     
@@ -3627,11 +3792,12 @@ struct SavingsConfigView: View {
                                 }
                             }
                             .listRowSeparator(.hidden)
-                        }
-                        .onDelete { offsets in
-                            let records = savingsRecords
-                            for index in offsets {
-                                financeStore.deleteRecord(records[index])
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                Button(role: .destructive) {
+                                    financeStore.deleteRecord(record)
+                                } label: {
+                                    Image(systemName: "trash")
+                                }
                             }
                         }
                     }

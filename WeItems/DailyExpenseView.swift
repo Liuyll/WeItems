@@ -635,6 +635,9 @@ class FinanceStore: ObservableObject {
     /// 同步回写时抑制 needsSync 标记
     var suppressUnsyncFlag = false
     
+    /// 用户主动删除的记录 ID（同步时用于从远端移除）
+    var deletedRecordIDs: Set<String> = []
+    
     private var recordsFileURL: URL {
         UserStorageHelper.shared.currentUserDirectory.appendingPathComponent("finance_records.json")
     }
@@ -643,6 +646,9 @@ class FinanceStore: ObservableObject {
     }
     private var assetsFileURL: URL {
         UserStorageHelper.shared.currentUserDirectory.appendingPathComponent("total_assets.json")
+    }
+    private var deletedRecordIDsFileURL: URL {
+        UserStorageHelper.shared.currentUserDirectory.appendingPathComponent("finance_deleted_ids.json")
     }
     
     init() {
@@ -654,6 +660,7 @@ class FinanceStore: ObservableObject {
         records = []
         savingsGoal = SavingsGoal()
         totalAssets = 0
+        deletedRecordIDs = []
         hasUnsyncedChanges = false
         loadAll()
         // 登录时合并了 anonymous 数据，需要保存到用户目录以持久化
@@ -1237,7 +1244,9 @@ class FinanceStore: ObservableObject {
     
     func deleteRecord(_ record: FinanceRecord) {
         records.removeAll { $0.id == record.id }
+        deletedRecordIDs.insert(record.id.uuidString)
         saveRecords()
+        saveDeletedRecordIDs()
     }
     
     func updateRecord(_ record: FinanceRecord) {
@@ -1346,6 +1355,12 @@ class FinanceStore: ObservableObject {
                 totalAssets = decoded
             }
         }
+        
+        // 加载删除记录
+        if let data = try? Data(contentsOf: deletedRecordIDsFileURL),
+           let decoded = try? JSONDecoder().decode(Set<String>.self, from: data) {
+            deletedRecordIDs = decoded
+        }
     }
     
     private func saveRecords() {
@@ -1379,6 +1394,18 @@ class FinanceStore: ObservableObject {
             UserDefaults.standard.set(true, forKey: "remoteNeedsSync")
             UserDefaults.standard.set(true, forKey: "iCloudNeedsSync")
         }
+    }
+    
+    private func saveDeletedRecordIDs() {
+        if let data = try? JSONEncoder().encode(deletedRecordIDs) {
+            try? data.write(to: deletedRecordIDsFileURL)
+        }
+    }
+    
+    /// 同步成功后清除删除记录
+    func clearDeletedRecordIDs() {
+        deletedRecordIDs = []
+        try? FileManager.default.removeItem(at: deletedRecordIDsFileURL)
     }
 }
 

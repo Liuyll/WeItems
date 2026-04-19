@@ -125,7 +125,7 @@ struct LifeGoodCelebrationView: View {
                     }
                     
                     VStack(spacing: 6) {
-                        Text("精神好物")
+                        Text("人生好物")
                             .font(.system(size: 32, weight: .medium, design: .serif))
                             .foregroundStyle(.white)
                         

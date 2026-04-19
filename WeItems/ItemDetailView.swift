@@ -21,6 +21,7 @@ struct ItemDetailView: View {
     @State private var showingEditWish = false
     @State private var toastMessage: String?
     @State private var showToast = false
+    @State private var toastAction: (() -> Void)?
     @State private var fullScreenImage: UIImage? = nil
     
     var body: some View {
@@ -119,10 +120,13 @@ struct ItemDetailView: View {
                                 
                                 Button {
                                     UIPasteboard.general.string = item.purchaseLink
-                                    toastMessage = "已复制到剪贴板"
+                                    let result = LinkHelper.toastInfo(for: item.purchaseLink)
+                                    toastMessage = result.message
+                                    toastAction = result.action
                                     withAnimation { showToast = true }
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
                                         withAnimation { showToast = false }
+                                        toastAction = nil
                                     }
                                 } label: {
                                     HStack(spacing: 8) {
@@ -395,15 +399,38 @@ struct ItemDetailView: View {
                 if showToast, let msg = toastMessage {
                     VStack {
                         Spacer()
-                        Text(msg)
-                            .font(.subheadline)
-                            .fontWeight(.medium)
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 20)
-                            .padding(.vertical, 12)
-                            .background(Capsule().fill(Color.black.opacity(0.75)))
-                            .padding(.bottom, 40)
-                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                        Group {
+                            if let action = toastAction {
+                                Button {
+                                    action()
+                                    withAnimation { showToast = false }
+                                    toastAction = nil
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "arrow.up.right.square.fill")
+                                            .font(.system(size: 14))
+                                        Text(msg)
+                                    }
+                                    .font(.subheadline)
+                                    .fontWeight(.medium)
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 20)
+                                    .padding(.vertical, 12)
+                                    .background(Capsule().fill(Color.blue))
+                                }
+                                .buttonStyle(.plain)
+                            } else {
+                                Text(msg)
+                                    .font(.subheadline)
+                                    .fontWeight(.medium)
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 20)
+                                    .padding(.vertical, 12)
+                                    .background(Capsule().fill(Color.black.opacity(0.75)))
+                            }
+                        }
+                        .padding(.bottom, 40)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
                     .animation(.easeInOut(duration: 0.3), value: showToast)
                 }

@@ -359,7 +359,7 @@ struct AddItemView: View {
         
         store.add(newItem)
         
-        // 检查是否为精神旅行类型
+        // 检查是否为旅行类型
         if selectedType == .outdoor {
             spiritTravelCount = countCurrentYearSpiritTravels()
             celebrationKind = .spiritTravel
@@ -378,7 +378,7 @@ struct AddItemView: View {
         
         return store.items.filter { item in
             let itemYear = calendar.component(.year, from: item.createdAt)
-            // 统计本年度所有精神旅行物品（包括已归档的，不包括已删除的）
+            // 统计本年度所有旅行物品（包括已归档的，不包括已删除的）
             return item.type == ItemType.outdoor.rawValue && 
                    itemYear == currentYear &&
                    item.listType == .items

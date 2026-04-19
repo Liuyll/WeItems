@@ -542,18 +542,15 @@ struct AuthView: View {
             print("sub:               \(response.sub)")
             print("=================================================")
             
-            // 异步保存 third_info 到远端 userinfo
-            Task {
-                if let client = AuthManager.shared.getCloudBaseClient() {
+            // 先同步 third_info 到远端 userinfo（必须 await 完成，避免和 loginSuccess 中的 fetchOrCreateUserInfo 并发创建重复记录）
+            if let client = AuthManager.shared.getCloudBaseClient() {
+                await client.updateUserInfoThirdInfo(thirdInfo: thirdInfo)
+                print("[Apple登录] third_info 已同步到远端")
+            } else {
+                if let envId = Bundle.main.object(forInfoDictionaryKey: "CLOUDBASE_ENV_ID") as? String ?? Self.loadEnvId() {
+                    let client = CloudBaseClient(envId: envId, accessToken: response.accessToken)
                     await client.updateUserInfoThirdInfo(thirdInfo: thirdInfo)
-                    print("[Apple登录] third_info 已同步到远端")
-                } else {
-                    // 登录刚完成，需要用新 token 创建 client
-                    if let envId = Bundle.main.object(forInfoDictionaryKey: "CLOUDBASE_ENV_ID") as? String ?? Self.loadEnvId() {
-                        let client = CloudBaseClient(envId: envId, accessToken: response.accessToken)
-                        await client.updateUserInfoThirdInfo(thirdInfo: thirdInfo)
-                        print("[Apple登录] third_info 已同步到远端（新建 client）")
-                    }
+                    print("[Apple登录] third_info 已同步到远端（新建 client）")
                 }
             }
             

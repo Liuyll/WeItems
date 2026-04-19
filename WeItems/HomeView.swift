@@ -290,7 +290,8 @@ struct HomeView: View {
             totalAssets: financeStore.calculatedTotalAssets(itemsTotalPrice: allItemsPrice),
             groups: groupStore.groups,
             wishlistGroups: wishlistGroupStore.groups,
-            userSettings: UserSettings.fromLocal()
+            userSettings: UserSettings.fromLocal(),
+            deletedRecordIDs: financeStore.deletedRecordIDs
         )
         
         let (itemsSyncResult, wishesSyncResult, userInfoResponse) = await (itemsResult, wishesResult, userInfoResult)
@@ -303,6 +304,7 @@ struct HomeView: View {
                 if let remoteGroups = result.groups { groupStore.applyRemoteGroups(remoteGroups) }
                 if let remoteWG = result.wishlistGroups { wishlistGroupStore.applyRemoteGroups(remoteWG) }
                 result.userSettings?.applyToLocal()
+                financeStore.clearDeletedRecordIDs()
             }
         }
         
@@ -331,7 +333,12 @@ struct HomeView: View {
                 let remoteItems = sharedRecord.wishinfo?.items ?? []
                 
                 let sharedItems: [SharedWishItem] = remoteItems.map { remote in
-                    SharedWishItem(
+                    let remoteUUID: UUID = {
+                        if let idStr = remote.id, let uuid = UUID(uuidString: idStr) { return uuid }
+                        return UUID()
+                    }()
+                    return SharedWishItem(
+                        id: remoteUUID,
                         sourceItemId: remote.sourceItemId.flatMap { UUID(uuidString: $0) },
                         name: remote.name ?? "未知心愿",
                         price: remote.price ?? 0,
@@ -365,15 +372,20 @@ struct HomeView: View {
                 }()
                 
                 await MainActor.run {
+                    // 过滤本地已删除的心愿
+                    let deletedNames = sharedWishlistStore.deletedItemNames[wishGroupId] ?? []
+                    let filteredItems = deletedNames.isEmpty ? sharedItems : sharedItems.filter { !deletedNames.contains($0.name) }
+                    
                     if let idx = sharedWishlistStore.lists.firstIndex(where: { $0.wishGroupId == wishGroupId }) {
-                        sharedWishlistStore.applyMergedResult(listId: sharedWishlistStore.lists[idx].id, mergedItems: sharedItems, isSynced: true, remoteName: listName, remoteEmoji: listEmoji, remoteOwnerName: ownerName)
+                        sharedWishlistStore.applyMergedResult(listId: sharedWishlistStore.lists[idx].id, mergedItems: filteredItems, isSynced: true, remoteName: listName, remoteEmoji: listEmoji, remoteOwnerName: ownerName)
                         if let nickname = myRemoteNickname { sharedWishlistStore.setMyNickname(sharedWishlistStore.lists[idx].id, nickname: nickname) }
                         // 从远端恢复 linkedGroupId
                         if sharedWishlistStore.lists[idx].linkedGroupId == nil, let lgId = remoteLinkedGroupId {
                             sharedWishlistStore.lists[idx].linkedGroupId = lgId
                         }
+                        sharedWishlistStore.clearDeletedItemNames(for: wishGroupId)
                     } else {
-                        sharedWishlistStore.add(SharedWishlist(name: listName, emoji: listEmoji, items: sharedItems, isSynced: true, wishGroupId: wishGroupId, isOwner: isOwner, ownerName: ownerName, myNickname: myRemoteNickname, linkedGroupId: remoteLinkedGroupId))
+                        sharedWishlistStore.add(SharedWishlist(name: listName, emoji: listEmoji, items: filteredItems, isSynced: true, wishGroupId: wishGroupId, isOwner: isOwner, ownerName: ownerName, myNickname: myRemoteNickname, linkedGroupId: remoteLinkedGroupId))
                     }
                 }
             }
@@ -850,7 +862,12 @@ struct HomeView: View {
                 let remoteItems = record.wishinfo?.items ?? []
                 
                 let sharedItems: [SharedWishItem] = remoteItems.map { remote in
-                    SharedWishItem(
+                    let remoteUUID: UUID = {
+                        if let idStr = remote.id, let uuid = UUID(uuidString: idStr) { return uuid }
+                        return UUID()
+                    }()
+                    return SharedWishItem(
+                        id: remoteUUID,
                         name: remote.name ?? "未知心愿",
                         price: remote.price ?? 0,
                         isCompleted: remote.isCompleted ?? false,

@@ -215,6 +215,21 @@ class AuthManager: ObservableObject {
             if let registerTime = record.anotherinfo?.registerTime, !registerTime.isEmpty {
                 TokenStorage.shared.saveRegisterTime(registerTime)
             }
+            
+            // 如果远端 anotherinfo.username 为空，补写当前用户名
+            if let dataId = record._id {
+                let remoteUsername = record.anotherinfo?.username ?? ""
+                let localUsername = TokenStorage.shared.getPhoneNumber() ?? ""
+                if remoteUsername.isEmpty && !localUsername.isEmpty {
+                    print("[AuthManager] 远端 username 为空，补写: \(localUsername)")
+                    let registerTime = record.anotherinfo?.registerTime ?? ISO8601DateFormatter().string(from: Date())
+                    let _ = await client.updateUserInfoAnotherInfo(
+                        dataId: dataId,
+                        registerTime: registerTime,
+                        username: localUsername
+                    )
+                }
+            }
         } else {
             // userinfo 不存在，创建新记录
             print("[AuthManager] userinfo 不存在，开始创建...")

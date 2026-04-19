@@ -1920,6 +1920,7 @@ class CloudBaseClient {
         
         struct AnotherInfoData: Codable {
             let registerTime: String?  // 注册时间 ISO8601
+            let username: String?      // 用户名（手机号或 apple-xxx）
         }
         
         struct ThirdInfoData: Codable {
@@ -1970,24 +1971,40 @@ class CloudBaseClient {
     }
     
     /// 创建 userinfo 记录（首次，share_wish_list 为数组）
+    /// 内部会先查询是否已存在，避免重复创建
     @available(iOS 13.0, *)
     func createUserInfo(
         shareWishList: [String],
         envType: String = "prod",
         modelName: String = "userinfo"
     ) async -> CreateResponse? {
+        // 前置查询：如果已存在 userinfo，不重复创建
+        let existing = await fetchUserInfo(envType: envType, modelName: modelName)
+        if let records = existing?.data?.records, !records.isEmpty {
+            print("[userinfo] 已存在 \(records.count) 条记录，跳过创建")
+            return nil
+        }
+        
         let path = "/v1/model/\(envType)/\(modelName)/create"
         let registerTime = ISO8601DateFormatter().string(from: Date())
+        let isoNow = registerTime
+        let username = TokenStorage.shared.getPhoneNumber() ?? ""
         let payload: [String: Any] = [
             "data": [
                 "share_wish_list": shareWishList,
+                "vip_type": [
+                    "type": IAPManager.shared.vipLevel.rawValue,
+                    "startDate": isoNow,
+                    "expireDate": isoNow
+                ],
                 "anotherinfo": [
-                    "registerTime": registerTime
+                    "registerTime": registerTime,
+                    "username": username
                 ]
             ]
         ]
         
-        print("[userinfo] 创建用户信息, share_wish_list=\(shareWishList), registerTime=\(registerTime)")
+        print("[userinfo] 创建用户信息, share_wish_list=\(shareWishList), registerTime=\(registerTime), vipType=\(IAPManager.shared.vipLevel.rawValue)")
         
         // 同时保存注册时间到本地
         TokenStorage.shared.saveRegisterTime(registerTime)
@@ -2034,6 +2051,45 @@ class CloudBaseClient {
         
         if result == nil {
             print("[userinfo] 更新失败, 无响应")
+        }
+        
+        return result
+    }
+    
+    /// 更新 userinfo 的 anotherinfo 字段（registerTime + username）
+    @available(iOS 13.0, *)
+    func updateUserInfoAnotherInfo(
+        dataId: String,
+        registerTime: String,
+        username: String,
+        envType: String = "prod",
+        modelName: String = "userinfo"
+    ) async -> UpdateManyResponse? {
+        let path = "/v1/model/\(envType)/\(modelName)/update"
+        let payload: [String: Any] = [
+            "data": [
+                "anotherinfo": [
+                    "registerTime": registerTime,
+                    "username": username
+                ]
+            ],
+            "filter": [
+                "where": [
+                    "_id": ["$eq": dataId]
+                ]
+            ]
+        ]
+        
+        print("[userinfo] 更新 anotherinfo: username=\(username)")
+        
+        let result: UpdateManyResponse? = await request(
+            method: "PUT",
+            path: path,
+            body: payload
+        )
+        
+        if result == nil {
+            print("[userinfo] anotherinfo 更新失败")
         }
         
         return result
@@ -2089,11 +2145,18 @@ class CloudBaseClient {
         let response = await fetchUserInfo(envType: envType, modelName: modelName)
         
         if let records = response?.data?.records, let record = records.first, let dataId = record._id {
-            // 记录存在，更新 third_info
+            // 记录存在，更新 third_info 和 anotherinfo.username
             let path = "/v1/model/\(envType)/\(modelName)/update"
+            let username = TokenStorage.shared.getPhoneNumber() ?? ""
+            // 保留已有的 registerTime
+            let existingRegisterTime = record.anotherinfo?.registerTime ?? ISO8601DateFormatter().string(from: Date())
             let payload: [String: Any] = [
                 "data": [
-                    "third_info": thirdInfo
+                    "third_info": thirdInfo,
+                    "anotherinfo": [
+                        "registerTime": existingRegisterTime,
+                        "username": username
+                    ]
                 ],
                 "filter": [
                     "where": [
@@ -2117,17 +2180,24 @@ class CloudBaseClient {
             // 记录不存在，创建新记录并带上 third_info
             let path = "/v1/model/\(envType)/\(modelName)/create"
             let registerTime = ISO8601DateFormatter().string(from: Date())
+            let username = TokenStorage.shared.getPhoneNumber() ?? ""
             let payload: [String: Any] = [
                 "data": [
                     "share_wish_list": [String](),
                     "third_info": thirdInfo,
+                    "vip_type": [
+                        "type": IAPManager.shared.vipLevel.rawValue,
+                        "startDate": registerTime,
+                        "expireDate": registerTime
+                    ],
                     "anotherinfo": [
-                        "registerTime": registerTime
+                        "registerTime": registerTime,
+                        "username": username
                     ]
                 ]
             ]
             
-            print("[userinfo] 创建用户信息（含 third_info）, registerTime=\(registerTime)")
+            print("[userinfo] 创建用户信息（含 third_info）, registerTime=\(registerTime), vipType=\(IAPManager.shared.vipLevel.rawValue)")
             TokenStorage.shared.saveRegisterTime(registerTime)
             
             let _: CreateResponse? = await request(
@@ -2214,6 +2284,7 @@ class CloudBaseClient {
     }
     
     /// 创建 userinfo 记录（包含 vip_type）
+    /// 内部会先查询是否已存在，避免重复创建
     @available(iOS 13.0, *)
     func createUserInfoWithVIP(
         vipType: Int,
@@ -2222,6 +2293,14 @@ class CloudBaseClient {
         envType: String = "prod",
         modelName: String = "userinfo"
     ) async -> CreateResponse? {
+        // 前置查询：如果已存在 userinfo，改为更新而非创建
+        let existing = await fetchUserInfo(envType: envType, modelName: modelName)
+        if let records = existing?.data?.records, let record = records.first, let dataId = record._id {
+            print("[userinfo] 已存在记录，改为更新 VIP 信息")
+            let _ = await updateUserInfoVIPType(dataId: dataId, vipType: vipType, startDate: startDate, expireDate: expireDate)
+            return nil
+        }
+        
         let path = "/v1/model/\(envType)/\(modelName)/create"
         let vipInfo: [String: Any] = [
             "type": vipType,
@@ -2229,12 +2308,14 @@ class CloudBaseClient {
             "expireDate": expireDate
         ]
         let registerTime = ISO8601DateFormatter().string(from: Date())
+        let username = TokenStorage.shared.getPhoneNumber() ?? ""
         let payload: [String: Any] = [
             "data": [
                 "share_wish_list": [String](),
                 "vip_type": vipInfo,
                 "anotherinfo": [
-                    "registerTime": registerTime
+                    "registerTime": registerTime,
+                    "username": username
                 ]
             ]
         ]
@@ -2389,7 +2470,8 @@ class CloudBaseClient {
         listName: String,
         listEmoji: String,
         isOwner: Bool = true,
-        linkedGroupId: String? = nil
+        linkedGroupId: String? = nil,
+        deletedItemNames: Set<String> = []
     ) async -> SharedWishlistSyncResult? {
         // Step 1: 拉取远端数据
         print("[共享心愿同步] Step 1: 拉取远端数据, wish_group_id=\(wishGroupId)")
@@ -2418,75 +2500,76 @@ class CloudBaseClient {
         let remoteWishItems = record.wishinfo?.items ?? []
         print("[共享心愿同步] 远端共 \(remoteWishItems.count) 个心愿，本地共 \(localItems.count) 个心愿")
         
-        // Step 2: Merge 逻辑
-        // 构建本地字典：按 name 索引
-        var localMap: [String: SharedWishItem] = [:]
-        for item in localItems {
-            localMap[item.name] = item
-        }
-        
-        // 构建远端字典：按 name 索引
-        var remoteMap: [String: FetchSharedWishlistResponse.RemoteSharedWishItem] = [:]
+        // Step 2: Merge 逻辑（严格按 id 匹配）
+        // 构建远端字典：按 id 索引
+        var remoteById: [String: FetchSharedWishlistResponse.RemoteSharedWishItem] = [:]
         for item in remoteWishItems {
-            if let name = item.name {
-                remoteMap[name] = item
+            if let id = item.id, !id.isEmpty {
+                remoteById[id] = item
             }
         }
         
         var mergedItems: [SharedWishItem] = []
-        var processedNames: Set<String> = []
+        var processedRemoteIds: Set<String> = []
         
-        // 2a. 遍历本地心愿
+        // 2a. 遍历本地心愿，按 id 匹配远端
         for localItem in localItems {
-            processedNames.insert(localItem.name)
-            if let remote = remoteMap[localItem.name] {
-                // 远端有、本地有：合并（以本地 isCompleted 为准，远端的其他字段如 purchaseLink/details 取最新）
+            let localIdStr = localItem.id.uuidString
+            if let remote = remoteById[localIdStr] {
+                // 远端有、本地有：合并（以本地为准，远端补充缺失字段）
+                processedRemoteIds.insert(localIdStr)
                 var merged = localItem
-                // 如果本地没有 purchaseLink 但远端有，取远端的
                 if merged.purchaseLink == nil, let remotePL = remote.purchaseLink {
                     merged.purchaseLink = remotePL
                 }
-                // 如果本地没有 details 但远端有，取远端的
                 if merged.details == nil, let remoteDetails = remote.details {
                     merged.details = remoteDetails
                 }
-                // 如果本地没有 displayType 但远端有，取远端的
                 if merged.displayType == nil, let remoteType = remote.displayType {
                     merged.displayType = remoteType
                 }
-                // 如果本地没有 completedBy 但远端有，取远端的
                 if merged.completedBy == nil, let remoteCompletedBy = remote.completedBy {
                     merged.completedBy = remoteCompletedBy
                 }
-                // 如果本地没有 imageUrl 但远端有，取远端的
                 if merged.imageUrl == nil {
                     if let remoteImageUrl = remote.imageUrl, !remoteImageUrl.isEmpty {
                         merged.imageUrl = remoteImageUrl
                     } else if let remoteImageBase64 = remote.imageBase64, !remoteImageBase64.isEmpty {
-                        // 旧数据兼容：从 base64 解码
                         merged.imageData = Data(base64Encoded: remoteImageBase64)
                     }
                 }
-                // 如果本地没有 sourceItemId 但远端有，恢复关联
                 if merged.sourceItemId == nil, let remoteSid = remote.sourceItemId, !remoteSid.isEmpty {
                     merged.sourceItemId = UUID(uuidString: remoteSid)
                 }
-                print("[共享心愿同步] Merge 保留本地: \(localItem.name), isCompleted=\(merged.isCompleted)")
+                print("[共享心愿同步] Merge 保留本地: \(localItem.name) (id=\(localIdStr)), isCompleted=\(merged.isCompleted)")
                 mergedItems.append(merged)
             } else {
                 // 远端没有、本地有：保留本地新增
-                print("[共享心愿同步] 本地独有: \(localItem.name)")
+                print("[共享心愿同步] 本地独有: \(localItem.name) (id=\(localIdStr))")
                 mergedItems.append(localItem)
             }
         }
         
-        // 2b. 遍历远端心愿，找出远端独有的
+        // 2b. 遍历远端心愿，找出远端独有的（id 未被匹配到的）
+        var deletedImageObjectIds: [String] = []  // 收集被删除心愿的 COS 图片路径
         for remoteItem in remoteWishItems {
-            guard let name = remoteItem.name, !processedNames.contains(name) else { continue }
-            // Owner push 同步：本地没有但远端有 = 本地删除了，不加回来
+            let remoteIdStr = remoteItem.id ?? ""
+            guard let name = remoteItem.name else { continue }
+            if !remoteIdStr.isEmpty && processedRemoteIds.contains(remoteIdStr) { continue }
+            // Owner push 同步：只有 deletedItemNames 中明确记录的才视为主动删除
+            // 如果本地没有但也没有主动删除记录，说明可能是新设备/数据未加载，保留远端数据
             if isOwner {
-                print("[共享心愿同步] Owner 已删除，跳过远端: \(name)")
-                continue
+                if deletedItemNames.contains(name) {
+                    print("[共享心愿同步] Owner 主动删除，跳过远端: \(name)")
+                    // 收集被删除心愿的 COS 图片（路径格式: shared_wishes/{uuid}.jpg）
+                    if !remoteIdStr.isEmpty {
+                        deletedImageObjectIds.append("shared_wishes/\(remoteIdStr).jpg")
+                    }
+                    continue
+                } else {
+                    print("[共享心愿同步] Owner 本地无此项但非主动删除，保留远端: \(name)")
+                    // 不 continue，走下面的逻辑把远端数据加回来
+                }
             }
             // 非 Owner：远端有、本地没有 → 添加到本地（owner 新增的心愿）
             var remoteImageUrl: String? = nil
@@ -2502,7 +2585,14 @@ class CloudBaseClient {
                 }
                 return nil
             }()
+            let remoteUUID: UUID = {
+                if let idStr = remoteItem.id, let uuid = UUID(uuidString: idStr) {
+                    return uuid
+                }
+                return UUID()
+            }()
             let newItem = SharedWishItem(
+                id: remoteUUID,
                 sourceItemId: remoteSourceItemId,
                 name: name,
                 price: remoteItem.price ?? 0,
@@ -2520,6 +2610,16 @@ class CloudBaseClient {
         }
         
         print("[共享心愿同步] Merge 完成: 合并后共 \(mergedItems.count) 个心愿")
+        
+        // 清理被删除心愿的 COS 图片
+        if !deletedImageObjectIds.isEmpty {
+            print("[共享心愿同步] 清理 \(deletedImageObjectIds.count) 个被删除心愿的 COS 图片")
+            let cloudIdMap = await getCloudObjectIds(objectIds: deletedImageObjectIds)
+            let cloudIds = Array(cloudIdMap.values)
+            if !cloudIds.isEmpty {
+                let _ = await deleteStorageObjects(cloudObjectIds: cloudIds)
+            }
+        }
         
         // Step 3: 使用云函数 update_sharewish 提交 merge 结果到远端
         // 之前使用 REST API PUT /v1/model/.../update 解码可能失败，改用可靠的云函数
@@ -3510,6 +3610,7 @@ class CloudBaseClient {
         groups: [ItemGroup] = [],
         wishlistGroups: [ItemGroup] = [],
         userSettings: UserSettings? = nil,
+        deletedRecordIDs: Set<String> = [],
         envType: String = "prod",
         modelName: String = "savinginfo"
     ) async -> SavingSyncResult? {
@@ -3518,20 +3619,50 @@ class CloudBaseClient {
             return nil
         }
         
-        // Step 1: 先拉取远端数据（用于回写时保留远端 docId 等信息）
+        // Step 1: 先拉取远端数据
         let remoteFetched = await fetchSavingInfo(envType: envType, modelName: modelName)
         
-        // Step 2: 以本地为准（本地删除的不再从远端追加回来）
-        let mergedRecords = records
+        // Step 2: 合并策略 —— 远端数据先合入，再用本地覆盖，最后根据删除记录过滤
+        let mergedRecords: [FinanceRecord] = {
+            // 以远端为基础
+            var merged: [UUID: FinanceRecord] = [:]
+            if let remoteRecords = remoteFetched?.records {
+                for r in remoteRecords { merged[r.id] = r }
+            }
+            // 本地数据覆盖远端（本地有的以本地为准）
+            for r in records { merged[r.id] = r }
+            // 移除用户主动删除的记录
+            for idStr in deletedRecordIDs {
+                if let uuid = UUID(uuidString: idStr) {
+                    merged.removeValue(forKey: uuid)
+                }
+            }
+            return Array(merged.values).sorted { $0.date > $1.date }
+        }()
         
-        // 工资记录：以本地为准
-        let mergedSalary = salaryRecord
+        // 工资记录：本地有则用本地，否则用远端；如果用户主动删除了工资则不保留远端
+        let mergedSalary: FinanceRecord? = {
+            if salaryRecord != nil { return salaryRecord }
+            if let remoteSalary = remoteFetched?.salaryRecord {
+                // 检查是否被用户主动删除
+                if deletedRecordIDs.contains(remoteSalary.id.uuidString) { return nil }
+                return remoteSalary
+            }
+            return nil
+        }()
         
-        // 目标：以本地为准
-        let mergedGoal = goal
+        // 目标：本地有配置则用本地，否则用远端
+        let mergedGoal: SavingsGoal = {
+            if goal.targetAmount > 0 { return goal }
+            if let remote = remoteFetched?.goal, remote.targetAmount > 0 { return remote }
+            return goal
+        }()
         
-        // 总资产：以本地为准
-        let mergedTotalAssets = totalAssets
+        // 总资产：本地有值则用本地，否则用远端
+        let mergedTotalAssets: Double = {
+            if totalAssets > 0 { return totalAssets }
+            return remoteFetched?.totalAssets ?? totalAssets
+        }()
         
         // 分组：以本地为准，但合并远端独有的分组
         var mergedGroups = groups

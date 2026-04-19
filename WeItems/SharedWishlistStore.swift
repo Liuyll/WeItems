@@ -144,13 +144,24 @@ struct SharedWishlist: Identifiable, Codable {
     var completedPrice: Double {
         items.filter(\.isCompleted).reduce(0) { $0 + $1.price }
     }
+    
+    /// 当前清单中已有的自定义展示类型（排除标准 ItemType）
+    var existingCustomTypes: [String] {
+        let standardTypes = Set(ItemType.allCases.map(\.rawValue))
+        let customTypes = Set(items.compactMap(\.displayType).filter { !$0.isEmpty && !standardTypes.contains($0) })
+        return customTypes.sorted()
+    }
 }
 
 /// 共享清单持久化 Store
 class SharedWishlistStore: ObservableObject {
     @Published var lists: [SharedWishlist] = []
     
+    /// 已删除心愿的名称跟踪（按清单 wishGroupId 分组，同步后清除）
+    var deletedItemNames: [String: Set<String>] = [:]  // [wishGroupId: Set<itemName>]
+    
     private let fileName = "shared_wishlists.json"
+    private let deletedFileName = "shared_wish_deleted_names.json"
     
     private var userDir: URL {
         UserStorageHelper.shared.currentUserDirectory
@@ -160,13 +171,20 @@ class SharedWishlistStore: ObservableObject {
         userDir.appendingPathComponent(fileName)
     }
     
+    private var deletedFileURL: URL {
+        userDir.appendingPathComponent(deletedFileName)
+    }
+    
     init() {
         load()
+        loadDeletedItemNames()
     }
     
     func reloadForCurrentUser() {
         lists = []
+        deletedItemNames = [:]
         load()
+        loadDeletedItemNames()
         // 登录时合并了 anonymous 数据，保存到用户目录
         if UserStorageHelper.shared.isLoggedIn && !lists.isEmpty {
             save()
@@ -212,14 +230,17 @@ class SharedWishlistStore: ObservableObject {
         }
     }
     
-    func updateItem(listId: UUID, item: SharedWishItem) {
+    @discardableResult
+    func updateItem(listId: UUID, item: SharedWishItem) -> Bool {
         if let li = lists.firstIndex(where: { $0.id == listId }),
            let ii = lists[li].items.firstIndex(where: { $0.id == item.id }) {
             lists[li].items[ii] = item
             lists[li].updatedAt = Date()
             lists[li].isSynced = false
             save()
+            return true
         }
+        return false
     }
     
     func addItem(listId: UUID, item: SharedWishItem) {
@@ -242,6 +263,14 @@ class SharedWishlistStore: ObservableObject {
     
     func deleteItem(listId: UUID, itemId: UUID) {
         if let li = lists.firstIndex(where: { $0.id == listId }) {
+            // 记录被删除心愿的 name（同步时用于过滤远端）
+            if let item = lists[li].items.first(where: { $0.id == itemId }),
+               let wishGroupId = lists[li].wishGroupId {
+                var deleted = deletedItemNames[wishGroupId] ?? []
+                deleted.insert(item.name)
+                deletedItemNames[wishGroupId] = deleted
+                saveDeletedItemNames()
+            }
             lists[li].items.removeAll { $0.id == itemId }
             lists[li].updatedAt = Date()
             lists[li].isSynced = false
@@ -498,5 +527,26 @@ class SharedWishlistStore: ObservableObject {
             print("[SharedWishlistStore] 加载失败(\(url.lastPathComponent)): \(error)")
             return []
         }
+    }
+    
+    // MARK: - 删除跟踪持久化
+    
+    private func saveDeletedItemNames() {
+        if let data = try? JSONEncoder().encode(deletedItemNames) {
+            try? data.write(to: deletedFileURL)
+        }
+    }
+    
+    private func loadDeletedItemNames() {
+        if let data = try? Data(contentsOf: deletedFileURL),
+           let decoded = try? JSONDecoder().decode([String: Set<String>].self, from: data) {
+            deletedItemNames = decoded
+        }
+    }
+    
+    /// 同步成功后清除指定清单的删除记录
+    func clearDeletedItemNames(for wishGroupId: String) {
+        deletedItemNames.removeValue(forKey: wishGroupId)
+        saveDeletedItemNames()
     }
 }

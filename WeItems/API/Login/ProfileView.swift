@@ -625,7 +625,8 @@ struct ProfileView: View {
                 totalAssets: financeStore.calculatedTotalAssets(itemsTotalPrice: allItemsPrice),
                 groups: groupStore.groups,
                 wishlistGroups: wishlistGroupStore.groups,
-                userSettings: UserSettings.fromLocal()
+                userSettings: UserSettings.fromLocal(),
+                deletedRecordIDs: financeStore.deletedRecordIDs
             )
             
             let (itemsSyncResult, wishesSyncResult, userInfoResponse) = await (itemsResult, wishesResult, userInfoResult)
@@ -645,6 +646,7 @@ struct ProfileView: View {
                         wishlistGroupStore.applyRemoteGroups(remoteWG)
                     }
                     result.userSettings?.applyToLocal()
+                    financeStore.clearDeletedRecordIDs()
                 }
             }
             
@@ -685,11 +687,16 @@ struct ProfileView: View {
                     let remoteItems = sharedRecord.wishinfo?.items ?? []
                     
                     let sharedItems: [SharedWishItem] = remoteItems.map { remote in
+                        let remoteUUID: UUID = {
+                            if let idStr = remote.id, let uuid = UUID(uuidString: idStr) { return uuid }
+                            return UUID()
+                        }()
                         var remoteImageData: Data? = nil
                         if let base64Str = remote.imageBase64, !base64Str.isEmpty {
                             remoteImageData = Data(base64Encoded: base64Str)
                         }
                         return SharedWishItem(
+                            id: remoteUUID,
                             sourceItemId: remote.sourceItemId.flatMap { UUID(uuidString: $0) },
                             name: remote.name ?? "未知心愿",
                             price: remote.price ?? 0,
@@ -743,11 +750,15 @@ struct ProfileView: View {
                     }()
                     
                     await MainActor.run {
+                        // 过滤本地已删除的心愿
+                        let deletedNames = sharedWishlistStore.deletedItemNames[wishGroupId] ?? []
+                        let filteredItems = deletedNames.isEmpty ? sharedItems : sharedItems.filter { !deletedNames.contains($0.name) }
+                        
                         if let existingIndex = sharedWishlistStore.lists.firstIndex(where: { $0.wishGroupId == wishGroupId }) {
                             // 本地已有该清单，用远端数据更新
                             sharedWishlistStore.applyMergedResult(
                                 listId: sharedWishlistStore.lists[existingIndex].id,
-                                mergedItems: sharedItems,
+                                mergedItems: filteredItems,
                                 isSynced: true,
                                 remoteName: listName,
                                 remoteEmoji: listEmoji,
@@ -761,12 +772,13 @@ struct ProfileView: View {
                             if sharedWishlistStore.lists[existingIndex].linkedGroupId == nil, let lgId = remoteLinkedGroupId {
                                 sharedWishlistStore.lists[existingIndex].linkedGroupId = lgId
                             }
+                            sharedWishlistStore.clearDeletedItemNames(for: wishGroupId)
                         } else {
                             // 本地没有该清单，从远端创建
                             let newList = SharedWishlist(
                                 name: listName,
                                 emoji: listEmoji,
-                                items: sharedItems,
+                                items: filteredItems,
                                 isSynced: true,
                                 wishGroupId: wishGroupId,
                                 isOwner: isOwner,

@@ -172,7 +172,7 @@ enum ItemType: String, CaseIterable {
     case largeItem = "大件"
     case lifeGood = "人生好物"
     case edc = "EDC"
-    case outdoor = "精神旅行"
+    case outdoor = "旅行"
     case other = "其他"
 
     var icon: String {

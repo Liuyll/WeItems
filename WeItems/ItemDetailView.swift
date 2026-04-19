@@ -426,7 +426,12 @@ struct ItemDetailView: View {
                     }
                 }
             }
-            .sheet(isPresented: $showingEditWish) {
+            .sheet(isPresented: $showingEditWish, onDismiss: {
+                // 编辑完成后从 store 刷新 item，保持数据一致
+                if let updated = store.items.first(where: { $0.id == item.id }) {
+                    item = updated
+                }
+            }) {
                 if let groupStore = wishlistGroupStore {
                     EditWishlistItemView(item: item, store: store, wishlistGroupStore: groupStore, sharedWishlistStore: sharedStore)
                 }

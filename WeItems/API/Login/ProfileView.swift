@@ -42,11 +42,19 @@ struct ProfileView: View {
     @State private var showingLogin = false
     
     private var firstRecordInfo: (dateStr: String, days: Int) {
-        let allDates: [Date] = itemStore.items.map { $0.createdAt } + financeStore.records.map { $0.date }
-        guard let earliest = allDates.min() else { return ("今天", 0) }
         let fmt = DateFormatter()
         fmt.locale = Locale(identifier: "zh_CN")
         fmt.dateFormat = "yyyy年M月d日"
+        
+        // 已登录时优先用注册时间
+        if authManager.isAuthenticated, let registerDate = TokenStorage.shared.getRegisterDate() {
+            let days = max(Calendar.current.dateComponents([.day], from: registerDate, to: Date()).day ?? 0, 0)
+            return (fmt.string(from: registerDate), days)
+        }
+        
+        // 兜底：用最早的记录时间
+        let allDates: [Date] = itemStore.items.map { $0.createdAt } + financeStore.records.map { $0.date }
+        guard let earliest = allDates.min() else { return ("今天", 0) }
         let days = max(Calendar.current.dateComponents([.day], from: earliest, to: Date()).day ?? 0, 0)
         return (fmt.string(from: earliest), days)
     }
@@ -129,14 +137,26 @@ struct ProfileView: View {
                     Section {
                         if iapManager.isPro {
                             HStack {
-                                Text("已经是 Pro 版本")
-                                    .font(.subheadline)
-                                    .fontWeight(.semibold)
-                                    .foregroundStyle(.white)
+                                if iapManager.vipLevel == .grantedVIP {
+                                    Text("lyl 的朋友，您好")
+                                        .font(.subheadline)
+                                        .fontWeight(.semibold)
+                                        .foregroundStyle(.white)
+                                } else if iapManager.vipLevel == .masterVIP {
+                                    Text("尊贵的终生会员")
+                                        .font(.subheadline)
+                                        .fontWeight(.semibold)
+                                        .foregroundStyle(.white)
+                                } else {
+                                    Text("已经是 Pro 版本")
+                                        .font(.subheadline)
+                                        .fontWeight(.semibold)
+                                        .foregroundStyle(.white)
+                                }
                                 Spacer()
                             }
                             .padding(.vertical, 4)
-                            .listRowBackground(Color.green)
+                            .listRowBackground(iapManager.vipLevel == .grantedVIP || iapManager.vipLevel == .masterVIP ? Color.pink : Color.green)
                             .listRowSeparator(.hidden)
                         } else {
                             Button {
@@ -659,9 +679,9 @@ struct ProfileView: View {
                         continue
                     }
                     
-                    let listName = sharedRecord.name ?? "好朋友的清单"
-                    let listEmoji = sharedRecord.emoji ?? "🎁"
-                    let ownerName = sharedRecord.owner_name
+                    let listName = sharedRecord.effectiveName ?? "好朋友的清单"
+                    let listEmoji = sharedRecord.effectiveEmoji ?? "🎁"
+                    let ownerName = sharedRecord.effectiveOwnerName
                     let remoteItems = sharedRecord.wishinfo?.items ?? []
                     
                     let sharedItems: [SharedWishItem] = remoteItems.map { remote in
@@ -715,6 +735,13 @@ struct ProfileView: View {
                         return false
                     }()
                     
+                    let remoteLinkedGroupId: UUID? = {
+                        if let lgIdStr = sharedRecord.baseinfo?.linked_group_id, !lgIdStr.isEmpty {
+                            return UUID(uuidString: lgIdStr)
+                        }
+                        return nil
+                    }()
+                    
                     await MainActor.run {
                         if let existingIndex = sharedWishlistStore.lists.firstIndex(where: { $0.wishGroupId == wishGroupId }) {
                             // 本地已有该清单，用远端数据更新
@@ -730,6 +757,10 @@ struct ProfileView: View {
                             if let nickname = myRemoteNickname {
                                 sharedWishlistStore.setMyNickname(sharedWishlistStore.lists[existingIndex].id, nickname: nickname)
                             }
+                            // 从远端恢复 linkedGroupId
+                            if sharedWishlistStore.lists[existingIndex].linkedGroupId == nil, let lgId = remoteLinkedGroupId {
+                                sharedWishlistStore.lists[existingIndex].linkedGroupId = lgId
+                            }
                         } else {
                             // 本地没有该清单，从远端创建
                             let newList = SharedWishlist(
@@ -740,7 +771,8 @@ struct ProfileView: View {
                                 wishGroupId: wishGroupId,
                                 isOwner: isOwner,
                                 ownerName: ownerName,
-                                myNickname: myRemoteNickname
+                                myNickname: myRemoteNickname,
+                                linkedGroupId: remoteLinkedGroupId
                             )
                             sharedWishlistStore.add(newList)
                         }
@@ -759,6 +791,18 @@ struct ProfileView: View {
                 for wishGroupId in missingIds {
                     await client.syncUserInfoShareWishList(wishGroupId: wishGroupId, action: "push")
                 }
+            }
+            
+            // 将 owner 共享清单的名字和 emoji 推送到远端（修复远端 name 为空的问题）
+            for list in sharedWishlistStore.lists where list.isOwner {
+                guard let wishGroupId = list.wishGroupId else { continue }
+                let _ = await client.updateSharedWishlist(
+                    wishGroupId: wishGroupId,
+                    sharedItems: list.items,
+                    listName: list.name,
+                    listEmoji: list.emoji,
+                    linkedGroupId: list.linkedGroupId?.uuidString
+                )
             }
             
             // 下载远端物品/心愿的图片

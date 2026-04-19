@@ -1626,6 +1626,7 @@ class CloudBaseClient {
         listName: String,
         listEmoji: String,
         ownerName: String,
+        linkedGroupId: String? = nil,
         envType: String = "prod",
         modelName: String = "sharewish"
     ) async -> CreateResponse? {
@@ -1674,6 +1675,15 @@ class CloudBaseClient {
                 ["number_name": ownerName, "number_id": ownerNumberId]
             ]
         ]
+        var baseInfoObject: [String: Any] = [
+            "name": listName,
+            "emoji": listEmoji,
+            "owner_name": ownerName,
+            "wish_group_id": wishGroupId
+        ]
+        if let lgId = linkedGroupId, !lgId.isEmpty {
+            baseInfoObject["linked_group_id"] = lgId
+        }
         let payload: [String: Any] = [
             "data": [
                 "wish_group_id": wishGroupId,
@@ -1682,7 +1692,8 @@ class CloudBaseClient {
                 "emoji": listEmoji,
                 "owner_name": ownerName,
                 "members": [ownerName],
-                "numbers": numbersObject
+                "numbers": numbersObject,
+                "baseinfo": baseInfoObject
             ]
         ]
         
@@ -1708,6 +1719,7 @@ class CloudBaseClient {
         listName: String,
         listEmoji: String,
         ownerName: String? = nil,
+        linkedGroupId: String? = nil,
         envType: String = "prod",
         modelName: String = "sharewish"
     ) async -> CreateResponse? {
@@ -1750,7 +1762,13 @@ class CloudBaseClient {
             "wish_group_id": wishGroupId,
             "wishinfo": wishInfoObject,
             "name": listName,
-            "emoji": listEmoji
+            "emoji": listEmoji,
+            "baseinfo": [
+                "name": listName,
+                "emoji": listEmoji,
+                "wish_group_id": wishGroupId,
+                "linked_group_id": linkedGroupId ?? ""
+            ] as [String: Any]
         ]
         
         // 如果提供了 ownerName，添加 owner 信息和 number_list
@@ -1763,6 +1781,10 @@ class CloudBaseClient {
                     ["number_name": ownerName, "number_id": ownerNumberId]
                 ]
             ] as [String: Any]
+            // 更新 baseinfo 加入 owner_name
+            var baseinfo = dataDict["baseinfo"] as? [String: Any] ?? [:]
+            baseinfo["owner_name"] = ownerName
+            dataDict["baseinfo"] = baseinfo
         }
         
         let payload: [String: Any] = ["data": dataDict]
@@ -1786,6 +1808,8 @@ class CloudBaseClient {
     /// - Parameters:
     ///   - wishGroupId: 已有的 wish_group_id
     ///   - sharedItems: 当前清单中的所有心愿
+    ///   - listName: 清单名称（可选，传入时同步到远端）
+    ///   - listEmoji: 清单图标（可选，传入时同步到远端）
     ///   - envType: 环境类型，默认为 "prod"
     ///   - modelName: 数据模型名称，默认为 "sharewish"
     /// - Returns: UpdateManyResponse（成功）或 nil
@@ -1793,6 +1817,9 @@ class CloudBaseClient {
     func updateSharedWishlist(
         wishGroupId: String,
         sharedItems: [SharedWishItem],
+        listName: String? = nil,
+        listEmoji: String? = nil,
+        linkedGroupId: String? = nil,
         envType: String = "prod",
         modelName: String = "sharewish"
     ) async -> UpdateManyResponse? {
@@ -1830,11 +1857,25 @@ class CloudBaseClient {
         let wishInfoObject: [String: Any] = ["items": wishInfoArray]
         
         let path = "/v1/model/\(envType)/\(modelName)/update"
+        var dataDict: [String: Any] = [
+            "wish_group_id": wishGroupId,
+            "wishinfo": wishInfoObject
+        ]
+        var baseinfo: [String: Any] = ["wish_group_id": wishGroupId]
+        if let name = listName, !name.isEmpty {
+            dataDict["name"] = name
+            baseinfo["name"] = name
+        }
+        if let emoji = listEmoji, !emoji.isEmpty {
+            dataDict["emoji"] = emoji
+            baseinfo["emoji"] = emoji
+        }
+        if let lgId = linkedGroupId, !lgId.isEmpty {
+            baseinfo["linked_group_id"] = lgId
+        }
+        dataDict["baseinfo"] = baseinfo
         let payload: [String: Any] = [
-            "data": [
-                "wish_group_id": wishGroupId,
-                "wishinfo": wishInfoObject
-            ],
+            "data": dataDict,
             "filter": [
                 "where": [
                     "wish_group_id": ["$eq": wishGroupId]
@@ -1874,6 +1915,11 @@ class CloudBaseClient {
             let share_wish_list: [String]?
             let vip_type: VIPTypeInfo?
             let third_info: ThirdInfoData?
+            let anotherinfo: AnotherInfoData?
+        }
+        
+        struct AnotherInfoData: Codable {
+            let registerTime: String?  // 注册时间 ISO8601
         }
         
         struct ThirdInfoData: Codable {
@@ -1931,13 +1977,20 @@ class CloudBaseClient {
         modelName: String = "userinfo"
     ) async -> CreateResponse? {
         let path = "/v1/model/\(envType)/\(modelName)/create"
+        let registerTime = ISO8601DateFormatter().string(from: Date())
         let payload: [String: Any] = [
             "data": [
-                "share_wish_list": shareWishList
+                "share_wish_list": shareWishList,
+                "anotherinfo": [
+                    "registerTime": registerTime
+                ]
             ]
         ]
         
-        print("[userinfo] 创建用户信息, share_wish_list=\(shareWishList)")
+        print("[userinfo] 创建用户信息, share_wish_list=\(shareWishList), registerTime=\(registerTime)")
+        
+        // 同时保存注册时间到本地
+        TokenStorage.shared.saveRegisterTime(registerTime)
         
         let result: CreateResponse? = await request(
             method: "POST",
@@ -2052,7 +2105,7 @@ class CloudBaseClient {
             print("[userinfo] 更新 third_info: \(thirdInfo)")
             
             let result: UpdateManyResponse? = await request(
-                method: "POST",
+                method: "PUT",
                 path: path,
                 body: payload
             )
@@ -2063,16 +2116,21 @@ class CloudBaseClient {
         } else {
             // 记录不存在，创建新记录并带上 third_info
             let path = "/v1/model/\(envType)/\(modelName)/create"
+            let registerTime = ISO8601DateFormatter().string(from: Date())
             let payload: [String: Any] = [
                 "data": [
                     "share_wish_list": [String](),
-                    "third_info": thirdInfo
+                    "third_info": thirdInfo,
+                    "anotherinfo": [
+                        "registerTime": registerTime
+                    ]
                 ]
             ]
             
-            print("[userinfo] 创建用户信息（含 third_info）")
+            print("[userinfo] 创建用户信息（含 third_info）, registerTime=\(registerTime)")
+            TokenStorage.shared.saveRegisterTime(registerTime)
             
-            let result: CreateResponse? = await request(
+            let _: CreateResponse? = await request(
                 method: "POST",
                 path: path,
                 body: payload
@@ -2170,14 +2228,21 @@ class CloudBaseClient {
             "startDate": startDate,
             "expireDate": expireDate
         ]
+        let registerTime = ISO8601DateFormatter().string(from: Date())
         let payload: [String: Any] = [
             "data": [
                 "share_wish_list": [String](),
-                "vip_type": vipInfo
+                "vip_type": vipInfo,
+                "anotherinfo": [
+                    "registerTime": registerTime
+                ]
             ]
         ]
         
-        print("[userinfo] 创建用户信息(含VIP), type=\(vipType)")
+        print("[userinfo] 创建用户信息(含VIP), type=\(vipType), registerTime=\(registerTime)")
+        
+        // 同时保存注册时间到本地
+        TokenStorage.shared.saveRegisterTime(registerTime)
         
         let result: CreateResponse? = await request(
             method: "POST",
@@ -2251,6 +2316,20 @@ class CloudBaseClient {
             let wishinfo: WishInfoObject?
             let members: [String]?
             let numbers: NumbersObject?
+            let baseinfo: BaseInfoObject?
+            
+            /// 优先从 baseinfo 读取，兼容旧数据从顶层字段读取
+            var effectiveName: String? { baseinfo?.name ?? name }
+            var effectiveEmoji: String? { baseinfo?.emoji ?? emoji }
+            var effectiveOwnerName: String? { baseinfo?.owner_name ?? owner_name }
+        }
+        
+        struct BaseInfoObject: Codable {
+            let name: String?
+            let emoji: String?
+            let owner_name: String?
+            let wish_group_id: String?
+            let linked_group_id: String?
         }
         
         struct NumbersObject: Codable {
@@ -2309,7 +2388,8 @@ class CloudBaseClient {
         localItems: [SharedWishItem],
         listName: String,
         listEmoji: String,
-        isOwner: Bool = true
+        isOwner: Bool = true,
+        linkedGroupId: String? = nil
     ) async -> SharedWishlistSyncResult? {
         // Step 1: 拉取远端数据
         print("[共享心愿同步] Step 1: 拉取远端数据, wish_group_id=\(wishGroupId)")
@@ -2320,7 +2400,10 @@ class CloudBaseClient {
             // 远端没有数据，直接 push 本地（使用 REST API 的 update 接口）
             let pushResult = await updateSharedWishlist(
                 wishGroupId: wishGroupId,
-                sharedItems: localItems
+                sharedItems: localItems,
+                listName: listName,
+                listEmoji: listEmoji,
+                linkedGroupId: linkedGroupId
             )
             let success = pushResult != nil
             return SharedWishlistSyncResult(
@@ -2473,6 +2556,15 @@ class CloudBaseClient {
             return info
         }
         
+        var baseinfoDict: [String: Any] = [
+            "name": listName,
+            "emoji": listEmoji,
+            "wish_group_id": wishGroupId
+        ]
+        if let lgId = linkedGroupId, !lgId.isEmpty {
+            baseinfoDict["linked_group_id"] = lgId
+        }
+        
         let pushResponse = await callFunction(
             functionName: "update_sharewish",
             data: [
@@ -2481,7 +2573,8 @@ class CloudBaseClient {
                 "updateData": [
                     "wishinfo": ["items": wishInfoArray],
                     "name": listName,
-                    "emoji": listEmoji
+                    "emoji": listEmoji,
+                    "baseinfo": baseinfoDict
                 ]
             ]
         )
@@ -2501,9 +2594,9 @@ class CloudBaseClient {
         
         return SharedWishlistSyncResult(
             remoteItems: mergedItems,
-            remoteName: record.name,
-            remoteEmoji: record.emoji,
-            remoteOwnerName: record.owner_name,
+            remoteName: record.effectiveName,
+            remoteEmoji: record.effectiveEmoji,
+            remoteOwnerName: record.effectiveOwnerName,
             pushSuccess: success
         )
     }
@@ -3440,9 +3533,21 @@ class CloudBaseClient {
         // 总资产：以本地为准
         let mergedTotalAssets = totalAssets
         
-        // 分组：以本地为准
-        let mergedGroups = groups
-        let mergedWishlistGroups = wishlistGroups
+        // 分组：以本地为准，但合并远端独有的分组
+        var mergedGroups = groups
+        if let remoteGroups = remoteFetched?.groups {
+            let localGroupIds = Set(groups.map { $0.id })
+            for rg in remoteGroups where !localGroupIds.contains(rg.id) {
+                mergedGroups.append(rg)
+            }
+        }
+        var mergedWishlistGroups = wishlistGroups
+        if let remoteWG = remoteFetched?.wishlistGroups {
+            let localWGIds = Set(wishlistGroups.map { $0.id })
+            for rg in remoteWG where !localWGIds.contains(rg.id) {
+                mergedWishlistGroups.append(rg)
+            }
+        }
         
         // UserSettings：本地有自定义则用本地，否则用远端
         let mergedSettings: UserSettings? = {

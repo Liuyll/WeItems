@@ -240,7 +240,7 @@ struct WishlistView: View {
         }
         .sheet(item: $navigatingSharedList) { list in
             NavigationStack {
-                SharedWishlistDetailView(list: list, sharedStore: sharedWishlistStore)
+                SharedWishlistDetailView(list: list, sharedStore: sharedWishlistStore, itemStore: store, wishlistGroupStore: wishlistGroupStore)
             }
         }
     }
@@ -1517,7 +1517,10 @@ struct EditWishlistItemView: View {
             store.addCustomDisplayType(customDisplayType)
         }
         
-        dismiss()
+        // 延迟 dismiss，让 store 变更先传播完毕，避免父级 sheet 被意外关闭
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            dismiss()
+        }
     }
 }
 

@@ -79,6 +79,7 @@ struct HomeView: View {
     @StateObject private var sharedWishlistStore = SharedWishlistStore()
     @StateObject private var financeStore = FinanceStore()
     @ObservedObject private var avatarStore = AvatarStore.shared
+    @ObservedObject private var iapManager = IAPManager.shared
     @EnvironmentObject var authManager: AuthManager
 
     @State private var showingAddItem = false
@@ -111,8 +112,6 @@ struct HomeView: View {
     @State private var isAutoSyncing = false
     @State private var syncToastMessage: String? = nil
     @State private var showSyncToast = false
-    @State private var showAutoSyncAlert = false
-    @State private var autoSyncMessage = "正在同步中，请稍等"
     
     // 昵称输入弹窗相关
     @State private var showingNicknameInput = false
@@ -269,7 +268,7 @@ struct HomeView: View {
         guard tokenValid, let client = authManager.getCloudBaseClient() else {
             await MainActor.run {
                 isAutoSyncing = false
-                autoSyncMessage = "同步失败，请重试"
+                showSyncToastMessage("同步失败，请重试")
             }
             return
         }
@@ -326,9 +325,9 @@ struct HomeView: View {
                 let response = await client.fetchSharedWishlistByGroupId(wishGroupId: wishGroupId)
                 guard let sharedRecord = response?.data?.records?.first else { continue }
                 
-                let listName = sharedRecord.name ?? "好朋友的清单"
-                let listEmoji = sharedRecord.emoji ?? "🎁"
-                let ownerName = sharedRecord.owner_name
+                let listName = sharedRecord.effectiveName ?? "好朋友的清单"
+                let listEmoji = sharedRecord.effectiveEmoji ?? "🎁"
+                let ownerName = sharedRecord.effectiveOwnerName
                 let remoteItems = sharedRecord.wishinfo?.items ?? []
                 
                 let sharedItems: [SharedWishItem] = remoteItems.map { remote in
@@ -358,15 +357,38 @@ struct HomeView: View {
                     return false
                 }()
                 
+                let remoteLinkedGroupId: UUID? = {
+                    if let lgIdStr = sharedRecord.baseinfo?.linked_group_id, !lgIdStr.isEmpty {
+                        return UUID(uuidString: lgIdStr)
+                    }
+                    return nil
+                }()
+                
                 await MainActor.run {
                     if let idx = sharedWishlistStore.lists.firstIndex(where: { $0.wishGroupId == wishGroupId }) {
                         sharedWishlistStore.applyMergedResult(listId: sharedWishlistStore.lists[idx].id, mergedItems: sharedItems, isSynced: true, remoteName: listName, remoteEmoji: listEmoji, remoteOwnerName: ownerName)
                         if let nickname = myRemoteNickname { sharedWishlistStore.setMyNickname(sharedWishlistStore.lists[idx].id, nickname: nickname) }
+                        // 从远端恢复 linkedGroupId
+                        if sharedWishlistStore.lists[idx].linkedGroupId == nil, let lgId = remoteLinkedGroupId {
+                            sharedWishlistStore.lists[idx].linkedGroupId = lgId
+                        }
                     } else {
-                        sharedWishlistStore.add(SharedWishlist(name: listName, emoji: listEmoji, items: sharedItems, isSynced: true, wishGroupId: wishGroupId, isOwner: isOwner, ownerName: ownerName, myNickname: myRemoteNickname))
+                        sharedWishlistStore.add(SharedWishlist(name: listName, emoji: listEmoji, items: sharedItems, isSynced: true, wishGroupId: wishGroupId, isOwner: isOwner, ownerName: ownerName, myNickname: myRemoteNickname, linkedGroupId: remoteLinkedGroupId))
                     }
                 }
             }
+        }
+        
+        // 将 owner 共享清单的名字和 emoji 推送到远端
+        for list in sharedWishlistStore.lists where list.isOwner {
+            guard let wishGroupId = list.wishGroupId else { continue }
+            let _ = await client.updateSharedWishlist(
+                wishGroupId: wishGroupId,
+                sharedItems: list.items,
+                listName: list.name,
+                listEmoji: list.emoji,
+                linkedGroupId: list.linkedGroupId?.uuidString
+            )
         }
         
         // 下载远端物品/心愿的图片
@@ -413,6 +435,7 @@ struct HomeView: View {
                 store.markSyncCompleted()
                 store.markAllItemsSynced()
                 store.rebuildCustomDisplayTypesFromWishes()
+                UserDefaults.standard.set(false, forKey: "remoteNeedsSync")
             }
             
             // 物品已同步完成，现在恢复共享清单的 linkedGroupId
@@ -457,7 +480,7 @@ struct HomeView: View {
             sharedWishlistStore.forceSave()
             
             isAutoSyncing = false
-            showAutoSyncAlert = false
+            showSyncToastMessage("同步完成")
         }
     }
     
@@ -628,8 +651,7 @@ struct HomeView: View {
                 print("[HomeView] 收到 userDidLoginNotification, isAuthenticated=\(authManager.isAuthenticated), isAutoSyncing=\(isAutoSyncing)")
                 guard authManager.isAuthenticated && !isAutoSyncing else { return }
                 isAutoSyncing = true
-                autoSyncMessage = "正在同步中，请稍等"
-                showAutoSyncAlert = true
+                showSyncToastMessage("正在同步中...", autoDismiss: false)
                 Task {
                     await performAutoSync()
                 }
@@ -667,15 +689,6 @@ struct HomeView: View {
                 isPresented: $showingClipboardImportError,
                 title: "导入失败",
                 message: clipboardImportError ?? "未知错误"
-            )
-            .customBlueConfirmAlert(
-                isPresented: $showAutoSyncAlert,
-                message: autoSyncMessage,
-                confirmText: "确认",
-                confirmColor: .blue,
-                backgroundColor: .blue,
-                width: 260,
-                onConfirm: {}
             )
             .customInputAlert(
                 isPresented: $showingNicknameInput,
@@ -721,7 +734,7 @@ struct HomeView: View {
     
     /// 检查是否需要 iCloud 自动同步：VIP + 开关开启 + 上次同步超过 1 小时 + 有需要同步的变更
     private func checkICloudAutoSync() {
-        guard IAPManager.shared.isVIPActive else { return }
+        guard iapManager.isVIPActive else { return }
         guard isICloudAutoSyncEnabled else { return }
         guard !isICloudAutoSyncing else { return }
         guard ICloudSyncManager.shared.isICloudAvailable else { return }
@@ -778,7 +791,7 @@ struct HomeView: View {
     
     private var isICloudAutoSyncEnabled: Bool {
         if UserDefaults.standard.object(forKey: "iCloudAutoSyncEnabled") == nil {
-            return IAPManager.shared.isVIPActive // VIP 默认开启
+            return iapManager.isVIPActive // VIP 默认开启
         }
         return UserDefaults.standard.bool(forKey: "iCloudAutoSyncEnabled")
     }
@@ -787,7 +800,7 @@ struct HomeView: View {
     private func checkClipboardForSharedWishlist() {
         guard authManager.isAuthenticated else { return }
         // 非 VIP 用户不检测剪贴板
-        guard IAPManager.shared.isVIPActive else { return }
+        guard iapManager.isVIPActive else { return }
         // 异步读取剪贴板，用户拒绝粘贴不影响后续逻辑
         DispatchQueue.main.async {
             guard let text = PrivacySettings.readFromClipboard(), !text.isEmpty else { return }
@@ -831,9 +844,9 @@ struct HomeView: View {
                     return
                 }
                 
-                let listName = record.name ?? "好朋友的清单"
-                let listEmoji = record.emoji ?? "🎁"
-                let ownerName = record.owner_name
+                let listName = record.effectiveName ?? "好朋友的清单"
+                let listEmoji = record.effectiveEmoji ?? "🎁"
+                let ownerName = record.effectiveOwnerName
                 let remoteItems = record.wishinfo?.items ?? []
                 
                 let sharedItems: [SharedWishItem] = remoteItems.map { remote in
@@ -1088,17 +1101,6 @@ struct ItemsView: View {
             if newValue {
                 // 登录成功后关闭 sheet
                 showingAccountSync = false
-                // 备用触发：延迟 1.5 秒检查是否需要自动同步（防止通知未被接收）
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                    guard authManager.isAuthenticated && !isAutoSyncing else { return }
-                    print("[HomeView] 备用触发自动同步")
-                    isAutoSyncing = true
-                    autoSyncMessage = "正在同步中，请稍等"
-                    showAutoSyncAlert = true
-                    Task {
-                        await performAutoSync()
-                    }
-                }
             }
         }
         .onChange(of: showArchived) { _, _ in

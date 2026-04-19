@@ -18,6 +18,7 @@ class TokenStorage {
     private let phoneNumberKey = "com.weitems.phone_number"
     private let saveTimeKey = "com.weitems.save_time"
     private let lastVerifyTimeKey = "com.weitems.last_verify_time"
+    private let registerTimeKey = "com.weitems.register_time"
     
     /// Token 有效期缓冲（提前 5 分钟刷新）
     static let tokenRefreshThreshold: TimeInterval = 5 * 60
@@ -154,8 +155,28 @@ class TokenStorage {
         UserDefaults.standard.removeObject(forKey: phoneNumberKey)
         UserDefaults.standard.removeObject(forKey: saveTimeKey)
         UserDefaults.standard.removeObject(forKey: lastVerifyTimeKey)
+        UserDefaults.standard.removeObject(forKey: registerTimeKey)
         
         print("=== Token 已清除 ===")
+    }
+    
+    // MARK: - 注册时间
+    
+    /// 保存注册时间（ISO8601 字符串）
+    func saveRegisterTime(_ isoString: String) {
+        UserDefaults.standard.set(isoString, forKey: registerTimeKey)
+        print("[TokenStorage] 已保存注册时间: \(isoString)")
+    }
+    
+    /// 获取注册时间（ISO8601 字符串）
+    func getRegisterTime() -> String? {
+        return UserDefaults.standard.string(forKey: registerTimeKey)
+    }
+    
+    /// 获取注册时间（Date）
+    func getRegisterDate() -> Date? {
+        guard let str = getRegisterTime() else { return nil }
+        return ISO8601DateFormatter().date(from: str)
     }
     
     // MARK: - Keychain 操作

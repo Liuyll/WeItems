@@ -188,9 +188,11 @@ class AuthManager: ObservableObject {
             return
         }
         
-        // 本地 VIP 未过期，不需要请求云端
-        if !IAPManager.shared.isVIPExpiredLocally {
-            print("[AuthManager] 本地 VIP 未过期(\(IAPManager.shared.vipLevel.displayName))，跳过云端获取")
+        let hasLocalRegisterTime = TokenStorage.shared.getRegisterTime() != nil
+        
+        // 本地 VIP 未过期且已有注册时间，不需要请求云端
+        if !IAPManager.shared.isVIPExpiredLocally && hasLocalRegisterTime {
+            print("[AuthManager] 本地 VIP 未过期(\(IAPManager.shared.vipLevel.displayName))且已有注册时间，跳过云端获取")
             return
         }
         
@@ -207,6 +209,11 @@ class AuthManager: ObservableObject {
                     expireDate: vipInfo.expireDate
                 )
                 print("[AuthManager] 已同步 VIP 信息: type=\(vipType)")
+            }
+            
+            // 从 anotherinfo 读取注册时间存到本地
+            if let registerTime = record.anotherinfo?.registerTime, !registerTime.isEmpty {
+                TokenStorage.shared.saveRegisterTime(registerTime)
             }
         } else {
             // userinfo 不存在，创建新记录

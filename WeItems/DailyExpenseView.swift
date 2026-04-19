@@ -270,9 +270,9 @@ struct SalaryBreakdown: Codable {
         return annualTax
     }
     
-    /// 折算月度净收入（税后）
+    /// 折算月度净收入（税后、扣社保）
     var totalMonthlyIncome: Double {
-        return totalMonthlyGross - effectiveAnnualTax / 12.0
+        return totalMonthlyGross - effectiveAnnualTax / 12.0 - socialInsurance
     }
     
     /// 年度总收入（净）
@@ -606,11 +606,21 @@ struct SavingsGoal: Codable {
     var targetAmount: Double
     var name: String
     var monthlyExpense: Double  // 月均开销（计算目标时从净收入中扣除）
+    var incomeOutlook: String   // 收入情况类型（波动/积极/悲观），对应 FinanceStore.IncomeOutlook.rawValue
     
-    init(targetAmount: Double = 0, name: String = "财务自由目标", monthlyExpense: Double = 0) {
+    init(targetAmount: Double = 0, name: String = "财务自由目标", monthlyExpense: Double = 0, incomeOutlook: String = "波动") {
         self.targetAmount = targetAmount
         self.name = name
         self.monthlyExpense = monthlyExpense
+        self.incomeOutlook = incomeOutlook
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        targetAmount = try container.decodeIfPresent(Double.self, forKey: .targetAmount) ?? 0
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? "财务自由目标"
+        monthlyExpense = try container.decodeIfPresent(Double.self, forKey: .monthlyExpense) ?? 0
+        incomeOutlook = try container.decodeIfPresent(String.self, forKey: .incomeOutlook) ?? "波动"
     }
 }
 
@@ -780,7 +790,25 @@ class FinanceStore: ObservableObject {
     }
     
     func totalDebt(from startDate: Date, to endDate: Date) -> Double {
-        totalAmount(type: .debt, from: startDate, to: endDate)
+        let calendar = Calendar.current
+        var total: Double = 0
+        for record in records where record.type == .debt {
+            if let monthly = record.monthlyPayment, monthly > 0, let loanStart = record.loanStartDate {
+                // 有月供的贷款：判断查询月份是否在还款期内
+                let queryMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: startDate))!
+                let loanStartMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: loanStart))!
+                guard queryMonth >= loanStartMonth else { continue }
+                if let months = record.loanMonths {
+                    guard let loanEndMonth = calendar.date(byAdding: .month, value: months, to: loanStartMonth) else { continue }
+                    guard queryMonth < loanEndMonth else { continue }
+                }
+                total += monthly
+            } else if record.date >= startDate && record.date <= endDate {
+                // 无月供的负债：按创建日期计入
+                total += record.amount
+            }
+        }
+        return total
     }
     
     func totalInvestment(from startDate: Date, to endDate: Date) -> Double {
@@ -925,7 +953,7 @@ class FinanceStore: ObservableObject {
     /// 目标达成预估时间（月）- 根据收入情况
     func estimatedMonthsToGoal(itemsTotalPrice: Double = 0, outlook: IncomeOutlook = .fluctuating) -> Int? {
         guard savingsGoal.targetAmount > 0 else { return nil }
-        let currentAssets = totalSavingsAmount + totalInvestmentAmount + itemsTotalPrice
+        let currentAssets = totalSavingsAmount + totalInvestmentAmount + itemsTotalPrice - totalRemainingDebt
         let remaining = savingsGoal.targetAmount - currentAssets
         guard remaining > 0 else { return 0 }
         
@@ -1084,6 +1112,7 @@ class FinanceStore: ObservableObject {
         let calendar = Calendar.current
         let now = Date()
         let currentYear = calendar.component(.year, from: now)
+        let currentMonth = calendar.component(.month, from: now) // 1-12
         var result: [MonthlyFinanceData] = []
         
         for i in (0..<count).reversed() {
@@ -1094,8 +1123,11 @@ class FinanceStore: ObservableObject {
             var yearDebt: Double = 0
             var yearInvestment: Double = 0
             
+            // 当前年只算到当前月，过去年份算满 12 个月
+            let monthCount = (year == currentYear) ? currentMonth : 12
+            
             // 按月累加（确保结构性收入正确分布）
-            for m in 0..<12 {
+            for m in 0..<monthCount {
                 guard let mStart = calendar.date(byAdding: .month, value: m, to: yearStart) else { continue }
                 guard let mEnd = calendar.date(byAdding: DateComponents(month: 1, second: -1), to: mStart) else { continue }
                 yearIncome += totalIncome(from: mStart, to: mEnd)
@@ -1365,31 +1397,31 @@ struct MonthlyFinanceData: Identifiable {
     }
 }
 
-/// 计算图表 Y 轴上限，避免异常大值压扁其他月波动
-/// 规则：如果最大值 > 其余月平均值的 3 倍，则上限 = 平均值 × 3
+/// 计算图表 Y 轴上限
 func chartYCap(for data: [MonthlyFinanceData]) -> Double {
     let allValues = data.flatMap { [$0.income, $0.debt, $0.investment] }.filter { $0 > 0 }
-    guard allValues.count > 1 else { return allValues.first ?? 1 }
-    
-    let maxVal = allValues.max() ?? 1
-    // 计算排除最大值后的平均值
-    let othersSum = allValues.reduce(0, +) - maxVal
-    let othersAvg = othersSum / Double(allValues.count - 1)
-    
-    if othersAvg > 0 && maxVal > othersAvg * 3 {
-        return othersAvg * 3
+    guard !allValues.isEmpty else { return 1 }
+    let sorted = allValues.sorted()
+    // 取 P75 分位数 × 1.5 作为上限，让大多数柱子完整展示
+    let p75Index = min(sorted.count - 1, Int(Double(sorted.count) * 0.75))
+    let p75 = sorted[p75Index]
+    let maxVal = sorted.last ?? 1
+    // 如果最大值不超过 P75 的 3 倍，直接用最大值
+    if maxVal <= p75 * 3 {
+        return maxVal
     }
-    return maxVal
+    return p75 * 2
 }
 
-/// 将图表数据截断到 cap 上限（用于展示，实际数据不变）
+/// 将图表数据截断到 cap 上限，非零值保证最低 cap 的 5%
 func cappedChartData(_ data: [MonthlyFinanceData], cap: Double) -> [MonthlyFinanceData] {
-    data.map { d in
+    let minVisible = cap * 0.05
+    return data.map { d in
         MonthlyFinanceData(
             month: d.month,
-            income: min(d.income, cap),
-            debt: min(d.debt, cap),
-            investment: min(d.investment, cap),
+            income: d.income > 0 ? max(min(d.income, cap), minVisible) : 0,
+            debt: d.debt > 0 ? max(min(d.debt, cap), minVisible) : 0,
+            investment: d.investment > 0 ? max(min(d.investment, cap), minVisible) : 0,
             date: d.date
         )
     }
@@ -1409,11 +1441,17 @@ struct DailyExpenseView: View {
     @State private var showingSalaryConfig = false
     @State private var showingSavingsConfig = false
     @State private var showingAssetDetail = false
+    @State private var showingDebtDetail = false
+    @State private var showingInvestmentDetail = false
+    @State private var showingIncomeDetail = false
     @State private var selectedRecord: FinanceRecord? = nil
     @State private var periodMode: PeriodMode = .year
     @State private var showCurrentMonthIncome = false
-    @State private var incomeOutlook: FinanceStore.IncomeOutlook = .fluctuating
     @State private var chartMode: ChartMode = .income
+    
+    private var incomeOutlook: FinanceStore.IncomeOutlook {
+        FinanceStore.IncomeOutlook(rawValue: financeStore.savingsGoal.incomeOutlook) ?? .fluctuating
+    }
     
     enum PeriodMode: String, CaseIterable {
         case year = "年度"
@@ -1431,9 +1469,9 @@ struct DailyExpenseView: View {
                 let range = financeStore.monthRange
                 return financeStore.totalIncome(from: range.start, to: range.end)
             }
-            return financeStore.averageMonthlyIncome()
+            return financeStore.totalIncomeForYear() / 12.0
         } else {
-            return financeStore.trailing12MonthsIncome()
+            return financeStore.totalIncomeForYear()
         }
     }
     
@@ -1447,9 +1485,22 @@ struct DailyExpenseView: View {
         return financeStore.totalInvestment(from: range.start, to: range.end)
     }
     
+    /// 本月一次性收入
+    private var monthlyOneTimeIncome: Double {
+        let range = financeStore.monthRange
+        return financeStore.records
+            .filter { $0.type == .income && $0.incomePeriod == .oneTime && $0.date >= range.start && $0.date <= range.end }
+            .reduce(0) { $0 + $1.amount }
+    }
+    
     /// 我的物品总价（非归档、非无价之物）
     private var itemsTotalPrice: Double {
         store.items.filter { $0.listType == .items && !$0.isArchived && !$0.isPriceless }.reduce(0) { $0 + $1.price }
+    }
+    
+    /// 每个 overview tile 的宽度（一屏显示 3 个）
+    private var tileWidth: CGFloat {
+        (UIScreen.main.bounds.width - 32 - 32 - 16) / 3  // 屏幕宽 - 外层padding(16*2) - 卡片内padding(16*2) - 间距(8*2)
     }
     
     var body: some View {
@@ -1474,7 +1525,7 @@ struct DailyExpenseView: View {
             AddFinanceRecordView(financeStore: financeStore, editingRecord: record)
         }
         .sheet(isPresented: $showingEditGoal) {
-            EditGoalView(financeStore: financeStore, incomeOutlook: $incomeOutlook)
+            EditGoalView(financeStore: financeStore)
         }
         .sheet(isPresented: $showingFullTrend) {
             FullTrendView(financeStore: financeStore)
@@ -1487,6 +1538,15 @@ struct DailyExpenseView: View {
         }
         .sheet(isPresented: $showingAssetDetail) {
             AssetDetailView(financeStore: financeStore, store: store, selectedRecord: $selectedRecord)
+        }
+        .sheet(isPresented: $showingDebtDetail) {
+            AssetDetailView(financeStore: financeStore, store: store, selectedRecord: $selectedRecord, filter: .debtOnly)
+        }
+        .sheet(isPresented: $showingInvestmentDetail) {
+            AssetDetailView(financeStore: financeStore, store: store, selectedRecord: $selectedRecord, filter: .investmentOnly)
+        }
+        .sheet(isPresented: $showingIncomeDetail) {
+            IncomeDetailView(financeStore: financeStore)
         }
     }
     
@@ -1509,8 +1569,16 @@ struct DailyExpenseView: View {
                 miniStatItem(title: "总资产价值", value: financeStore.totalSavingsAmount + financeStore.totalInvestmentAmount + itemsTotalPrice, color: .orange)
                 Divider().frame(height: 30)
                 miniStatItem(title: "剩余负债", value: financeStore.totalRemainingDebt, color: .red)
+                    .onTapGesture { showingDebtDetail = true }
                 Divider().frame(height: 30)
-                miniStatItem(title: "年度收入", value: financeStore.trailing12MonthsIncome(), color: .green)
+                let annualIncome: Double = {
+                    if let bd = financeStore.salaryRecord?.salaryBreakdown {
+                        return bd.totalMonthlyIncome * 12
+                    }
+                    return financeStore.totalIncomeForYear()
+                }()
+                miniStatItem(title: "年度收入", value: annualIncome, color: .green)
+                    .onTapGesture { showingIncomeDetail = true }
             }
         }
         .padding(16)
@@ -1564,26 +1632,40 @@ struct DailyExpenseView: View {
                 }
             }
             
-            HStack(spacing: 8) {
-                overviewTile(
-                    icon: "banknote.fill",
-                    label: "储蓄金额",
-                    amount: financeStore.totalSavingsAmount,
-                    color: .green
-                )
-                .onTapGesture { showingSavingsConfig = true }
-                overviewTile(
-                    icon: "house.fill",
-                    label: "大件价值",
-                    amount: largeItemsTotalPrice,
-                    color: .orange
-                )
-                overviewTile(
-                    icon: "chart.line.uptrend.xyaxis.circle.fill",
-                    label: "投资价值",
-                    amount: financeStore.totalInvestmentAmount,
-                    color: .blue
-                )
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    overviewTile(
+                        icon: "banknote.fill",
+                        label: "储蓄金额",
+                        amount: financeStore.totalSavingsAmount,
+                        color: .green
+                    )
+                    .frame(width: tileWidth)
+                    .onTapGesture { showingSavingsConfig = true }
+                    overviewTile(
+                        icon: "creditcard.fill",
+                        label: "剩余负债",
+                        amount: financeStore.totalRemainingDebt,
+                        color: .red
+                    )
+                    .frame(width: tileWidth)
+                    .onTapGesture { showingDebtDetail = true }
+                    overviewTile(
+                        icon: "chart.line.uptrend.xyaxis.circle.fill",
+                        label: "投资价值",
+                        amount: financeStore.totalInvestmentAmount,
+                        color: .blue
+                    )
+                    .frame(width: tileWidth)
+                    .onTapGesture { showingInvestmentDetail = true }
+                    overviewTile(
+                        icon: "house.fill",
+                        label: "大件价值",
+                        amount: largeItemsTotalPrice,
+                        color: .orange
+                    )
+                    .frame(width: tileWidth)
+                }
             }
             
             // 管理储蓄入口
@@ -1611,7 +1693,7 @@ struct DailyExpenseView: View {
                 .padding(12)
                 .background(
                     RoundedRectangle(cornerRadius: 10)
-                        .fill(.green.gradient)
+                        .fill(financeStore.totalSavingsAmount > 0 ? Color.blue.gradient : Color.green.gradient)
                 )
             }
         }
@@ -1687,40 +1769,69 @@ struct DailyExpenseView: View {
                     }
                     overviewTile(
                         icon: "arrow.down.circle.fill",
-                        label: "月度负债",
-                        amount: debtAmount,
+                        label: "月供贷款",
+                        amount: financeStore.monthlyRecurringDebt,
                         color: .red
                     )
                     overviewTile(
-                        icon: "chart.line.uptrend.xyaxis.circle.fill",
-                        label: "月度投资",
-                        amount: investmentAmount,
+                        icon: "yensign.circle.fill",
+                        label: "一次性收入",
+                        amount: monthlyOneTimeIncome,
                         color: .blue
                     )
                 }
             } else {
-                let annualSalary = bd.currentMonthlyBase
+                let annualSalary = bd.currentMonthlyBase * 12
                 let annualIncentive = bd.equityItems.reduce(0.0) { $0 + $1.perVestingAmount * (12.0 / max(Double($1.vestingMonths), 1)) }
+                let annualBonus = bd.bonusItems.reduce(0.0) { $0 + $1.amount }
+                let annualOther = bd.otherIncomeItems.reduce(0.0) { $0 + $1.amount } * 12
+                let annualHousingFund = bd.currentMonthlyBase * bd.housingFundRate / 100.0 * 2 * 12
+                let annualGrossTotal = annualSalary + annualIncentive + annualBonus + annualOther
                 
-                HStack(spacing: 8) {
-                    overviewTile(
-                        icon: "arrow.up.circle.fill",
-                        label: "全年收入",
-                        amount: incomeAmount,
-                        color: .green
-                    )
-                    overviewTile(
-                        icon: "briefcase.fill",
-                        label: "全年工资",
-                        amount: annualSalary * 12,
-                        color: .primary
-                    )
-                    overviewTile(
-                        icon: "star.fill",
-                        label: "长期激励",
-                        amount: annualIncentive,
-                        color: .purple
-                    )
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        overviewTile(
+                            icon: "briefcase.fill",
+                            label: "全年工资",
+                            amount: annualSalary,
+                            color: .teal
+                        )
+                        .frame(width: tileWidth)
+                        if annualIncentive > 0 {
+                            overviewTile(
+                                icon: "star.fill",
+                                label: "长期激励",
+                                amount: annualIncentive,
+                                color: .purple
+                            )
+                            .frame(width: tileWidth)
+                        }
+                        if annualBonus > 0 {
+                            overviewTile(
+                                icon: "gift.fill",
+                                label: "年终奖",
+                                amount: annualBonus,
+                                color: .orange
+                            )
+                            .frame(width: tileWidth)
+                        }
+                        if annualHousingFund > 0 {
+                            overviewTile(
+                                icon: "house.fill",
+                                label: "公积金",
+                                amount: annualHousingFund,
+                                color: .cyan
+                            )
+                            .frame(width: tileWidth)
+                        }
+                        overviewTile(
+                            icon: "arrow.up.circle.fill",
+                            label: "全年收入",
+                            amount: annualGrossTotal,
+                            color: .green
+                        )
+                        .frame(width: tileWidth)
+                    }
                 }
             }
             
@@ -1732,13 +1843,15 @@ struct DailyExpenseView: View {
                 
                 HStack(spacing: 8) {
                     if periodMode == .month {
+                        let monthlyBase = bd.currentMonthlyBase + bd.otherIncomeItems.reduce(0) { $0 + $1.amount }
+                        let monthlyNetPay = monthlyBase - social - TaxCalculator.calculateSalaryTax(breakdown: bd) / 12.0
                         VStack(spacing: 4) {
                             Text("月税前")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
-                            Text("¥\(gross, specifier: "%.0f")")
+                            Text("¥\(monthlyBase, specifier: "%.0f")")
                                 .font(.system(size: 15, weight: .bold, design: .rounded))
-                                .foregroundStyle(.primary)
+                                .foregroundStyle(.teal)
                         }
                         .frame(maxWidth: .infinity)
                         
@@ -1756,55 +1869,59 @@ struct DailyExpenseView: View {
                             Text("月净收入")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
-                            Text("¥\(net, specifier: "%.0f")")
+                            Text("¥\(monthlyNetPay, specifier: "%.0f")")
                                 .font(.system(size: 15, weight: .bold, design: .rounded))
                                 .foregroundStyle(.green)
                         }
                         .frame(maxWidth: .infinity)
                     } else {
-                        VStack(spacing: 4) {
-                            Text("年税前")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                            Text("¥\(gross * 12, specifier: "%.0f")")
-                                .font(.system(size: 15, weight: .bold, design: .rounded))
-                                .foregroundStyle(.primary)
-                                .lineLimit(1).minimumScaleFactor(0.6)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                VStack(spacing: 4) {
+                                    Text("年税前")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                    Text("¥\(gross * 12, specifier: "%.0f")")
+                                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                                        .foregroundStyle(.teal)
+                                        .lineLimit(1).minimumScaleFactor(0.6)
+                                }
+                                .frame(width: tileWidth)
+                                
+                                VStack(spacing: 4) {
+                                    Text("年个税")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                    Text("¥\(tax, specifier: "%.0f")")
+                                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                                        .foregroundStyle(.red)
+                                        .lineLimit(1).minimumScaleFactor(0.6)
+                                }
+                                .frame(width: tileWidth)
+                                
+                                VStack(spacing: 4) {
+                                    Text("年社保")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                    Text("¥\(social * 12, specifier: "%.0f")")
+                                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                                        .foregroundStyle(.orange)
+                                        .lineLimit(1).minimumScaleFactor(0.6)
+                                }
+                                .frame(width: tileWidth)
+                                
+                                VStack(spacing: 4) {
+                                    Text("年净收入")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                    Text("¥\(net * 12, specifier: "%.0f")")
+                                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                                        .foregroundStyle(.green)
+                                        .lineLimit(1).minimumScaleFactor(0.6)
+                                }
+                                .frame(width: tileWidth)
+                            }
                         }
-                        .frame(maxWidth: .infinity)
-                        
-                        VStack(spacing: 4) {
-                            Text("年个税")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                            Text("¥\(tax, specifier: "%.0f")")
-                                .font(.system(size: 15, weight: .bold, design: .rounded))
-                                .foregroundStyle(.red)
-                                .lineLimit(1).minimumScaleFactor(0.6)
-                        }
-                        .frame(maxWidth: .infinity)
-                        
-                        VStack(spacing: 4) {
-                            Text("年社保")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                            Text("¥\(social * 12, specifier: "%.0f")")
-                                .font(.system(size: 15, weight: .bold, design: .rounded))
-                                .foregroundStyle(.orange)
-                                .lineLimit(1).minimumScaleFactor(0.6)
-                        }
-                        .frame(maxWidth: .infinity)
-                        
-                        VStack(spacing: 4) {
-                            Text("年净收入")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                            Text("¥\(net * 12, specifier: "%.0f")")
-                                .font(.system(size: 15, weight: .bold, design: .rounded))
-                                .foregroundStyle(.green)
-                                .lineLimit(1).minimumScaleFactor(0.6)
-                        }
-                        .frame(maxWidth: .infinity)
                     }
                 }
                 .padding(.vertical, 8)
@@ -1974,7 +2091,7 @@ struct DailyExpenseView: View {
                     }
                 }
                 
-                let progress = min((financeStore.totalSavingsAmount + financeStore.totalInvestmentAmount) / financeStore.savingsGoal.targetAmount, 1.0)
+                let progress = min(max((financeStore.totalSavingsAmount + financeStore.totalInvestmentAmount - financeStore.totalRemainingDebt) / financeStore.savingsGoal.targetAmount, 0), 1.0)
                 
                 Text("目标：¥\(financeStore.savingsGoal.targetAmount, specifier: "%.2f")")
                     .font(.subheadline)
@@ -2066,7 +2183,7 @@ struct DailyExpenseView: View {
         let investmentReturn = financeStore.totalInvestmentAmount * (financeStore.weightedAverageReturn / 100.0) / 12.0
         let investmentReturnHalf = financeStore.totalInvestmentAmount * (financeStore.weightedAverageReturn / 100.0 / 2.0) / 12.0
         let debt = financeStore.monthlyRecurringDebt
-        let currentAssets = financeStore.totalSavingsAmount + financeStore.totalInvestmentAmount
+        let currentAssets = financeStore.totalSavingsAmount + financeStore.totalInvestmentAmount - financeStore.totalRemainingDebt
         let target = financeStore.savingsGoal.targetAmount
         let remaining = target - currentAssets
         
@@ -3171,10 +3288,10 @@ struct AddFinanceRecordView: View {
 struct EditGoalView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var financeStore: FinanceStore
-    @Binding var incomeOutlook: FinanceStore.IncomeOutlook
     
     @State private var goalAmountText: String = ""
     @State private var monthlyExpenseText: String = ""
+    @State private var selectedOutlook: FinanceStore.IncomeOutlook = .fluctuating
     
     var body: some View {
         NavigationStack {
@@ -3195,18 +3312,18 @@ struct EditGoalView: View {
                         ForEach(FinanceStore.IncomeOutlook.allCases, id: \.self) { o in
                             Button {
                                 withAnimation(.easeInOut(duration: 0.2)) {
-                                    incomeOutlook = o
+                                    selectedOutlook = o
                                 }
                             } label: {
                                 Text(o.rawValue)
                                     .font(.system(.subheadline, design: .rounded))
                                     .fontWeight(.bold)
-                                    .foregroundStyle(incomeOutlook == o ? .white : outlookColor(o))
+                                    .foregroundStyle(selectedOutlook == o ? .white : outlookColor(o))
                                     .frame(maxWidth: .infinity)
                                     .padding(.vertical, 8)
                                     .background(
                                         RoundedRectangle(cornerRadius: 8)
-                                            .fill(incomeOutlook == o ? outlookColor(o) : outlookColor(o).opacity(0.12))
+                                            .fill(selectedOutlook == o ? outlookColor(o) : outlookColor(o).opacity(0.12))
                                     )
                             }
                             .buttonStyle(.plain)
@@ -3214,7 +3331,7 @@ struct EditGoalView: View {
                     }
                     .listRowSeparator(.hidden)
                     
-                    switch incomeOutlook {
+                    switch selectedOutlook {
                     case .fluctuating:
                         Text("当前工资 + 平均年终奖 + 平均长期激励").font(.caption).foregroundStyle(.secondary)
                     case .optimistic:
@@ -3239,7 +3356,12 @@ struct EditGoalView: View {
                     Button("保存") {
                         let amount = Double(goalAmountText) ?? 0
                         let expense = Double(monthlyExpenseText) ?? 0
-                        financeStore.updateGoal(SavingsGoal(targetAmount: amount, name: "财务自由目标", monthlyExpense: expense))
+                        financeStore.updateGoal(SavingsGoal(
+                            targetAmount: amount,
+                            name: "财务自由目标",
+                            monthlyExpense: expense,
+                            incomeOutlook: selectedOutlook.rawValue
+                        ))
                         dismiss()
                     }
                     .fontWeight(.bold)
@@ -3249,6 +3371,7 @@ struct EditGoalView: View {
             .onAppear {
                 goalAmountText = financeStore.savingsGoal.targetAmount > 0 ? String(format: "%.2f", financeStore.savingsGoal.targetAmount) : ""
                 monthlyExpenseText = financeStore.savingsGoal.monthlyExpense > 0 ? String(format: "%.2f", financeStore.savingsGoal.monthlyExpense) : ""
+                selectedOutlook = FinanceStore.IncomeOutlook(rawValue: financeStore.savingsGoal.incomeOutlook) ?? .fluctuating
             }
         }
     }
@@ -3440,8 +3563,8 @@ struct SalaryConfigView: View {
         let calculatedSocial = autoCalculateTax ? base * totalRate / 100.0 : (Double(socialInsuranceText) ?? 0)
         
         return SalaryBreakdown(
-            salaryBaseItems: salaryBaseItems.filter { $0.amount > 0 },
-            equityItems: equityItems,
+            salaryBaseItems: salaryBaseItems.filter { $0.amount > 0 }.sorted { $0.startDate < $1.startDate },
+            equityItems: equityItems.sorted { ($0.vestingDate ?? .distantFuture) < ($1.vestingDate ?? .distantFuture) },
             bonusItems: bonusItems,
             otherIncomeItems: otherIncomeItems,
             annualTax: Double(annualTaxText) ?? 0,
@@ -3459,10 +3582,6 @@ struct SalaryConfigView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("名称") {
-                    TextField("如：工资收入", text: $title)
-                }
-                
                 Section("发薪日") {
                     Stepper("每月 \(payDay) 号", value: $payDay, in: 1...31)
                 }
@@ -3666,8 +3785,8 @@ struct SalaryConfigView: View {
         guard let record = financeStore.salaryRecord, let bd = record.salaryBreakdown else { return }
         title = record.title
         note = record.note
-        salaryBaseItems = bd.salaryBaseItems.isEmpty ? [SalaryBaseItem()] : bd.salaryBaseItems
-        equityItems = bd.equityItems
+        salaryBaseItems = bd.salaryBaseItems.isEmpty ? [SalaryBaseItem()] : bd.salaryBaseItems.sorted { $0.startDate < $1.startDate }
+        equityItems = bd.equityItems.sorted { ($0.vestingDate ?? .distantFuture) < ($1.vestingDate ?? .distantFuture) }
         bonusItems = bd.bonusItems
         otherIncomeItems = bd.otherIncomeItems
         autoCalculateTax = bd.autoCalculateTax
@@ -3936,13 +4055,170 @@ struct SavingsConfigView: View {
     }
 }
 
+// MARK: - 收入详情视图
+
+struct IncomeDetailView: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var financeStore: FinanceStore
+    
+    private var monthlyDetails: [(month: String, salary: Double, incentive: Double, bonus: Double, oneTime: Double, tax: Double, total: Double)] {
+        let calendar = Calendar.current
+        let yearStart = calendar.date(from: calendar.dateComponents([.year], from: Date()))!
+        var result: [(String, Double, Double, Double, Double, Double, Double)] = []
+        
+        for m in 0..<12 {
+            guard let mStart = calendar.date(byAdding: .month, value: m, to: yearStart) else { continue }
+            guard let mEnd = calendar.date(byAdding: DateComponents(month: 1, second: -1), to: mStart) else { continue }
+            
+            let fmt = DateFormatter()
+            fmt.dateFormat = "M月"
+            let label = fmt.string(from: mStart)
+            
+            var salary: Double = 0
+            var incentive: Double = 0
+            var bonus: Double = 0
+            var oneTime: Double = 0
+            var tax: Double = 0
+            
+            for record in financeStore.records where record.type == .income {
+                switch record.incomePeriod {
+                case .salary:
+                    if let bd = record.salaryBreakdown {
+                        // 基本工资
+                        for base in bd.salaryBaseItems {
+                            if base.isActive(at: mStart) {
+                                salary += base.amount
+                            }
+                        }
+                        // 其他月度收入
+                        salary += bd.otherIncomeItems.reduce(0) { $0 + $1.amount }
+                        
+                        // 长期激励
+                        for equity in bd.equityItems {
+                            if equity.perVestingAmount > 0, equity.vestingMonths > 0, let vestDate = equity.vestingDate {
+                                let vestMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: vestDate))!
+                                let queryMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: mStart))!
+                                let monthsSinceVest = calendar.dateComponents([.month], from: vestMonth, to: queryMonth).month ?? 0
+                                if monthsSinceVest >= 0 && monthsSinceVest % equity.vestingMonths == 0 {
+                                    let vestingIndex = monthsSinceVest / equity.vestingMonths
+                                    if equity.isLongTermVesting || equity.vestingCount == nil || (equity.vestingCount != nil && vestingIndex < equity.vestingCount!) {
+                                        incentive += equity.perVestingAmount
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // 年终奖
+                        for b in bd.bonusItems {
+                            let bonusMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: b.date))!
+                            let queryMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: mStart))!
+                            if bonusMonth == queryMonth {
+                                bonus += b.amount
+                            }
+                        }
+                        
+                        // 个税
+                        if bd.autoCalculateTax {
+                            let monthIndex = calendar.component(.month, from: mStart) - 1
+                            let monthlyTaxes = TaxCalculator.monthlyTaxBreakdown(breakdown: bd)
+                            if monthIndex < monthlyTaxes.count {
+                                tax += monthlyTaxes[monthIndex]
+                            }
+                        } else if bd.annualTax > 0 {
+                            tax += bd.annualTax / 12.0
+                        }
+                    }
+                case .oneTime:
+                    if record.countAsIncome == true, record.date >= mStart && record.date <= mEnd {
+                        oneTime += record.amount
+                    }
+                default:
+                    break
+                }
+            }
+            
+            let total = salary + incentive + bonus + oneTime - tax
+            result.append((label, salary, incentive, bonus, oneTime, tax, total))
+        }
+        return result
+    }
+    
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(Array(monthlyDetails.enumerated()), id: \.offset) { _, detail in
+                    Section(header: HStack {
+                        Text(detail.month)
+                            .font(.subheadline)
+                            .fontWeight(.bold)
+                        Spacer()
+                        Text("¥\(detail.total, specifier: "%.0f")")
+                            .font(.subheadline)
+                            .fontWeight(.bold)
+                            .foregroundStyle(detail.total > 0 ? .green : .secondary)
+                    }) {
+                        if detail.salary > 0 {
+                            incomeRow(icon: "briefcase.fill", label: "工资", amount: detail.salary, color: .teal)
+                        }
+                        if detail.incentive > 0 {
+                            incomeRow(icon: "star.fill", label: "长期激励", amount: detail.incentive, color: .purple)
+                        }
+                        if detail.bonus > 0 {
+                            incomeRow(icon: "gift.fill", label: "年终奖", amount: detail.bonus, color: .orange)
+                        }
+                        if detail.oneTime > 0 {
+                            incomeRow(icon: "yensign.circle.fill", label: "一次性收入", amount: detail.oneTime, color: .blue)
+                        }
+                        if detail.tax > 0 {
+                            incomeRow(icon: "minus.circle.fill", label: "个税", amount: -detail.tax, color: .red)
+                        }
+                        if detail.salary == 0 && detail.incentive == 0 && detail.bonus == 0 && detail.oneTime == 0 {
+                            Text("暂无收入")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
+            .navigationTitle("收入详情")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
+    }
+    
+    private func incomeRow(icon: String, label: String, amount: Double, color: Color) -> some View {
+        HStack {
+            Image(systemName: icon)
+                .font(.caption)
+                .foregroundStyle(color)
+            Text(label)
+                .font(.subheadline)
+            Spacer()
+            Text("¥\(amount, specifier: "%.0f")")
+                .font(.subheadline)
+                .fontWeight(.semibold)
+                .foregroundStyle(color)
+        }
+    }
+}
+
 // MARK: - 资产详情视图
 
 struct AssetDetailView: View {
+    enum AssetFilter {
+        case all, debtOnly, investmentOnly
+    }
+    
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var financeStore: FinanceStore
     @ObservedObject var store: ItemStore
     @Binding var selectedRecord: FinanceRecord?
+    var filter: AssetFilter = .all
     
     private func chineseDateStr(_ date: Date) -> String {
         let fmt = DateFormatter()
@@ -3975,6 +4251,7 @@ struct AssetDetailView: View {
     var body: some View {
         NavigationStack {
             List {
+              if filter == .all {
                 // 储蓄
                 Section {
                     if savingsRecords.isEmpty {
@@ -4083,6 +4360,9 @@ struct AssetDetailView: View {
                     .fontWeight(.medium)
                 }
                 
+              } // end if filter == .all
+              
+              if filter == .all || filter == .investmentOnly {
                 // 投资
                 Section {
                     if investmentRecords.isEmpty {
@@ -4142,6 +4422,9 @@ struct AssetDetailView: View {
                     .fontWeight(.medium)
                 }
                 
+              } // end if filter == .all || .investmentOnly
+              
+              if filter == .all || filter == .debtOnly {
                 // 负债
                 Section {
                     if debtRecords.isEmpty {
@@ -4207,9 +4490,10 @@ struct AssetDetailView: View {
                     .font(.subheadline)
                     .fontWeight(.medium)
                 }
+              } // end if filter == .all || .debtOnly
             }
             .listStyle(.insetGrouped)
-            .navigationTitle("资产详情")
+            .navigationTitle(filter == .debtOnly ? "负债详情" : filter == .investmentOnly ? "投资详情" : "资产详情")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {

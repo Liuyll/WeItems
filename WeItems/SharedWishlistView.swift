@@ -30,10 +30,11 @@ struct SharedWishlistListView: View {
     @State private var pendingListId: UUID? = nil  // 导入清单的本地 ID
     
     @State private var showingProUpgrade = false
+    @ObservedObject private var iapManager = IAPManager.shared
     
     var body: some View {
         Group {
-            if IAPManager.shared.isVIPActive {
+            if iapManager.isVIPActive {
                 vipContentView
             } else {
                 nonVipView
@@ -42,7 +43,7 @@ struct SharedWishlistListView: View {
         .navigationTitle("共享清单")
         .navigationBarTitleDisplayMode(.large)
         .toolbar {
-            if IAPManager.shared.isVIPActive {
+            if iapManager.isVIPActive {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
                         showingCreate = true
@@ -165,30 +166,8 @@ struct SharedWishlistListView: View {
                 }
             } else {
                 ForEach(sharedStore.lists) { list in
-                    NavigationLink(destination: SharedWishlistDetailView(list: list, sharedStore: sharedStore)) {
+                    NavigationLink(destination: SharedWishlistDetailView(list: list, sharedStore: sharedStore, itemStore: itemStore, wishlistGroupStore: wishlistGroupStore)) {
                         SharedWishlistRow(list: list)
-                    }
-                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                        Button(role: .destructive) {
-                            let wishGroupId = list.wishGroupId
-                            sharedStore.delete(list)
-                            if let gid = wishGroupId {
-                                Task {
-                                    if let client = AuthManager.shared.getCloudBaseClient() {
-                                        await client.syncUserInfoShareWishList(wishGroupId: gid, action: "delete")
-                                    }
-                                }
-                            }
-                        } label: {
-                            Label("删除", systemImage: "trash")
-                        }
-                        
-                        Button {
-                            editingList = list
-                        } label: {
-                            Label("编辑", systemImage: "pencil")
-                        }
-                        .tint(.blue)
                     }
                 }
             }
@@ -258,9 +237,9 @@ struct SharedWishlistListView: View {
                     return
                 }
                 
-                let listName = record.name ?? "好朋友的清单"
-                let listEmoji = record.emoji ?? "🎁"
-                let ownerName = record.owner_name
+                let listName = record.effectiveName ?? "好朋友的清单"
+                let listEmoji = record.effectiveEmoji ?? "🎁"
+                let ownerName = record.effectiveOwnerName
                 let remoteItems = record.wishinfo?.items ?? []
                 
                 let sharedItems: [SharedWishItem] = remoteItems.map { remote in
@@ -522,6 +501,8 @@ struct SharedWishlistRow: View {
 struct SharedWishlistDetailView: View {
     let list: SharedWishlist
     @ObservedObject var sharedStore: SharedWishlistStore
+    @ObservedObject var itemStore: ItemStore
+    @ObservedObject var wishlistGroupStore: WishlistGroupStore
     @Environment(\.dismiss) private var dismiss
     @State private var isSyncing = false
     @State private var editingItem: SharedWishItem? = nil
@@ -530,6 +511,7 @@ struct SharedWishlistDetailView: View {
     @State private var isDeleting = false
     @State private var members: [String] = []
     @State private var isLoadingMembers = false
+    @State private var showingEditList = false
     
     // 同步时检测自己不在 number_list 中，弹出昵称输入框
     @State private var showingSyncNicknameInput = false
@@ -942,6 +924,20 @@ struct SharedWishlistDetailView: View {
         }
         .navigationTitle(currentList.name)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if currentList.isOwner {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        showingEditList = true
+                    } label: {
+                        Image(systemName: "square.and.pencil")
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showingEditList) {
+            EditSharedWishlistView(list: currentList, sharedStore: sharedStore, itemStore: itemStore, wishlistGroupStore: wishlistGroupStore)
+        }
         .customBlueConfirmAlert(
             isPresented: $showingDeleteAlert,
             message: currentList.isOwner
@@ -1282,7 +1278,8 @@ struct SharedWishlistDetailView: View {
                         localItems: items,
                         listName: name,
                         listEmoji: emoji,
-                        isOwner: isOwner
+                        isOwner: isOwner,
+                        linkedGroupId: currentList.linkedGroupId?.uuidString
                     )
                     print("[共享心愿] syncResult==nil?\(syncResult == nil), pushSuccess=\(syncResult?.pushSuccess ?? false)")
                     if let syncResult = syncResult, syncResult.pushSuccess {
@@ -1316,7 +1313,8 @@ struct SharedWishlistDetailView: View {
                         sharedItems: items,
                         listName: name,
                         listEmoji: emoji,
-                        ownerName: ownerNameStr.isEmpty ? nil : ownerNameStr
+                        ownerName: ownerNameStr.isEmpty ? nil : ownerNameStr,
+                        linkedGroupId: currentList.linkedGroupId?.uuidString
                     )
                     if result?.code?.stringValue == "SUCCESS" || result?.code?.stringValue == "0" || result?.data?.id != nil {
                         syncSucceeded = true
@@ -1461,9 +1459,9 @@ struct SharedWishlistDetailView: View {
                             listId: listId,
                             mergedItems: remoteItems,
                             isSynced: true,
-                            remoteName: record.name,
-                            remoteEmoji: record.emoji,
-                            remoteOwnerName: record.owner_name
+                            remoteName: record.effectiveName,
+                            remoteEmoji: record.effectiveEmoji,
+                            remoteOwnerName: record.effectiveOwnerName
                         )
                     }
                     
@@ -1743,7 +1741,8 @@ struct CreateSharedWishlistView: View {
                         selectedItems: selectedItems,
                         listName: name,
                         listEmoji: emoji,
-                        ownerName: ownerName
+                        ownerName: ownerName,
+                        linkedGroupId: newList.linkedGroupId?.uuidString
                     )
                     if result?.code?.stringValue == "SUCCESS" || result?.code?.stringValue == "0" || result?.data?.id != nil {
                         await MainActor.run {
@@ -1778,6 +1777,7 @@ struct EditSharedWishlistView: View {
     @State private var selectedItemIds: Set<UUID>
     @State private var manualItems: [SharedWishItem]
     @State private var filterGroupId: UUID? = nil
+    @State private var syncGroup: Bool = false
     
     private let emojis = ["🎁", "🎂", "🎄", "💝", "🏠", "✈️", "🎮", "📱", "👗", "🎵", "📚", "🍰", "🌟", "💍", "🎯", "🎪"]
     
@@ -1788,9 +1788,17 @@ struct EditSharedWishlistView: View {
         self.wishlistGroupStore = wishlistGroupStore
         _name = State(initialValue: list.name)
         _emoji = State(initialValue: list.emoji)
+        _filterGroupId = State(initialValue: list.linkedGroupId)
+        _syncGroup = State(initialValue: list.linkedGroupId != nil)
         
-        let linked = Set(list.items.compactMap(\.sourceItemId))
-        _selectedItemIds = State(initialValue: linked)
+        // syncGroup 开启时，选中该分组下所有心愿；否则从 sourceItemId 恢复
+        if let lgId = list.linkedGroupId {
+            let groupItemIds = Set(itemStore.items.filter { $0.listType == .wishlist && $0.wishlistGroupId == lgId }.map { $0.id })
+            _selectedItemIds = State(initialValue: groupItemIds)
+        } else {
+            let linked = Set(list.items.compactMap(\.sourceItemId))
+            _selectedItemIds = State(initialValue: linked)
+        }
         _manualItems = State(initialValue: list.items.filter { $0.sourceItemId == nil })
     }
     
@@ -1864,7 +1872,7 @@ struct EditSharedWishlistView: View {
                             }
                         }
                         
-                        if !filteredWishlistItems.isEmpty {
+                        if !filteredWishlistItems.isEmpty && !syncGroup {
                             let allFilteredSelected = filteredWishlistItems.allSatisfy { selectedItemIds.contains($0.id) }
                             Button {
                                 if allFilteredSelected {
@@ -1886,33 +1894,59 @@ struct EditSharedWishlistView: View {
                             }
                             .buttonStyle(BorderlessButtonStyle())
                         }
-                    }
-                }
-                
-                Section {
-                    if filteredWishlistItems.isEmpty {
-                        Text("暂无心愿可添加")
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                            .padding(.vertical, 20)
-                    } else {
-                        ForEach(filteredWishlistItems) { item in
-                            WishSelectRow(item: item, isSelected: selectedItemIds.contains(item.id)) {
-                                if selectedItemIds.contains(item.id) {
-                                    selectedItemIds.remove(item.id)
-                                } else {
-                                    selectedItemIds.insert(item.id)
+                        
+                        // 同步分组开关
+                        if filterGroupId != nil && !filteredWishlistItems.isEmpty {
+                            Toggle(isOn: $syncGroup) {
+                                Text("同步分组")
+                                    .font(.system(.subheadline, design: .rounded))
+                                    .fontWeight(.bold)
+                            }
+                            .tint(.green)
+                            .onChange(of: syncGroup) { _, newValue in
+                                if newValue {
+                                    for item in filteredWishlistItems {
+                                        selectedItemIds.insert(item.id)
+                                    }
                                 }
+                            }
+                            
+                            if syncGroup {
+                                Text("该分组后续新增、编辑、删除心愿都会自动同步到此共享清单")
+                                    .font(.system(.caption, design: .rounded))
+                                    .fontWeight(.bold)
+                                    .foregroundStyle(.blue)
                             }
                         }
                     }
-                } header: {
-                    HStack {
-                        Text("选择心愿")
-                        Spacer()
-                        Text("已选 \(selectedItemIds.count) 个")
-                            .font(.caption)
-                            .foregroundStyle(.green)
+                }
+                
+                if !syncGroup {
+                    Section {
+                        if filteredWishlistItems.isEmpty {
+                            Text("暂无心愿可添加")
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .padding(.vertical, 20)
+                        } else {
+                            ForEach(filteredWishlistItems) { item in
+                                WishSelectRow(item: item, isSelected: selectedItemIds.contains(item.id)) {
+                                    if selectedItemIds.contains(item.id) {
+                                        selectedItemIds.remove(item.id)
+                                    } else {
+                                        selectedItemIds.insert(item.id)
+                                    }
+                                }
+                            }
+                        }
+                    } header: {
+                        HStack {
+                            Text("选择心愿")
+                            Spacer()
+                            Text("已选 \(selectedItemIds.count) 个")
+                                .font(.caption)
+                                .foregroundStyle(.green)
+                        }
                     }
                 }
             }
@@ -1937,8 +1971,15 @@ struct EditSharedWishlistView: View {
             return (sid, item.isCompleted)
         })
         
-        let linkedItems = wishlistItems
-            .filter { selectedItemIds.contains($0.id) }
+        // syncGroup 开启时，直接用分组下所有心愿；否则用手动选择的
+        let itemsToLink: [Item]
+        if syncGroup, let gId = filterGroupId {
+            itemsToLink = wishlistItems.filter { $0.wishlistGroupId == gId }
+        } else {
+            itemsToLink = wishlistItems.filter { selectedItemIds.contains($0.id) }
+        }
+        
+        let linkedItems = itemsToLink
             .map { item in
                 SharedWishItem(
                     sourceItemId: item.id,
@@ -1956,6 +1997,7 @@ struct EditSharedWishlistView: View {
         updated.name = name
         updated.emoji = emoji
         updated.items = manualItems + linkedItems
+        updated.linkedGroupId = syncGroup ? filterGroupId : nil
         sharedStore.update(updated)
         dismiss()
     }

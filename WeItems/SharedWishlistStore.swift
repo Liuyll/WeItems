@@ -421,7 +421,8 @@ class SharedWishlistStore: ObservableObject {
             lists[index].items = finalItems
             lists[index].isSynced = isSynced
             lists[index].updatedAt = Date()
-            // 对于非 owner 的清单，用远端的名称和图标更新
+            // 非 owner 的清单，用远端的名称和图标更新
+            // owner 的清单以本地名字为准（owner 负责把本地名字推送到远端）
             if !lists[index].isOwner {
                 if let name = remoteName, !name.isEmpty {
                     lists[index].name = name
@@ -429,9 +430,9 @@ class SharedWishlistStore: ObservableObject {
                 if let emoji = remoteEmoji, !emoji.isEmpty {
                     lists[index].emoji = emoji
                 }
-                if let ownerName = remoteOwnerName, !ownerName.isEmpty {
-                    lists[index].ownerName = ownerName
-                }
+            }
+            if let ownerName = remoteOwnerName, !ownerName.isEmpty {
+                lists[index].ownerName = ownerName
             }
             save()
         }

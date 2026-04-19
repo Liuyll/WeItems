@@ -198,6 +198,8 @@ struct DebugTestView: View {
     @EnvironmentObject var authManager: AuthManager
     @State private var showingVIPTest = false
     @State private var showingLoginTest = false
+    @State private var showingUnsubscribeConfirm = false
+    @State private var showingGrantVIPConfirm = false
     
     var body: some View {
         List {
@@ -238,6 +240,46 @@ struct DebugTestView: View {
                     } icon: {
                         Image(systemName: "person.badge.key.fill")
                             .foregroundStyle(.blue)
+                    }
+                }
+                .foregroundStyle(.primary)
+                
+                // 模拟用户退订
+                Button {
+                    showingUnsubscribeConfirm = true
+                } label: {
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("模拟用户退订")
+                                .font(.system(.body, design: .rounded))
+                                .fontWeight(.semibold)
+                            Text("将远端和本地 VIP 状态置为 0")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.red)
+                    }
+                }
+                .foregroundStyle(.primary)
+                
+                // 升级友情账户
+                Button {
+                    showingGrantVIPConfirm = true
+                } label: {
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("升级友情账户")
+                                .font(.system(.body, design: .rounded))
+                                .fontWeight(.semibold)
+                            Text("将远端和本地 VIP 状态置为 99")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "heart.circle.fill")
+                            .foregroundStyle(.pink)
                     }
                 }
                 .foregroundStyle(.primary)
@@ -282,6 +324,53 @@ struct DebugTestView: View {
                     .environmentObject(authManager)
             }
         }
+        .customBlueConfirmAlert(
+            isPresented: $showingUnsubscribeConfirm,
+            message: "确定模拟退订？将把远端和本地 VIP 状态置为 0（免费用户）",
+            confirmText: "确定退订",
+            cancelText: "取消",
+            confirmColor: .white,
+            cancelColor: .white.opacity(0.7),
+            backgroundColor: .red,
+            onConfirm: {
+                Task {
+                    await MainActor.run {
+                        IAPManager.shared.applyRemoteVIPInfo(type: 0, startDate: nil, expireDate: nil)
+                    }
+                    let tokenValid = await AuthManager.shared.ensureValidToken()
+                    if tokenValid {
+                        await IAPManager.shared.syncVIPToCloud()
+                    }
+                    print("[Debug] 已模拟退订，VIP 状态置为 free")
+                }
+            }
+        )
+        .customBlueConfirmAlert(
+            isPresented: $showingGrantVIPConfirm,
+            message: "确定升级为友情账户？将把远端和本地 VIP 状态置为 99（永久VIP）",
+            confirmText: "确定升级",
+            cancelText: "取消",
+            confirmColor: .white,
+            cancelColor: .white.opacity(0.7),
+            backgroundColor: .pink,
+            onConfirm: {
+                Task {
+                    let isoFormatter = ISO8601DateFormatter()
+                    let now = isoFormatter.string(from: Date())
+                    var components = DateComponents()
+                    components.year = 9999; components.month = 12; components.day = 31
+                    let forever = isoFormatter.string(from: Calendar.current.date(from: components) ?? Date())
+                    await MainActor.run {
+                        IAPManager.shared.applyRemoteVIPInfo(type: 99, startDate: now, expireDate: forever)
+                    }
+                    let tokenValid = await AuthManager.shared.ensureValidToken()
+                    if tokenValid {
+                        await IAPManager.shared.syncVIPToCloud()
+                    }
+                    print("[Debug] 已升级为友情账户(99)，VIP 状态置为 grantedVIP")
+                }
+            }
+        )
     }
     
     private func infoRow(_ title: String, value: String) -> some View {

@@ -14,17 +14,19 @@ enum IAPProduct: String, CaseIterable {
     case proLifetime = "lyl.WeItems.pro.lifetime"   // 终生买断
 }
 
-/// VIP 等级：0=免费用户, 1=VIP(年度订阅), 2=MasterVIP(终生买断)
+/// VIP 等级：0=免费用户, 1=VIP(年度订阅), 2=MasterVIP(终生买断), 99=后台赠送永久VIP
 enum VIPLevel: Int, Codable {
     case free = 0
     case vip = 1
     case masterVIP = 2
+    case grantedVIP = 99
     
     var displayName: String {
         switch self {
         case .free: return "免费用户"
         case .vip: return "VIP"
         case .masterVIP: return "MasterVIP"
+        case .grantedVIP: return "VIP"
         }
     }
 }
@@ -53,7 +55,7 @@ class IAPManager: ObservableObject {
     /// VIP 是否在有效期内（等级>=1 且未过期）
     var isVIPActive: Bool {
         guard vipLevel.rawValue >= 1 else { return false }
-        if vipLevel == .masterVIP { return true }
+        if vipLevel == .masterVIP || vipLevel == .grantedVIP { return true }
         guard let expire = vipExpireDate else { return false }
         return expire > Date()
     }
@@ -110,8 +112,8 @@ class IAPManager: ObservableObject {
     var isVIPExpiredLocally: Bool {
         // 免费用户 → 需要检查云端是否有 VIP
         if vipLevel == .free { return true }
-        // MasterVIP 永不过期
-        if vipLevel == .masterVIP { return false }
+        // MasterVIP 和 grantedVIP 永不过期
+        if vipLevel == .masterVIP || vipLevel == .grantedVIP { return false }
         // VIP 检查到期时间
         guard let expire = vipExpireDate else { return true }
         return expire < Date()
@@ -123,7 +125,7 @@ class IAPManager: ObservableObject {
         vipLevel = VIPLevel(rawValue: type) ?? .free
         if let s = startDate { vipStartDate = isoFormatter.date(from: s) }
         if let e = expireDate { vipExpireDate = isoFormatter.date(from: e) }
-        // 检查是否过期
+        // 检查是否过期（grantedVIP 和 masterVIP 不过期）
         if vipLevel == .vip, let expire = vipExpireDate, expire < Date() {
             vipLevel = .free
         }
@@ -463,6 +465,11 @@ class IAPManager: ObservableObject {
     
     /// 检查并撤销 VIP（退款或订阅过期时调用）
     private func revokeVIPIfNeeded() {
+        // grantedVIP(99) 不受 StoreKit 退款/过期影响
+        guard vipLevel != .grantedVIP else {
+            print("[IAP] ℹ️ 后台赠送VIP，跳过撤销检查")
+            return
+        }
         // 重新检查当前所有有效权益
         Task {
             var hasYearly = false
@@ -548,6 +555,12 @@ class IAPManager: ObservableObject {
         }
         
         purchasedProductIDs = validProductIDs
+        
+        // grantedVIP(99) 不受 StoreKit 交易状态影响
+        guard vipLevel != .grantedVIP else {
+            print("[IAP] ℹ️ 后台赠送VIP，跳过 StoreKit 状态覆盖")
+            return
+        }
         
         let previousLevel = vipLevel
         if hasLifetime {

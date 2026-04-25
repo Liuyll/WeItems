@@ -1119,7 +1119,7 @@ class FinanceStore: ObservableObject {
         let calendar = Calendar.current
         let now = Date()
         let currentYear = calendar.component(.year, from: now)
-        let currentMonth = calendar.component(.month, from: now) // 1-12
+        let _ = calendar.component(.month, from: now) // 1-12
         var result: [MonthlyFinanceData] = []
         
         for i in (0..<count).reversed() {
@@ -1130,8 +1130,8 @@ class FinanceStore: ObservableObject {
             var yearDebt: Double = 0
             var yearInvestment: Double = 0
             
-            // 当前年只算到当前月，过去年份算满 12 个月
-            let monthCount = (year == currentYear) ? currentMonth : 12
+            // 年度视图计算全年 12 个月，确保年终奖和长期激励被完整计入
+            let monthCount = 12
             
             // 按月累加（确保结构性收入正确分布）
             for m in 0..<monthCount {
@@ -1438,8 +1438,12 @@ private func ceilToNiceFinance(_ value: Double) -> Double {
     let normalized = value / magnitude
     let nice: Double
     if normalized <= 1.0 { nice = 1.0 }
+    else if normalized <= 1.5 { nice = 1.5 }
     else if normalized <= 2.0 { nice = 2.0 }
+    else if normalized <= 3.0 { nice = 3.0 }
+    else if normalized <= 4.0 { nice = 4.0 }
     else if normalized <= 5.0 { nice = 5.0 }
+    else if normalized <= 7.5 { nice = 7.5 }
     else { nice = 10.0 }
     return nice * magnitude
 }

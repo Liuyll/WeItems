@@ -88,6 +88,7 @@ struct HomeView: View {
     @State private var currentMode: AppMode = .items
     @State private var showingProfile = false
     @State private var wishlistSelectedGroupId: UUID? = nil
+    @State private var itemsSelectedGroupId: UUID? = nil
     @State private var selectedTab: BottomTab = .items
     @AppStorage("assetFaceIDLock") private var assetFaceIDLock = false
     @State private var assetUnlocked = false
@@ -331,6 +332,10 @@ struct HomeView: View {
                 let listEmoji = sharedRecord.effectiveEmoji ?? "🎁"
                 let ownerName = sharedRecord.effectiveOwnerName
                 let remoteItems = sharedRecord.wishinfo?.items ?? []
+                print("[共享心愿] performAutoSync 远端共 \(remoteItems.count) 个心愿（含无 id）")
+                for remote in remoteItems {
+                    print("[共享心愿] performAutoSync remote item: name=\(remote.name ?? "未知"), id=\(remote.id ?? "nil")")
+                }
                 
                 let sharedItems: [SharedWishItem] = remoteItems.compactMap { remote in
                     guard let idStr = remote.id, !idStr.isEmpty,
@@ -369,10 +374,14 @@ struct HomeView: View {
                     return nil
                 }()
                 
+                // 过滤掉远端墓碑中已删除的心愿（被其他用户删除的）
+                let remoteDeletedIds = Set((sharedRecord.wishinfo?.deletedIds ?? []).map { $0.id })
+                let tombstoneFilteredItems = remoteDeletedIds.isEmpty ? sharedItems : sharedItems.filter { !remoteDeletedIds.contains($0.id.uuidString) }
+                
                 await MainActor.run {
                     // 过滤本地已删除的心愿
                     let deletedNames = sharedWishlistStore.deletedItemNames[wishGroupId] ?? []
-                    let filteredItems = deletedNames.isEmpty ? sharedItems : sharedItems.filter { !deletedNames.contains($0.name) }
+                    let filteredItems = deletedNames.isEmpty ? tombstoneFilteredItems : tombstoneFilteredItems.filter { !deletedNames.contains($0.name) }
                     
                     if let idx = sharedWishlistStore.lists.firstIndex(where: { $0.wishGroupId == wishGroupId }) {
                         sharedWishlistStore.applyMergedResult(listId: sharedWishlistStore.lists[idx].id, mergedItems: filteredItems, isSynced: true, remoteName: listName, remoteEmoji: listEmoji, remoteOwnerName: ownerName)
@@ -381,7 +390,7 @@ struct HomeView: View {
                         if sharedWishlistStore.lists[idx].linkedGroupId == nil, let lgId = remoteLinkedGroupId {
                             sharedWishlistStore.lists[idx].linkedGroupId = lgId
                         }
-                        sharedWishlistStore.clearDeletedItemNames(for: wishGroupId)
+                        // 不清空本地删除记录 — 共享清单的完整同步由自己的 syncToCloud/syncFromRemote 处理
                     } else {
                         sharedWishlistStore.add(SharedWishlist(name: listName, emoji: listEmoji, items: filteredItems, isSynced: true, wishGroupId: wishGroupId, isOwner: isOwner, ownerName: ownerName, myNickname: myRemoteNickname, linkedGroupId: remoteLinkedGroupId))
                     }
@@ -389,17 +398,9 @@ struct HomeView: View {
             }
         }
         
-        // 将 owner 共享清单的名字和 emoji 推送到远端
-        for list in sharedWishlistStore.lists where list.isOwner {
-            guard let wishGroupId = list.wishGroupId else { continue }
-            let _ = await client.updateSharedWishlist(
-                wishGroupId: wishGroupId,
-                sharedItems: list.items,
-                listName: list.name,
-                listEmoji: list.emoji,
-                linkedGroupId: list.linkedGroupId?.uuidString
-            )
-        }
+        // 注意：不再在此处对 owner 清单调用 updateSharedWishlist() 推送
+        // 共享清单的完整同步（含墓碑）应由 SharedWishlistView 的 syncToCloud/syncFromRemote 处理
+        // 之前这里推送会覆盖远端墓碑，导致被删除的心愿复活
         
         // 收集需要下载图片的远端物品/心愿
         var allRemoteItems: [Item] = []
@@ -439,6 +440,25 @@ struct HomeView: View {
                 store.markAllItemsSynced()
                 store.rebuildCustomDisplayTypesFromWishes()
                 UserDefaults.standard.set(false, forKey: "remoteNeedsSync")
+                
+                // 回写 imageUrl 到本地 Item（图片已上传到 COS，但本地 Item 的 imageUrl 还是 nil）
+                var allImageUrlMap: [String: String] = [:]
+                if let result = itemsSyncResult {
+                    allImageUrlMap.merge(result.imageUrlMap) { $1 }
+                }
+                if let result = wishesSyncResult {
+                    allImageUrlMap.merge(result.imageUrlMap) { $1 }
+                }
+                if !allImageUrlMap.isEmpty {
+                    for (uuidStr, url) in allImageUrlMap {
+                        guard let uuid = UUID(uuidString: uuidStr),
+                              let index = store.items.firstIndex(where: { $0.id == uuid }) else { continue }
+                        if (store.items[index].imageUrl ?? "").isEmpty {
+                            store.items[index].imageUrl = url
+                            print("[自动同步] 回写 imageUrl: \(store.items[index].name) -> \(url)")
+                        }
+                    }
+                }
             }
             
             // 物品已同步完成，现在恢复共享清单的 linkedGroupId
@@ -563,7 +583,7 @@ struct HomeView: View {
             Group {
                 switch currentMode {
                 case .items:
-                    ItemsView(store: store, groupStore: groupStore, showingAddGroup: $showingAddGroup)
+                    ItemsView(store: store, groupStore: groupStore, showingAddGroup: $showingAddGroup, selectedGroupId: $itemsSelectedGroupId)
                 case .wishlist:
                     WishlistView(store: store, wishlistGroupStore: wishlistGroupStore, sharedWishlistStore: sharedWishlistStore, selectedGroupId: $wishlistSelectedGroupId)
                 case .daily:
@@ -646,7 +666,7 @@ struct HomeView: View {
             }
             .sheet(isPresented: $showingAddItem) {
                 if currentMode == .items {
-                    AddItemView(store: store, groupStore: groupStore, defaultGroupId: nil)
+                    AddItemView(store: store, groupStore: groupStore, defaultGroupId: itemsSelectedGroupId)
                         .id(addItemId)
                 } else if currentMode == .wishlist {
                     AddWishlistItemView(store: store, wishlistGroupStore: wishlistGroupStore, sharedWishlistStore: sharedWishlistStore, defaultGroupId: wishlistSelectedGroupId)
@@ -957,9 +977,8 @@ struct ItemsView: View {
     var store: ItemStore
     @ObservedObject var groupStore: GroupStore
     @Binding var showingAddGroup: Bool
+    @Binding var selectedGroupId: UUID?
     @EnvironmentObject var authManager: AuthManager
-    
-    @State private var selectedGroupId: UUID?
     @State private var editingItem: Item? = nil
     @State private var editingSoldItem: Item? = nil
     @State private var showingItemDetail: Item? = nil
@@ -970,6 +989,7 @@ struct ItemsView: View {
     @State private var showDeleteGroupAlert = false
     @State private var editingGroup: ItemGroup? = nil
     @AppStorage("itemSortMode") private var itemSortMode: ItemSortMode = .addedDate
+    @State private var isAlbumMode: Bool = true
     
     private var currentItems: [Item] {
         var result: [Item]
@@ -1083,37 +1103,53 @@ struct ItemsView: View {
             .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
             
             // 物品类型筛选
-            TypeFilterView(selectedType: $selectedType, store: store, selectedGroupId: selectedGroupId, showArchived: showArchived)
+            TypeFilterView(selectedType: $selectedType, isAlbumMode: $isAlbumMode, store: store, selectedGroupId: selectedGroupId, showArchived: showArchived)
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 4, trailing: 0))
             
             // 物品列表
-            ForEach(currentItems) { item in
-                ItemCard(item: item, group: groupStore.group(for: item.groupId), showGroup: selectedGroupId == nil && !showArchived)
-                    .listRowSeparator(.hidden)
-                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-                    .listRowBackground(Color.clear)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
+            if isAlbumMode && selectedType == nil && !showArchived {
+                AlbumStyleItemsView(
+                    items: currentItems,
+                    groupStore: groupStore,
+                    onItemTap: { item in
                         showingItemDetail = item
+                    },
+                    onItemLongPress: { item in
+                        editingItem = item
                     }
-                    .simultaneousGesture(
-                        LongPressGesture(minimumDuration: 0.5)
-                            .onEnded { _ in
-                                if showArchived {
-                                    editingSoldItem = item
-                                } else {
-                                    editingItem = item
-                                }
-                            }
-                    )
-                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                        Button(role: .destructive) {
-                            store.delete(item)
-                        } label: {
-                            Image(systemName: "trash")
+                )
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                .listRowBackground(Color.clear)
+            } else {
+                ForEach(currentItems) { item in
+                    ItemCard(item: item, group: groupStore.group(for: item.groupId), showGroup: selectedGroupId == nil && !showArchived)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                        .listRowBackground(Color.clear)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            showingItemDetail = item
                         }
-                    }
+                        .simultaneousGesture(
+                            LongPressGesture(minimumDuration: 0.5)
+                                .onEnded { _ in
+                                    if showArchived {
+                                        editingSoldItem = item
+                                    } else {
+                                        editingItem = item
+                                    }
+                                }
+                        )
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button(role: .destructive) {
+                                store.delete(item)
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                        }
+                }
             }
         }
         .listStyle(.plain)
@@ -1140,7 +1176,7 @@ struct ItemsView: View {
             }
         }
         .sheet(item: $editingItem) { item in
-            EditItemView(item: item, store: store, groupStore: groupStore)
+            EditItemView(draft: ItemDraft(item: item), item: item, store: store, groupStore: groupStore)
         }
         .sheet(item: $editingSoldItem) { item in
             EditSoldInfoSheet(item: item, store: store)
@@ -1169,6 +1205,12 @@ struct ItemsView: View {
         .onChange(of: selectedGroupId) { _, _ in
             // 切换分组时清除类型筛选
             selectedType = nil
+        }
+        .onChange(of: selectedType) { _, newValue in
+            // 选中具体类型时自动切回列表视图
+            if newValue != nil {
+                isAlbumMode = false
+            }
         }
         .sheet(item: $editingGroup) { group in
             AddGroupView(groupStore: groupStore, editingGroup: group, onDeleteGroup: { group in
@@ -1214,6 +1256,7 @@ struct ItemsView: View {
 // 物品类型筛选视图
 struct TypeFilterView: View {
     @Binding var selectedType: ItemType?
+    @Binding var isAlbumMode: Bool
     var store: ItemStore
     var selectedGroupId: UUID? = nil
     var showArchived: Bool = false
@@ -1256,6 +1299,25 @@ struct TypeFilterView: View {
         if !activeTypes.isEmpty {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
+                    // 视图切换按钮（仅在"全部"非售出模式下显示）
+                    if selectedType == nil && !showArchived {
+                        Button {
+                            withAnimation(.spring(duration: 0.25)) {
+                                isAlbumMode.toggle()
+                            }
+                        } label: {
+                            Image(systemName: isAlbumMode ? "list.bullet" : "rectangle.stack")
+                                .font(.system(size: 12, weight: .semibold))
+                                .frame(width: 32, height: 32)
+                                .background(
+                                    Capsule()
+                                        .fill(Color.gray.opacity(0.15))
+                                )
+                                .foregroundStyle(.primary)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                    }
+                    
                     // "全部"标签
                     Button {
                         withAnimation(.spring(duration: 0.25)) {
@@ -1920,6 +1982,184 @@ struct EditSoldInfoSheet: View {
                 recycleMethod = item.recycleMethod ?? ""
             }
         }
+    }
+}
+
+// MARK: - 相册风格物品展示视图
+struct AlbumStyleItemsView: View {
+    let items: [Item]
+    let groupStore: GroupStore
+    let onItemTap: (Item) -> Void
+    let onItemLongPress: (Item) -> Void
+    
+    private var sections: [AlbumSection] {
+        // 按类型分组，只包含有图片的物品
+        var grouped = Dictionary(grouping: items) { $0.type }
+        // 过滤掉没有物品的分组
+        grouped = grouped.filter { !$0.value.isEmpty }
+        
+        // 计算每组的总价值
+        var sections: [AlbumSection] = []
+        for (type, typeItems) in grouped {
+            let totalValue = typeItems.filter { !$0.isPriceless }.reduce(0) { $0 + $1.price }
+            sections.append(AlbumSection(
+                typeName: type,
+                items: typeItems,
+                totalValue: totalValue
+            ))
+        }
+        
+        // 按总价值降序排序
+        sections.sort { $0.totalValue > $1.totalValue }
+        
+        // 标记第一个为 featured
+        if !sections.isEmpty {
+            sections[0].isFeatured = true
+        }
+        
+        return sections
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            ForEach(sections) { section in
+                AlbumSectionView(
+                    section: section,
+                    groupStore: groupStore,
+                    onItemTap: onItemTap,
+                    onItemLongPress: onItemLongPress
+                )
+            }
+        }
+    }
+}
+
+// MARK: - 相册分组数据模型
+struct AlbumSection: Identifiable {
+    var id: String { typeName }
+    let typeName: String
+    let items: [Item]
+    let totalValue: Double
+    var isFeatured: Bool = false
+}
+
+// MARK: - 相册分组视图
+struct AlbumSectionView: View {
+    let section: AlbumSection
+    let groupStore: GroupStore
+    let onItemTap: (Item) -> Void
+    let onItemLongPress: (Item) -> Void
+    
+    private var typeColor: Color {
+        if let itemType = ItemType(rawValue: section.typeName) {
+            return itemType.color
+        }
+        return .blue
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(section.typeName)
+                    .font(section.isFeatured ? .title2 : .title3)
+                    .fontWeight(.bold)
+                Spacer()
+                Text("\(section.items.count) 件")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: section.isFeatured ? 16 : 12) {
+                    ForEach(section.items) { item in
+                        AlbumItemCard(
+                            item: item,
+                            isFeatured: section.isFeatured,
+                            typeColor: typeColor
+                        )
+                        .onTapGesture {
+                            onItemTap(item)
+                        }
+                        .simultaneousGesture(
+                            LongPressGesture(minimumDuration: 0.5)
+                                .onEnded { _ in
+                                    onItemLongPress(item)
+                                }
+                        )
+                    }
+                }
+                .padding(.horizontal, 4)
+            }
+        }
+    }
+}
+
+// MARK: - 相册风格物品卡片
+struct AlbumItemCard: View {
+    let item: Item
+    let isFeatured: Bool
+    let typeColor: Color
+    
+    private var cardWidth: CGFloat {
+        isFeatured ? 280 : 160
+    }
+    
+    private var cardHeight: CGFloat {
+        isFeatured ? 360 : 200
+    }
+    
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            // 图片或占位
+            if let image = item.image {
+                image
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                // 占位背景
+                ZStack {
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(typeColor.opacity(0.12))
+                    
+                    VStack(spacing: 8) {
+                        if let itemType = ItemType(rawValue: item.type) {
+                            itemType.iconImage(size: isFeatured ? 48 : 32)
+                                .foregroundStyle(typeColor.opacity(0.4))
+                        }
+                        Text(item.name)
+                            .font(isFeatured ? .headline : .caption)
+                            .fontWeight(.medium)
+                            .foregroundStyle(typeColor.opacity(0.6))
+                            .multilineTextAlignment(.center)
+                            .lineLimit(2)
+                            .padding(.horizontal, 8)
+                    }
+                }
+            }
+            
+            // 底部渐变遮罩（仅在有图片时显示，增强文字可读性）
+            if item.image != nil {
+                LinearGradient(
+                    colors: [.black.opacity(0.7), .black.opacity(0.2), .clear],
+                    startPoint: .bottom,
+                    endPoint: .top
+                )
+            }
+        }
+        .frame(width: cardWidth, height: cardHeight)
+        .overlay(alignment: .bottomLeading) {
+            if item.image != nil {
+                Text(item.name)
+                    .font(isFeatured ? .title3 : .subheadline)
+                    .fontWeight(.bold)
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .shadow(color: .black.opacity(0.6), radius: 3, x: 0, y: 1)
+                    .frame(maxWidth: cardWidth - 32, alignment: .leading)
+                    .padding(16)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 }
 

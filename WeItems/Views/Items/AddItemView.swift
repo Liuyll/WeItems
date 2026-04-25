@@ -33,6 +33,13 @@ struct AddItemView: View {
     @State private var savedItemName = ""
     @State private var celebrationKind: CelebrationKind?
     
+    init(store: ItemStore, groupStore: GroupStore, defaultGroupId: UUID? = nil) {
+        self.store = store
+        self.groupStore = groupStore
+        self.defaultGroupId = defaultGroupId
+        _selectedGroupId = State(initialValue: defaultGroupId)
+    }
+    
     enum CelebrationKind: Identifiable {
         case spiritTravel
         case lifeGood

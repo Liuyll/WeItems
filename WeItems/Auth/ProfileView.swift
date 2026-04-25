@@ -747,10 +747,14 @@ struct ProfileView: View {
                         return nil
                     }()
                     
+                    // 过滤掉远端墓碑中已删除的心愿
+                    let remoteDeletedIds = Set((sharedRecord.wishinfo?.deletedIds ?? []).map { $0.id })
+                    let tombstoneFilteredItems = remoteDeletedIds.isEmpty ? sharedItems : sharedItems.filter { !remoteDeletedIds.contains($0.id.uuidString) }
+                    
                     await MainActor.run {
                         // 过滤本地已删除的心愿
                         let deletedNames = sharedWishlistStore.deletedItemNames[wishGroupId] ?? []
-                        let filteredItems = deletedNames.isEmpty ? sharedItems : sharedItems.filter { !deletedNames.contains($0.name) }
+                        let filteredItems = deletedNames.isEmpty ? tombstoneFilteredItems : tombstoneFilteredItems.filter { !deletedNames.contains($0.name) }
                         
                         if let existingIndex = sharedWishlistStore.lists.firstIndex(where: { $0.wishGroupId == wishGroupId }) {
                             // 本地已有该清单，用远端数据更新
@@ -770,7 +774,7 @@ struct ProfileView: View {
                             if sharedWishlistStore.lists[existingIndex].linkedGroupId == nil, let lgId = remoteLinkedGroupId {
                                 sharedWishlistStore.lists[existingIndex].linkedGroupId = lgId
                             }
-                            sharedWishlistStore.clearDeletedItemNames(for: wishGroupId)
+                            // 不清空本地删除记录 — 共享清单的完整同步由自己的 syncToCloud/syncFromRemote 处理
                         } else {
                             // 本地没有该清单，从远端创建
                             let newList = SharedWishlist(
@@ -803,17 +807,9 @@ struct ProfileView: View {
                 }
             }
             
-            // 将 owner 共享清单的名字和 emoji 推送到远端（修复远端 name 为空的问题）
-            for list in sharedWishlistStore.lists where list.isOwner {
-                guard let wishGroupId = list.wishGroupId else { continue }
-                let _ = await client.updateSharedWishlist(
-                    wishGroupId: wishGroupId,
-                    sharedItems: list.items,
-                    listName: list.name,
-                    listEmoji: list.emoji,
-                    linkedGroupId: list.linkedGroupId?.uuidString
-                )
-            }
+            // 注意：不再在此处对 owner 清单调用 updateSharedWishlist() 推送
+            // 共享清单的完整同步（含墓碑）应由 SharedWishlistView 的 syncToCloud/syncFromRemote 处理
+            // 之前这里推送会覆盖远端墓碑，导致被删除的心愿复活
             
             // 收集需要下载图片的远端物品
             var allRemoteItems: [Item] = []
@@ -874,6 +870,25 @@ struct ProfileView: View {
                     }
                 } else {
                     allSuccess = false
+                }
+                
+                // 回写 imageUrl 到本地 Item（图片已上传到 COS，但本地 Item 的 imageUrl 还是 nil）
+                var allImageUrlMap: [String: String] = [:]
+                if let result = itemsSyncResult {
+                    allImageUrlMap.merge(result.imageUrlMap) { $1 }
+                }
+                if let result = wishesSyncResult {
+                    allImageUrlMap.merge(result.imageUrlMap) { $1 }
+                }
+                if !allImageUrlMap.isEmpty {
+                    for (uuidStr, url) in allImageUrlMap {
+                        guard let uuid = UUID(uuidString: uuidStr),
+                              let index = itemStore.items.firstIndex(where: { $0.id == uuid }) else { continue }
+                        if (itemStore.items[index].imageUrl ?? "").isEmpty {
+                            itemStore.items[index].imageUrl = url
+                            print("[手动同步] 回写 imageUrl: \(itemStore.items[index].name) -> \(url)")
+                        }
+                    }
                 }
                 
                 // userinfo 获取成功也算同步成功

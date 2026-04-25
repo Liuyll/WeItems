@@ -270,11 +270,13 @@ class SharedWishlistStore: ObservableObject {
                 deleted.insert(item.name)
                 deletedItemNames[wishGroupId] = deleted
                 saveDeletedItemNames()
+                print("[共享心愿] deleteItem: name=\(item.name), isSynced 将从 \(lists[li].isSynced) 变为 false")
             }
             lists[li].items.removeAll { $0.id == itemId }
             lists[li].updatedAt = Date()
             lists[li].isSynced = false
             save()
+            print("[共享心愿] deleteItem 完成: isSynced=\(lists[li].isSynced), items.count=\(lists[li].items.count)")
         }
     }
     
@@ -303,6 +305,7 @@ class SharedWishlistStore: ObservableObject {
             price: item.price,
             displayType: item.effectiveDisplayType,
             imageUrl: item.imageUrl,
+            imageData: item.imageData,
             purchaseLink: item.purchaseLink.isEmpty ? nil : item.purchaseLink,
             details: item.details.isEmpty ? nil : item.details
         )
@@ -355,6 +358,7 @@ class SharedWishlistStore: ObservableObject {
                         price: item.price,
                         displayType: item.effectiveDisplayType,
                         imageUrl: item.imageUrl,
+                        imageData: item.imageData,
                         purchaseLink: item.purchaseLink.isEmpty ? nil : item.purchaseLink,
                         details: item.details.isEmpty ? nil : item.details
                     )
@@ -382,6 +386,7 @@ class SharedWishlistStore: ObservableObject {
             lists[li].items[ii].price = item.price
             lists[li].items[ii].displayType = item.effectiveDisplayType
             lists[li].items[ii].imageUrl = item.imageUrl
+            lists[li].items[ii].imageData = item.imageData
             lists[li].items[ii].purchaseLink = item.purchaseLink.isEmpty ? nil : item.purchaseLink
             lists[li].items[ii].details = item.details.isEmpty ? nil : item.details
             lists[li].updatedAt = Date()
@@ -396,6 +401,7 @@ class SharedWishlistStore: ObservableObject {
                 price: item.price,
                 displayType: item.effectiveDisplayType,
                 imageUrl: item.imageUrl,
+                imageData: item.imageData,
                 purchaseLink: item.purchaseLink.isEmpty ? nil : item.purchaseLink,
                 details: item.details.isEmpty ? nil : item.details
             )
@@ -474,7 +480,7 @@ class SharedWishlistStore: ObservableObject {
         save()
     }
     
-    private func save() {
+    func save() {
         do {
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601

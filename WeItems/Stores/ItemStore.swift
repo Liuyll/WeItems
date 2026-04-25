@@ -273,6 +273,22 @@ class ItemStore: ObservableObject {
         saveCustomDisplayTypes()
     }
     
+    /// 清理没有关联心愿的自定义展示类型
+    func cleanupOrphanedCustomDisplayTypes() {
+        let presetTypes = Set(ItemType.allCases.map { $0.rawValue })
+        // 收集所有心愿清单中实际使用的自定义类型
+        let usedTypes = Set(items.filter { $0.listType == .wishlist }.compactMap { item -> String? in
+            let display = item.effectiveDisplayType
+            return (!presetTypes.contains(display) && !display.isEmpty) ? display : nil
+        })
+        // 删除没有关联心愿的自定义类型
+        let before = customDisplayTypes
+        customDisplayTypes.removeAll { !usedTypes.contains($0) }
+        if customDisplayTypes.count != before.count {
+            saveCustomDisplayTypes()
+        }
+    }
+    
     /// 从当前所有心愿清单中扫描自定义类型，补充到 customDisplayTypes
     /// 只扫描 displayType 不在预设 ItemType 中的项
     func rebuildCustomDisplayTypesFromWishes() {
@@ -442,18 +458,17 @@ class ItemStore: ObservableObject {
         // 标记趋势缓存失效
         TrendDataCache.shared.invalidate()
         
-        // 将图片数据保存到文件，items中只保存标记
+        // 只保存真正有图片变更的 item，避免 toggle 等无图片改动操作时全量写磁盘
         for i in 0..<items.count {
-            if let imageData = items[i].imageData {
+            if items[i].imageChanged, let imageData = items[i].imageData {
                 if saveImage(imageData, for: items[i].id) {
-                    // 保存成功后，同时生成压缩版用于同步上传
                     if saveCompressedImage(imageData, for: items[i].id) {
-                        // 加载压缩版到内存
                         if let compressed = loadCompressedImage(for: items[i].id) {
                             items[i].compressedImageData = compressed
                         }
                     }
                 }
+                items[i].imageChanged = false
             }
         }
         

@@ -21,6 +21,8 @@ struct ItemDetailView: View {
     @State private var showingAddToSharedWishlist = false
     @State private var showingEditWish = false
     @State private var showingEditItem = false
+    @State private var itemDraft: ItemDraft? = nil
+    @State private var wishDraft: WishlistItemDraft?
     @State private var toastMessage: String?
     @State private var showToast = false
     @State private var toastAction: (() -> Void)?
@@ -443,10 +445,12 @@ struct ItemDetailView: View {
                 ToolbarItem(placement: .navigationBarLeading) {
                     if item.listType == .wishlist {
                         Button("编辑") {
+                            wishDraft = WishlistItemDraft(item: item)
                             showingEditWish = true
                         }
                     } else if item.listType == .items, groupStore != nil {
                         Button("编辑") {
+                            itemDraft = ItemDraft(item: item)
                             showingEditItem = true
                         }
                     }
@@ -461,18 +465,20 @@ struct ItemDetailView: View {
                 if let updated = store.items.first(where: { $0.id == item.id }) {
                     item = updated
                 }
+                wishDraft = nil
             }) {
-                if let groupStore = wishlistGroupStore {
-                    EditWishlistItemView(item: item, store: store, wishlistGroupStore: groupStore, sharedWishlistStore: sharedStore)
+                if let groupStore = wishlistGroupStore, let draft = wishDraft {
+                    EditWishlistItemView(draft: draft, originalItem: item, store: store, wishlistGroupStore: groupStore, sharedWishlistStore: sharedStore)
                 }
             }
             .sheet(isPresented: $showingEditItem, onDismiss: {
                 if let updated = store.items.first(where: { $0.id == item.id }) {
                     item = updated
                 }
+                itemDraft = nil
             }) {
-                if let gs = groupStore {
-                    EditItemView(item: item, store: store, groupStore: gs)
+                if let gs = groupStore, let draft = itemDraft {
+                    EditItemView(draft: draft, item: item, store: store, groupStore: gs)
                 }
             }
             .sheet(isPresented: $showingSoldSheet) {
@@ -522,6 +528,7 @@ struct ItemDetailView: View {
                     dismiss()
                 }
             }
+
         }
     }
     @ViewBuilder

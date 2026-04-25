@@ -12,7 +12,7 @@ enum ListType: String, Codable, CaseIterable {
     case daily = "daily"
 }
 
-struct Item: Identifiable, Codable {
+struct Item: Identifiable, Codable, Equatable {
     let id: UUID
     var itemId: String              // 唯一业务 ID: userid_时间戳_8位随机数
     var name: String
@@ -56,6 +56,36 @@ struct Item: Identifiable, Codable {
         case isSelected, isArchived, isLargeItem, isPriceless, ownedDate
         case displayType, targetType, wishlistGroupId
         case imageUrl, soldPrice, soldDate, recycleMethod, isSynced
+    }
+    
+    // 自定义编码：排除图片数据，JSON 只存元数据，图片单独存文件
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(itemId, forKey: .itemId)
+        try container.encode(name, forKey: .name)
+        try container.encode(details, forKey: .details)
+        try container.encode(purchaseLink, forKey: .purchaseLink)
+        // imageData / compressedImageData 不写入 JSON，由独立文件管理
+        try container.encode(price, forKey: .price)
+        try container.encode(type, forKey: .type)
+        try container.encodeIfPresent(groupId, forKey: .groupId)
+        try container.encode(listType, forKey: .listType)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(updatedAt, forKey: .updatedAt)
+        try container.encode(isSelected, forKey: .isSelected)
+        try container.encode(isArchived, forKey: .isArchived)
+        try container.encode(isLargeItem, forKey: .isLargeItem)
+        try container.encode(isPriceless, forKey: .isPriceless)
+        try container.encodeIfPresent(ownedDate, forKey: .ownedDate)
+        try container.encodeIfPresent(displayType, forKey: .displayType)
+        try container.encodeIfPresent(targetType, forKey: .targetType)
+        try container.encodeIfPresent(wishlistGroupId, forKey: .wishlistGroupId)
+        try container.encodeIfPresent(imageUrl, forKey: .imageUrl)
+        try container.encodeIfPresent(soldPrice, forKey: .soldPrice)
+        try container.encodeIfPresent(soldDate, forKey: .soldDate)
+        try container.encodeIfPresent(recycleMethod, forKey: .recycleMethod)
+        try container.encode(isSynced, forKey: .isSynced)
     }
     
     /// 生成唯一 itemId: userid_时间戳_8位随机数

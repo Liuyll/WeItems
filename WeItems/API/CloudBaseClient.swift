@@ -597,6 +597,7 @@ class CloudBaseClient {
         let deletedRemoteItemIds: [String] // 本地删除后同步到远端删除的 itemId
         let remoteOnlyItems: [Item]      // 远端独有、需添加到本地的物品
         let failedIds: [String]
+        let imageUrlMap: [String: String] // item UUID → COS 下载链接（用于回写本地 imageUrl）
     }
     
     /// 将单个 Item 转为 createMany 所需的字典格式
@@ -773,6 +774,7 @@ class CloudBaseClient {
         var deletedLocalItemIds: [String] = []  // 远端更新、需删除本地的物品 itemId
         var itemsToDeleteRemote: [String] = []  // 本地删除、需同步删除远端的 item_id
         var remoteOnlyItems: [Item] = []      // 远端独有、需添加到本地的物品
+        var imageUrlMap: [String: String] = [:] // imageUrl 回写映射
         
         // 构建本地物品 itemId 集合，用于检测远端独有
         let localItemIdSet = Set(myItems.map { $0.itemId })
@@ -786,6 +788,11 @@ class CloudBaseClient {
                 
                 if localTimestamp == remoteTimestamp {
                     // updatedAt 相同，无需操作
+                    // 但如果本地有 imageData 却缺少 imageUrl，且远端有 imageUrl，需要回写
+                    if localItem.imageData != nil && (localItem.imageUrl ?? "").isEmpty,
+                       let existingUrl = remote.record.item_info?.imageUrl, !existingUrl.isEmpty {
+                        imageUrlMap[localItem.id.uuidString] = existingUrl
+                    }
                 } else if remoteTimestamp > localTimestamp {
                     // 远端更新，标记删除本地旧版本，并将远端新版本加入 remoteOnlyItems
                     deletedLocalItemIds.append(localItem.itemId)
@@ -880,7 +887,6 @@ class CloudBaseClient {
         // Step 2.5: 批量上传图片到云存储（仅上传图片变更的物品）
         // 合并需要创建和更新的物品，统一上传图片
         let allItemsNeedingSync = itemsToCreate + itemsToUpdate
-        let imageUrlMap: [String: String]
         
         // 只对 imageChanged == true 的物品执行云上传
         let uploadedMap = await uploadItemImages(items: allItemsNeedingSync)
@@ -920,7 +926,7 @@ class CloudBaseClient {
                 }
             }
         }
-        imageUrlMap = finalImageUrlMap
+        imageUrlMap.merge(finalImageUrlMap) { $1 }
         
         // Step 3: 创建本地独有的物品 (createMany)
         if !itemsToCreate.isEmpty {
@@ -1034,7 +1040,7 @@ class CloudBaseClient {
         }
         
         print("[同步] 同步完成: 创建 \(uploadedCount) 个, 更新 \(updatedCount) 个, 删除本地 \(deletedLocalItemIds.count) 个, 删除远端 \(deletedRemoteItemIds.count) 个, 远端独有 \(remoteOnlyItems.count) 个, 失败 \(failedIds.count) 个")
-        return SyncResult(uploadedCount: uploadedCount, updatedCount: updatedCount, deletedLocalItemIds: deletedLocalItemIds, deletedRemoteItemIds: deletedRemoteItemIds, remoteOnlyItems: remoteOnlyItems, failedIds: failedIds)
+        return SyncResult(uploadedCount: uploadedCount, updatedCount: updatedCount, deletedLocalItemIds: deletedLocalItemIds, deletedRemoteItemIds: deletedRemoteItemIds, remoteOnlyItems: remoteOnlyItems, failedIds: failedIds, imageUrlMap: imageUrlMap)
     }
     
     // MARK: - 远端数据获取
@@ -1180,6 +1186,7 @@ class CloudBaseClient {
         let deletedRemoteItemIds: [String]
         let remoteOnlyItems: [Item]
         let failedIds: [String]
+        let imageUrlMap: [String: String] // item UUID → COS 下载链接（用于回写本地 imageUrl）
     }
     
     /// 将单个心愿 Item 转为 wewish createMany 所需的字典格式
@@ -1382,6 +1389,7 @@ class CloudBaseClient {
         var deletedLocalItemIds: [String] = []
         var wishesToDeleteRemote: [String] = []
         var remoteOnlyItems: [Item] = []      // 远端独有、需添加到本地的心愿
+        var wishImageUrlMap: [String: String] = [:] // imageUrl 回写映射
         
         // 构建本地心愿 itemId 集合，用于检测远端独有
         let localItemIdSet = Set(myWishes.map { $0.itemId })
@@ -1392,6 +1400,12 @@ class CloudBaseClient {
                 let remoteTimestamp = floor(remote.date.timeIntervalSince1970)
                 
                 if localTimestamp == remoteTimestamp {
+                    // updatedAt 相同，无需操作
+                    // 但如果本地有 imageData 却缺少 imageUrl，且远端有 imageUrl，需要回写
+                    if localWish.imageData != nil && (localWish.imageUrl ?? "").isEmpty,
+                       let existingUrl = remote.record.wishinfo?.imageUrl, !existingUrl.isEmpty {
+                        wishImageUrlMap[localWish.id.uuidString] = existingUrl
+                    }
                 } else if remoteTimestamp > localTimestamp {
                     deletedLocalItemIds.append(localWish.itemId)
                     // 将远端版本加入待下载列表
@@ -1471,7 +1485,6 @@ class CloudBaseClient {
         // Step 2.5: 批量上传心愿图片到云存储（仅上传图片变更的心愿）
         // 合并需要创建和更新的心愿，统一上传图片
         let allWishesNeedingSync = wishesToCreate + wishesToUpdate
-        let imageUrlMap: [String: String]
         
         // 只对 imageChanged == true 的心愿执行云上传
         let uploadedMap = await uploadWishImages(items: allWishesNeedingSync)
@@ -1511,14 +1524,14 @@ class CloudBaseClient {
                 }
             }
         }
-        imageUrlMap = finalImageUrlMap
+        wishImageUrlMap.merge(finalImageUrlMap) { $1 }
         
         // Step 3: 创建本地独有的心愿 (createMany)
         if !wishesToCreate.isEmpty {
             let chunks = splitWishesIntoChunks(wishesToCreate)
             
             for (index, chunk) in chunks.enumerated() {
-                let wishDicts = chunk.map { wishToDict($0, sub: sub, imageUrl: imageUrlMap[$0.id.uuidString]) }
+                let wishDicts = chunk.map { wishToDict($0, sub: sub, imageUrl: wishImageUrlMap[$0.id.uuidString]) }
                 let path = "/v1/model/\(envType)/\(modelName)/createMany"
                 let payload: [String: Any] = ["data": wishDicts]
                 
@@ -1547,7 +1560,7 @@ class CloudBaseClient {
         if !wishesToUpdate.isEmpty {
             for wish in wishesToUpdate {
                 let wishId = wish.itemId
-                let dict = wishToDict(wish, sub: sub, imageUrl: imageUrlMap[wish.id.uuidString])
+                let dict = wishToDict(wish, sub: sub, imageUrl: wishImageUrlMap[wish.id.uuidString])
                 let wishInfoDict = dict["wishinfo"] as? [String: Any] ?? [:]
                 
                 let path = "/v1/model/\(envType)/\(modelName)/updateMany"
@@ -1624,7 +1637,7 @@ class CloudBaseClient {
         }
         
         print("[心愿同步] 同步完成: 创建 \(uploadedCount) 个, 更新 \(updatedCount) 个, 删除本地 \(deletedLocalItemIds.count) 个, 删除远端 \(deletedRemoteItemIds.count) 个, 远端独有 \(remoteOnlyItems.count) 个, 失败 \(failedIds.count) 个")
-        return WishSyncResult(uploadedCount: uploadedCount, updatedCount: updatedCount, deletedLocalItemIds: deletedLocalItemIds, deletedRemoteItemIds: deletedRemoteItemIds, remoteOnlyItems: remoteOnlyItems, failedIds: failedIds)
+        return WishSyncResult(uploadedCount: uploadedCount, updatedCount: updatedCount, deletedLocalItemIds: deletedLocalItemIds, deletedRemoteItemIds: deletedRemoteItemIds, remoteOnlyItems: remoteOnlyItems, failedIds: failedIds, imageUrlMap: wishImageUrlMap)
     }
     
     // MARK: - 共享心愿清单
@@ -1855,6 +1868,21 @@ class CloudBaseClient {
         envType: String = "prod",
         modelName: String = "sharewish"
     ) async -> UpdateManyResponse? {
+        // 先读取远端已有的墓碑数据，推送时附带回去，避免覆盖清空
+        var existingDeletedIds: [[String: Any]] = []
+        let existingResponse = await fetchSharedWishlistByGroupId(wishGroupId: wishGroupId, envType: envType, modelName: modelName)
+        if let record = existingResponse?.data?.records?.first {
+            let isoFormatter = ISO8601DateFormatter()
+            let now = Date()
+            let thirtyDaysAgo = Calendar.current.date(byAdding: .day, value: -30, to: now) ?? now
+            existingDeletedIds = (record.wishinfo?.deletedIds ?? []).compactMap { item in
+                if let deletedAt = isoFormatter.date(from: item.deletedAt), deletedAt < thirtyDaysAgo {
+                    return nil  // 过期，清理
+                }
+                return ["id": item.id, "deletedAt": item.deletedAt]
+            }
+        }
+        
         let wishInfoArray: [[String: Any]] = sharedItems.map { item in
             var info: [String: Any] = [
                 "id": item.id.uuidString,
@@ -1886,7 +1914,7 @@ class CloudBaseClient {
             return info
         }
         
-        let wishInfoObject: [String: Any] = ["items": wishInfoArray]
+        let wishInfoObject: [String: Any] = ["items": wishInfoArray, "deletedIds": existingDeletedIds]
         
         let path = "/v1/model/\(envType)/\(modelName)/update"
         var dataDict: [String: Any] = [

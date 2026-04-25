@@ -5,6 +5,7 @@
 
 import SwiftUI
 import PhotosUI
+import Combine
 
 // 流式布局组件
 struct FlowLayout: Layout {
@@ -60,6 +61,7 @@ struct WishlistView: View {
     
     @State private var showingAddItem = false
     @State private var editingItem: Item? = nil
+    @State private var editingWishDraft: WishlistItemDraft? = nil
     @State private var showingItemDetail: Item? = nil
     @State private var showingAddGroup = false
     @State private var showingLogin = false
@@ -197,21 +199,39 @@ struct WishlistView: View {
                     )
                         .padding(.horizontal)
                     
-                    // 按分类展示（包括自定义类型）
-                    let allDisplayTypes = Array(itemsByType.keys).sorted()
-                    ForEach(allDisplayTypes, id: \.self) { typeName in
-                        if let items = itemsByType[typeName], !items.isEmpty {
-                            TypeSection(
-                                typeName: typeName,
-                                items: items,
-                                store: store,
-                                onTap: { item in
-                                    showingItemDetail = item
-                                },
-                                onLongPress: { item in
-                                    editingItem = item
-                                }
-                            )
+                    // 全部分组时使用相册风格视图，其他分组保持网格布局
+                    if selectedGroupId == nil {
+                        WishlistAlbumView(
+                            items: currentItems,
+                            onToggle: { itemId in
+                                store.toggleItemSelection(itemId: itemId)
+                            },
+                            onTap: { item in
+                                showingItemDetail = item
+                            },
+                            onLongPress: { item in
+                                editingWishDraft = WishlistItemDraft(item: item)
+                                editingItem = item
+                            }
+                        )
+                        .padding(.horizontal)
+                    } else {
+                        let allDisplayTypes = Array(itemsByType.keys).sorted()
+                        ForEach(allDisplayTypes, id: \.self) { typeName in
+                            if let items = itemsByType[typeName], !items.isEmpty {
+                                TypeSection(
+                                    typeName: typeName,
+                                    items: items,
+                                    store: store,
+                                    onTap: { item in
+                                        showingItemDetail = item
+                                    },
+                                    onLongPress: { item in
+                                        editingWishDraft = WishlistItemDraft(item: item)
+                                        editingItem = item
+                                    }
+                                )
+                            }
                         }
                     }
                     
@@ -236,8 +256,12 @@ struct WishlistView: View {
         .sheet(isPresented: $showingAddItem) {
             AddWishlistItemView(store: store, wishlistGroupStore: wishlistGroupStore, sharedWishlistStore: sharedWishlistStore, defaultGroupId: selectedGroupId)
         }
-        .sheet(item: $editingItem) { item in
-            EditWishlistItemView(item: item, store: store, wishlistGroupStore: wishlistGroupStore, sharedWishlistStore: sharedWishlistStore)
+        .sheet(item: $editingItem, onDismiss: {
+            editingWishDraft = nil
+        }) { item in
+            if let draft = editingWishDraft {
+                EditWishlistItemView(draft: draft, originalItem: item, store: store, wishlistGroupStore: wishlistGroupStore, sharedWishlistStore: sharedWishlistStore)
+            }
         }
         .sheet(item: $showingItemDetail) { item in
             ItemDetailView(store: store, item: item, group: wishlistGroupStore.group(for: item.wishlistGroupId), sharedStore: sharedWishlistStore, wishlistGroupStore: wishlistGroupStore)
@@ -962,8 +986,6 @@ struct AddWishlistItemView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                         .padding(.bottom, 8)
                         
-                        // Say Something
-                        CartoonSectionHeader(emoji: "💬", title: "Say Something", color: .blue)
                         TextEditor(text: $details)
                             .font(.system(.body, design: .rounded))
                             .fontWeight(.semibold)
@@ -990,6 +1012,8 @@ struct AddWishlistItemView: View {
             }
             .background(Color(.systemGroupedBackground))
             .onAppear {
+                // 清理没有关联心愿的孤立自定义类型
+                store.cleanupOrphanedCustomDisplayTypes()
                 // 20% 概率触发烟花彩蛋
                 isEasterEgg = Int.random(in: 1...5) == 1
                 if isEasterEgg {
@@ -1044,6 +1068,7 @@ struct AddWishlistItemView: View {
                     let trimmed = newTypeInput.trimmingCharacters(in: .whitespaces)
                     if !trimmed.isEmpty {
                         customDisplayType = trimmed
+                        store.addCustomDisplayType(trimmed)
                     }
                 }
             )
@@ -1085,6 +1110,47 @@ struct AddWishlistItemView: View {
     }
 }
 
+// 编辑草稿：使用 ObservableObject 持久化编辑状态，避免后台切回时 @State 被重置
+class WishlistItemDraft: ObservableObject {
+    @Published var name: String
+    @Published var price: Double
+    @Published var priceText: String
+    @Published var purchaseLink: String
+    @Published var details: String
+    @Published var isCustomDisplayType: Bool
+    @Published var customDisplayType: String
+    @Published var selectedDisplayType: ItemType
+    @Published var selectedTargetType: ItemType
+    @Published var selectedImageData: Data?
+    @Published var compressedImageData: Data?
+    @Published var imageChanged: Bool = false
+    @Published var selectedGroupId: UUID?
+    
+    var finalDisplayType: String {
+        isCustomDisplayType ? customDisplayType : selectedDisplayType.rawValue
+    }
+    
+    init(item: Item) {
+        self.name = item.name
+        self.price = item.price
+        self.priceText = item.price == 0 ? "" : String(format: "%.2f", item.price)
+        self.purchaseLink = item.purchaseLink
+        self.details = item.details
+        self.selectedImageData = item.imageData
+        self.compressedImageData = item.compressedImageData
+        self.selectedGroupId = item.wishlistGroupId
+        
+        let displayType = item.displayType ?? item.type
+        let displayItemType = ItemType(rawValue: displayType)
+        self.isCustomDisplayType = displayItemType == nil
+        self.customDisplayType = displayItemType == nil ? displayType : ""
+        self.selectedDisplayType = displayItemType ?? .other
+        
+        let target = item.targetType ?? displayType
+        self.selectedTargetType = ItemType(rawValue: target) ?? .other
+    }
+}
+
 // 编辑心愿物品视图
 struct EditWishlistItemView: View {
     @Environment(\.dismiss) private var dismiss
@@ -1093,59 +1159,21 @@ struct EditWishlistItemView: View {
     var sharedWishlistStore: SharedWishlistStore? = nil
     
     let originalItem: Item
-    @State private var name: String
-    @State private var price: Double
-    @State private var priceText: String
-    @State private var purchaseLink: String
-    @State private var details: String
-    
-    // 展示类型
-    @State private var isCustomDisplayType: Bool
-    @State private var customDisplayType: String
-    @State private var selectedDisplayType: ItemType
-    
-    // 归属类型（实现心愿后）
-    @State private var selectedTargetType: ItemType
+    @ObservedObject var draft: WishlistItemDraft
     
     @State private var selectedPhoto: PhotosPickerItem?
-    @State private var selectedImageData: Data?
-    @State private var compressedImageData: Data?
-    @State private var imageChanged: Bool = false  // 标记图片是否被用户编辑过
-    @State private var selectedGroupId: UUID?
     @State private var fullScreenImage: UIImage? = nil
     
     @State private var showDeleteConfirm = false
     @State private var showingNewTypeInput = false
     @State private var newTypeInput = ""
     
-    init(item: Item, store: ItemStore, wishlistGroupStore: WishlistGroupStore, sharedWishlistStore: SharedWishlistStore? = nil) {
-        self.originalItem = item
+    init(draft: WishlistItemDraft, originalItem: Item, store: ItemStore, wishlistGroupStore: WishlistGroupStore, sharedWishlistStore: SharedWishlistStore? = nil) {
+        self._draft = ObservedObject(wrappedValue: draft)
+        self.originalItem = originalItem
         self.store = store
         self.wishlistGroupStore = wishlistGroupStore
         self.sharedWishlistStore = sharedWishlistStore
-        _name = State(initialValue: item.name)
-        _price = State(initialValue: item.price)
-        _priceText = State(initialValue: item.price == 0 ? "" : String(format: "%.2f", item.price))
-        _purchaseLink = State(initialValue: item.purchaseLink)
-        _details = State(initialValue: item.details)
-        _selectedImageData = State(initialValue: item.imageData)
-        _compressedImageData = State(initialValue: item.compressedImageData)
-        _selectedGroupId = State(initialValue: item.wishlistGroupId)
-        
-        // 判断展示类型是否为自定义
-        let displayType = item.displayType ?? item.type
-        let displayItemType = ItemType(rawValue: displayType)
-        _isCustomDisplayType = State(initialValue: displayItemType == nil)
-        _customDisplayType = State(initialValue: displayItemType == nil ? displayType : "")
-        _selectedDisplayType = State(initialValue: displayItemType ?? .other)
-        
-        // 归属类型（targetType 或默认的 displayType）
-        let target = item.targetType ?? displayType
-        _selectedTargetType = State(initialValue: ItemType(rawValue: target) ?? .other)
-    }
-    
-    private var finalDisplayType: String {
-        isCustomDisplayType ? customDisplayType : selectedDisplayType.rawValue
     }
     
     var body: some View {
@@ -1155,12 +1183,12 @@ struct EditWishlistItemView: View {
                     // 📝 基本信息
                     VStack(alignment: .leading, spacing: 10) {
                         CartoonSectionHeader(emoji: "📝", title: "心愿详情", color: .blue)
-                        CartoonTextField(placeholder: "心愿名字", text: $name)
-                        CartoonTextField(placeholder: "价格", text: $priceText, keyboardType: .decimalPad)
-                            .onChange(of: priceText) { _, newValue in
-                                price = Double(newValue) ?? 0
+                        CartoonTextField(placeholder: "心愿名字", text: $draft.name)
+                        CartoonTextField(placeholder: "价格", text: $draft.priceText, keyboardType: .decimalPad)
+                            .onChange(of: draft.priceText) { _, newValue in
+                                draft.price = Double(newValue) ?? 0
                             }
-                        CartoonTextField(placeholder: "购买链接", text: $purchaseLink, keyboardType: .URL)
+                        CartoonTextField(placeholder: "购买链接", text: $draft.purchaseLink, keyboardType: .URL)
                     }
                     .cartoonCard()
                     
@@ -1171,46 +1199,46 @@ struct EditWishlistItemView: View {
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 8) {
                                 Button {
-                                    selectedGroupId = nil
+                                    draft.selectedGroupId = nil
                                 } label: {
                                     Text("无分组")
                                         .font(.system(.subheadline, design: .rounded))
-                                        .fontWeight(selectedGroupId == nil ? .bold : .medium)
+                                        .fontWeight(draft.selectedGroupId == nil ? .bold : .medium)
                                         .padding(.horizontal, 14)
                                         .padding(.vertical, 8)
                                         .background(
                                             Capsule()
-                                                .fill(selectedGroupId == nil ? Color.pink.opacity(0.18) : Color(.tertiarySystemGroupedBackground))
+                                                .fill(draft.selectedGroupId == nil ? Color.pink.opacity(0.18) : Color(.tertiarySystemGroupedBackground))
                                         )
-                                        .foregroundStyle(selectedGroupId == nil ? .pink : .primary)
+                                        .foregroundStyle(draft.selectedGroupId == nil ? .pink : .primary)
                                         .overlay(
                                             Capsule()
-                                                .stroke(selectedGroupId == nil ? Color.pink.opacity(0.3) : Color.clear, lineWidth: 1)
+                                                .stroke(draft.selectedGroupId == nil ? Color.pink.opacity(0.3) : Color.clear, lineWidth: 1)
                                         )
                                 }
                                 .buttonStyle(PlainButtonStyle())
                                 
                                 ForEach(wishlistGroupStore.groups) { group in
                                     Button {
-                                        selectedGroupId = group.id
+                                        draft.selectedGroupId = group.id
                                     } label: {
                                         HStack(spacing: 4) {
                                             Image(systemName: group.icon)
                                                 .font(.caption)
                                             Text(group.name)
                                                 .font(.system(.subheadline, design: .rounded))
-                                                .fontWeight(selectedGroupId == group.id ? .bold : .medium)
+                                                .fontWeight(draft.selectedGroupId == group.id ? .bold : .medium)
                                         }
                                         .padding(.horizontal, 14)
                                         .padding(.vertical, 8)
                                         .background(
                                             Capsule()
-                                                .fill(selectedGroupId == group.id ? group.color.swiftUIColor.opacity(0.18) : Color(.tertiarySystemGroupedBackground))
+                                                .fill(draft.selectedGroupId == group.id ? group.color.swiftUIColor.opacity(0.18) : Color(.tertiarySystemGroupedBackground))
                                         )
-                                        .foregroundStyle(selectedGroupId == group.id ? group.color.swiftUIColor : .primary)
+                                        .foregroundStyle(draft.selectedGroupId == group.id ? group.color.swiftUIColor : .primary)
                                         .overlay(
                                             Capsule()
-                                                .stroke(selectedGroupId == group.id ? group.color.swiftUIColor.opacity(0.3) : Color.clear, lineWidth: 1)
+                                                .stroke(draft.selectedGroupId == group.id ? group.color.swiftUIColor.opacity(0.3) : Color.clear, lineWidth: 1)
                                         )
                                     }
                                     .buttonStyle(PlainButtonStyle())
@@ -1230,7 +1258,7 @@ struct EditWishlistItemView: View {
                                 .fontWeight(.semibold)
                                 .foregroundStyle(.primary)
                             Spacer()
-                            Toggle("", isOn: $isCustomDisplayType)
+                            Toggle("", isOn: $draft.isCustomDisplayType)
                                 .labelsHidden()
                                 .tint(.pink)
                         }
@@ -1240,7 +1268,7 @@ struct EditWishlistItemView: View {
                                 .fill(Color(.tertiarySystemGroupedBackground))
                         )
                         
-                        if isCustomDisplayType {
+                        if draft.isCustomDisplayType {
                             VStack(alignment: .leading, spacing: 8) {
                                 if !store.customDisplayTypes.isEmpty {
                                     Text("历史类型")
@@ -1251,23 +1279,23 @@ struct EditWishlistItemView: View {
                                 FlowLayout(spacing: 8) {
                                     ForEach(store.customDisplayTypes, id: \.self) { type in
                                         Button {
-                                            customDisplayType = type
+                                            draft.customDisplayType = type
                                         } label: {
                                             Text(type)
                                                 .font(.system(.subheadline, design: .rounded))
-                                                .fontWeight(customDisplayType == type ? .bold : .medium)
+                                                .fontWeight(draft.customDisplayType == type ? .bold : .medium)
                                                 .padding(.horizontal, 14)
                                                 .padding(.vertical, 7)
                                                 .background(
                                                     Capsule()
-                                                        .fill(customDisplayType == type
+                                                        .fill(draft.customDisplayType == type
                                                               ? Color.purple.opacity(0.18)
                                                               : Color(.tertiarySystemGroupedBackground))
                                                 )
-                                                .foregroundStyle(customDisplayType == type ? .purple : .primary)
+                                                .foregroundStyle(draft.customDisplayType == type ? .purple : .primary)
                                                 .overlay(
                                                     Capsule()
-                                                        .stroke(customDisplayType == type ? Color.purple.opacity(0.3) : Color.clear, lineWidth: 1)
+                                                        .stroke(draft.customDisplayType == type ? Color.purple.opacity(0.3) : Color.clear, lineWidth: 1)
                                                 )
                                         }
                                         .buttonStyle(PlainButtonStyle())
@@ -1297,8 +1325,8 @@ struct EditWishlistItemView: View {
                                 }
                             }
                             
-                            if !customDisplayType.isEmpty {
-                                Text("当前：\(customDisplayType)")
+                            if !draft.customDisplayType.isEmpty {
+                                Text("当前：\(draft.customDisplayType)")
                                     .font(.system(.caption, design: .rounded))
                                     .foregroundStyle(.purple)
                             }
@@ -1306,12 +1334,12 @@ struct EditWishlistItemView: View {
                             Menu {
                                 ForEach(ItemType.allCases, id: \.self) { type in
                                     Button {
-                                        selectedTargetType = type
+                                        draft.selectedTargetType = type
                                     } label: {
                                         HStack {
                                             type.iconImage(size: 16)
                                             Text(type.rawValue)
-                                            if selectedTargetType == type {
+                                            if draft.selectedTargetType == type {
                                                 Image(systemName: "checkmark")
                                             }
                                         }
@@ -1324,9 +1352,9 @@ struct EditWishlistItemView: View {
                                         .foregroundStyle(.primary)
                                     Spacer()
                                     HStack(spacing: 4) {
-                                        selectedTargetType.iconImage(size: 14)
+                                        draft.selectedTargetType.iconImage(size: 14)
                                             .foregroundStyle(Color(red: 0.55, green: 0.4, blue: 0.75))
-                                        Text(selectedTargetType.rawValue)
+                                        Text(draft.selectedTargetType.rawValue)
                                             .foregroundStyle(Color(red: 0.55, green: 0.4, blue: 0.75))
                                     }
                                     .font(.system(.subheadline, design: .rounded))
@@ -1342,32 +1370,32 @@ struct EditWishlistItemView: View {
                                 )
                             }
                             
-                            Text("✨ 实现心愿后将归类到「\(selectedTargetType.rawValue)」")
+                            Text("✨ 实现心愿后将归类到「\(draft.selectedTargetType.rawValue)」")
                                 .font(.caption)
                                 .foregroundStyle(Color(red: 0.55, green: 0.4, blue: 0.75).opacity(0.8))
                         } else {
                             FlowLayout(spacing: 8) {
                                 ForEach(ItemType.allCases, id: \.self) { type in
                                     Button {
-                                        selectedDisplayType = type
+                                        draft.selectedDisplayType = type
                                     } label: {
                                         HStack(spacing: 4) {
                                             type.iconImage(size: 20)
                                                 .font(.caption)
                                             Text(type.rawValue)
                                                 .font(.system(.subheadline, design: .rounded))
-                                                .fontWeight(selectedDisplayType == type ? .bold : .medium)
+                                                .fontWeight(draft.selectedDisplayType == type ? .bold : .medium)
                                         }
                                         .padding(.horizontal, 14)
                                         .padding(.vertical, 8)
                                         .background(
                                             Capsule()
-                                                .fill(type.color.opacity(selectedDisplayType == type ? 0.2 : 0.08))
+                                                .fill(type.color.opacity(draft.selectedDisplayType == type ? 0.2 : 0.08))
                                         )
-                                        .foregroundStyle(selectedDisplayType == type ? type.color : type.color.opacity(0.7))
+                                        .foregroundStyle(draft.selectedDisplayType == type ? type.color : type.color.opacity(0.7))
                                         .overlay(
                                             Capsule()
-                                                .stroke(selectedDisplayType == type ? type.color.opacity(0.3) : Color.clear, lineWidth: 1)
+                                                .stroke(draft.selectedDisplayType == type ? type.color.opacity(0.3) : Color.clear, lineWidth: 1)
                                         )
                                     }
                                     .buttonStyle(PlainButtonStyle())
@@ -1383,7 +1411,7 @@ struct EditWishlistItemView: View {
                         CartoonSectionHeader(emoji: "📷", title: "照片", color: .blue)
                         
                         VStack(spacing: 0) {
-                            if let imageData = selectedImageData,
+                            if let imageData = draft.selectedImageData,
                                let uiImage = UIImage(data: imageData) {
                                 Image(uiImage: uiImage)
                                     .resizable()
@@ -1412,10 +1440,10 @@ struct EditWishlistItemView: View {
                                         .frame(height: 20)
                                     
                                     Button {
-                                        selectedImageData = nil
-                                        compressedImageData = nil
+                                        draft.selectedImageData = nil
+                                        draft.compressedImageData = nil
                                         selectedPhoto = nil
-                                        imageChanged = true
+                                        draft.imageChanged = true
                                     } label: {
                                         HStack(spacing: 6) {
                                             Image(systemName: "trash")
@@ -1448,10 +1476,10 @@ struct EditWishlistItemView: View {
                                 .onChange(of: selectedPhoto) { _, newValue in
                                     Task {
                                         if let data = try? await newValue?.loadTransferable(type: Data.self) {
-                                            selectedImageData = data
-                                            imageChanged = true
+                                            draft.selectedImageData = data
+                                            draft.imageChanged = true
                                             if let uiImage = UIImage(data: data) {
-                                                compressedImageData = uiImage.jpegData(compressionQuality: 0.7)
+                                                draft.compressedImageData = uiImage.jpegData(compressionQuality: 0.7)
                                             }
                                         }
                                     }
@@ -1461,16 +1489,14 @@ struct EditWishlistItemView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                         .padding(.bottom, 8)
                         
-                        // Say Something
-                        CartoonSectionHeader(emoji: "💬", title: "Say Something", color: .blue)
-                        TextEditor(text: $details)
+                        TextEditor(text: $draft.details)
                             .font(.system(.body, design: .rounded))
                             .fontWeight(.semibold)
                             .frame(minHeight: 60)
                             .scrollContentBackground(.hidden)
                             .autocorrectionDisabled()
                             .overlay(alignment: .topLeading) {
-                                if details.isEmpty {
+                                if draft.details.isEmpty {
                                     Text("说点什么...")
                                         .font(.system(.body, design: .rounded))
                                         .foregroundStyle(.tertiary)
@@ -1507,6 +1533,9 @@ struct EditWishlistItemView: View {
                 .padding(.bottom, 20)
             }
             .background(Color(.systemGroupedBackground))
+            .onAppear {
+                store.cleanupOrphanedCustomDisplayTypes()
+            }
             .navigationTitle("编辑心愿")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1538,13 +1567,14 @@ struct EditWishlistItemView: View {
                 onConfirm: {
                     let trimmed = newTypeInput.trimmingCharacters(in: .whitespaces)
                     if !trimmed.isEmpty {
-                        customDisplayType = trimmed
+                        draft.customDisplayType = trimmed
+                        store.addCustomDisplayType(trimmed)
                     }
                 }
             )
             .customBlueConfirmAlert(
                 isPresented: $showDeleteConfirm,
-                message: "删除后无法恢复，确定要删除「\(name)」吗？",
+                message: "删除后无法恢复，确定要删除「\(draft.name)」吗？",
                 confirmText: "删除",
                 cancelText: "取消",
                 confirmColor: .blue,
@@ -1564,25 +1594,25 @@ struct EditWishlistItemView: View {
     private func saveItem() {
         let oldGroupId = originalItem.wishlistGroupId
         var updatedItem = originalItem
-        updatedItem.name = name
-        updatedItem.price = price
-        updatedItem.purchaseLink = purchaseLink
-        updatedItem.details = details
-        updatedItem.imageData = selectedImageData
-        updatedItem.compressedImageData = compressedImageData
-        updatedItem.imageChanged = imageChanged  // 传递图片变更标记
-        updatedItem.displayType = finalDisplayType
-        updatedItem.targetType = isCustomDisplayType ? selectedTargetType.rawValue : nil
-        updatedItem.type = isCustomDisplayType ? customDisplayType : selectedDisplayType.rawValue
-        updatedItem.wishlistGroupId = selectedGroupId
+        updatedItem.name = draft.name
+        updatedItem.price = draft.price
+        updatedItem.purchaseLink = draft.purchaseLink
+        updatedItem.details = draft.details
+        updatedItem.imageData = draft.selectedImageData
+        updatedItem.compressedImageData = draft.compressedImageData
+        updatedItem.imageChanged = draft.imageChanged  // 传递图片变更标记
+        updatedItem.displayType = draft.finalDisplayType
+        updatedItem.targetType = draft.isCustomDisplayType ? draft.selectedTargetType.rawValue : nil
+        updatedItem.type = draft.isCustomDisplayType ? draft.customDisplayType : draft.selectedDisplayType.rawValue
+        updatedItem.wishlistGroupId = draft.selectedGroupId
         store.update(updatedItem)
         
         // 同步到关联的共享清单（传递旧分组ID以处理分组变更）
         sharedWishlistStore?.syncWishUpdated(updatedItem, oldGroupId: oldGroupId)
         
         // 如果是自定义类型，添加到历史记录
-        if isCustomDisplayType && !customDisplayType.isEmpty {
-            store.addCustomDisplayType(customDisplayType)
+        if draft.isCustomDisplayType && !draft.customDisplayType.isEmpty {
+            store.addCustomDisplayType(draft.customDisplayType)
         }
         
         // 延迟 dismiss，让 store 变更先传播完毕，避免父级 sheet 被意外关闭
@@ -1733,6 +1763,193 @@ struct AddWishlistGroupView: View {
         updated.color = selectedColor
         groupStore.update(updated)
         dismiss()
+    }
+}
+
+// MARK: - 心愿相册风格视图（全部分组时使用）
+
+struct WishlistAlbumView: View {
+    let items: [Item]
+    let onToggle: (UUID) -> Void
+    let onTap: (Item) -> Void
+    let onLongPress: (Item) -> Void
+    
+    private var sections: [WishlistAlbumSectionData] {
+        let grouped = Dictionary(grouping: items) { $0.effectiveDisplayType }
+        return grouped
+            .filter { !$0.value.isEmpty }
+            .map { WishlistAlbumSectionData(typeName: $0.key, items: $0.value) }
+            .sorted {
+                let latest0 = $0.items.max { $0.createdAt < $1.createdAt }?.createdAt ?? .distantPast
+                let latest1 = $1.items.max { $0.createdAt < $1.createdAt }?.createdAt ?? .distantPast
+                if latest0 != latest1 {
+                    return latest0 > latest1
+                }
+                return $0.typeName < $1.typeName
+            }
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            ForEach(sections) { section in
+                WishlistAlbumSection(
+                    section: section,
+                    onToggle: onToggle,
+                    onTap: onTap,
+                    onLongPress: onLongPress
+                )
+            }
+        }
+    }
+}
+
+struct WishlistAlbumSectionData: Identifiable {
+    var id: String { typeName }
+    let typeName: String
+    let items: [Item]
+}
+
+struct WishlistAlbumSection: View {
+    let section: WishlistAlbumSectionData
+    let onToggle: (UUID) -> Void
+    let onTap: (Item) -> Void
+    let onLongPress: (Item) -> Void
+    
+    private var typeColor: Color {
+        if let itemType = ItemType(rawValue: section.typeName) {
+            return itemType.color
+        }
+        return .pink
+    }
+    
+    private var typeIcon: String {
+        if let itemType = ItemType(rawValue: section.typeName) {
+            return itemType.icon
+        }
+        return "tag"
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(section.typeName)
+                    .font(.title3)
+                    .fontWeight(.bold)
+                Spacer()
+                Text("\(section.items.count) 个")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    ForEach(section.items) { item in
+                        WishlistAlbumCard(
+                            item: item,
+                            typeColor: typeColor,
+                            typeIcon: typeIcon,
+                            onToggle: { onToggle(item.id) }
+                        )
+                        .equatable()
+                        .onTapGesture {
+                            onTap(item)
+                        }
+                        .simultaneousGesture(
+                            LongPressGesture(minimumDuration: 0.5)
+                                .onEnded { _ in
+                                    onLongPress(item)
+                                }
+                        )
+                    }
+                }
+                .padding(.horizontal, 4)
+            }
+        }
+    }
+}
+
+struct WishlistAlbumCard: View, Equatable {
+    static func == (lhs: WishlistAlbumCard, rhs: WishlistAlbumCard) -> Bool {
+        lhs.item == rhs.item && lhs.typeColor == rhs.typeColor && lhs.typeIcon == rhs.typeIcon
+    }
+    
+    let item: Item
+    let typeColor: Color
+    let typeIcon: String
+    let onToggle: () -> Void
+    
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            // 底层卡片内容
+            ZStack(alignment: .bottomLeading) {
+                if let image = item.image {
+                    image
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 16)
+                            .fill(typeColor.opacity(0.12))
+                        
+                        VStack(spacing: 8) {
+                            Image(systemName: typeIcon)
+                                .font(.system(size: 32))
+                                .foregroundStyle(typeColor.opacity(0.4))
+                            Text(item.name)
+                                .font(.caption)
+                                .fontWeight(.medium)
+                                .foregroundStyle(typeColor.opacity(0.6))
+                                .multilineTextAlignment(.center)
+                                .lineLimit(2)
+                                .padding(.horizontal, 8)
+                        }
+                    }
+                }
+                
+                // 底部渐变遮罩（有图片时增强文字可读性）
+                if item.image != nil {
+                    LinearGradient(
+                        colors: [.black.opacity(0.7), .black.opacity(0.2), .clear],
+                        startPoint: .bottom,
+                        endPoint: .top
+                    )
+                }
+            }
+            .frame(width: 160, height: 200)
+            .overlay(alignment: .bottomLeading) {
+                if item.image != nil {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(item.name)
+                            .font(.subheadline)
+                            .fontWeight(.bold)
+                            .foregroundStyle(.white)
+                            .lineLimit(2)
+                        Text("¥\(String(format: "%.0f", item.price))")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.orange)
+                    }
+                    .shadow(color: .black.opacity(0.6), radius: 3, x: 0, y: 1)
+                    .frame(maxWidth: 160 - 32, alignment: .leading)
+                    .padding(16)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            
+            // 右上角勾选按钮
+            Button {
+                withAnimation(.spring(duration: 0.2)) {
+                    onToggle()
+                }
+            } label: {
+                Image(systemName: item.isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(item.isSelected ? .green : .white)
+                    .shadow(color: .black.opacity(0.5), radius: 2, x: 0, y: 1)
+            }
+            .padding(8)
+            .buttonStyle(PlainButtonStyle())
+        }
     }
 }
 

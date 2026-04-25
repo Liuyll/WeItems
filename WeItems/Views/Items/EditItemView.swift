@@ -4,27 +4,76 @@
 //
 
 import SwiftUI
+import Combine
 import PhotosUI
+
+/// 编辑物品的 Draft（防止嵌套 sheet 切后台数据丢失）
+class ItemDraft: ObservableObject {
+    @Published var name: String
+    @Published var details: String
+    @Published var purchaseLink: String
+    @Published var imageData: Data?
+    @Published var compressedImageData: Data?
+    @Published var imageChanged: Bool
+    @Published var price: Double
+    @Published var type: String
+    @Published var groupId: UUID?
+    @Published var isLargeItem: Bool
+    @Published var isPriceless: Bool
+    @Published var ownedDate: Date
+    @Published var selectedType: ItemType
+    
+    init(item: Item) {
+        self.name = item.name
+        self.details = item.details
+        self.purchaseLink = item.purchaseLink
+        self.imageData = item.imageData
+        self.compressedImageData = item.compressedImageData
+        self.imageChanged = item.imageChanged
+        self.price = item.price
+        self.type = item.type
+        self.groupId = item.groupId
+        self.isLargeItem = item.isLargeItem
+        self.isPriceless = item.isPriceless
+        self.ownedDate = item.ownedDate ?? item.createdAt
+        self.selectedType = ItemType(rawValue: item.type) ?? .other
+    }
+    
+    func applyChanges(to item: Item) -> Item {
+        var updated = item
+        updated.name = name
+        updated.details = details
+        updated.purchaseLink = purchaseLink
+        updated.imageData = imageData
+        updated.compressedImageData = compressedImageData
+        updated.imageChanged = imageChanged
+        updated.price = price
+        updated.type = type
+        updated.groupId = groupId
+        updated.isLargeItem = isLargeItem
+        updated.isPriceless = isPriceless
+        updated.ownedDate = ownedDate
+        return updated
+    }
+}
 
 struct EditItemView: View {
     @Environment(\.dismiss) private var dismiss
     var store: ItemStore
     var groupStore: GroupStore
     
-    @State var item: Item
-    @State private var selectedType: ItemType
+    let originalItem: Item
+    @ObservedObject var draft: ItemDraft
     @State private var showingAddGroup = false
     @State private var selectedPhoto: PhotosPickerItem?
-    @State private var ownedDate: Date
     @State private var showDeleteConfirm = false
     @State private var fullScreenImage: UIImage? = nil
     
-    init(item: Item, store: ItemStore, groupStore: GroupStore) {
-        self._item = State(initialValue: item)
+    init(draft: ItemDraft, item: Item, store: ItemStore, groupStore: GroupStore) {
+        self.draft = draft
+        self.originalItem = item
         self.store = store
         self.groupStore = groupStore
-        self._selectedType = State(initialValue: ItemType(rawValue: item.type) ?? .other)
-        self._ownedDate = State(initialValue: item.ownedDate ?? item.createdAt)
     }
     
     var body: some View {
@@ -32,19 +81,19 @@ struct EditItemView: View {
             Form {
                 // 基本信息
                 Section {
-                    TextField("物品名称", text: $item.name)
+                    TextField("物品名称", text: $draft.name)
                         .font(.system(.body, design: .rounded))
                         .fontWeight(.semibold)
                         .submitLabel(.done)
                         .listRowSeparator(.hidden)
                     
-                    if !item.isPriceless {
+                    if !draft.isPriceless {
                         HStack {
                             Text("¥")
                                 .font(.system(.body, design: .rounded))
                                 .fontWeight(.semibold)
                                 .foregroundStyle(.secondary)
-                            TextField("价格", value: $item.price, format: .number)
+                            TextField("价格", value: $draft.price, format: .number)
                                 .keyboardType(.decimalPad)
                                 .font(.system(.body, design: .rounded))
                                 .fontWeight(.semibold)
@@ -52,7 +101,7 @@ struct EditItemView: View {
                         .listRowSeparator(.hidden)
                     }
                     
-                    Picker(selection: $selectedType) {
+                    Picker(selection: $draft.selectedType) {
                         ForEach(ItemType.allCases, id: \.self) { type in
                             HStack(spacing: 6) {
                                 type.iconImage(size: 16)
@@ -66,25 +115,25 @@ struct EditItemView: View {
                             .fontWeight(.semibold)
                     }
                     .listRowSeparator(.hidden)
-                    .onChange(of: selectedType) { _, newValue in
-                        item.type = newValue.rawValue
+                    .onChange(of: draft.selectedType) { _, newValue in
+                        draft.type = newValue.rawValue
                     }
                     
-                    Toggle(isOn: $item.isLargeItem) {
+                    Toggle(isOn: $draft.isLargeItem) {
                         Text("大件")
                             .font(.system(.body, design: .rounded))
                             .fontWeight(.semibold)
                     }
                     .listRowSeparator(.hidden)
                     
-                    Toggle(isOn: $item.isPriceless) {
+                    Toggle(isOn: $draft.isPriceless) {
                         Text("无价之物")
                             .font(.system(.body, design: .rounded))
                             .fontWeight(.semibold)
                     }
                     .listRowSeparator(.hidden)
                     
-                    DatePicker(selection: $ownedDate, displayedComponents: .date) {
+                    DatePicker(selection: $draft.ownedDate, displayedComponents: .date) {
                         Text("拥有日期")
                             .font(.system(.body, design: .rounded))
                             .fontWeight(.semibold)
@@ -103,39 +152,39 @@ struct EditItemView: View {
                         HStack(spacing: 8) {
                             // 无分组
                             Button {
-                                item.groupId = nil
+                                draft.groupId = nil
                             } label: {
                                 Text("全部")
                                     .font(.system(.subheadline, design: .rounded))
-                                    .fontWeight(item.groupId == nil ? .bold : .regular)
+                                    .fontWeight(draft.groupId == nil ? .bold : .regular)
                                     .padding(.horizontal, 14)
                                     .padding(.vertical, 8)
                                     .background(
                                         Capsule()
-                                            .fill(item.groupId == nil ? Color.blue.opacity(0.15) : Color(.systemGray5))
+                                            .fill(draft.groupId == nil ? Color.blue.opacity(0.15) : Color(.systemGray5))
                                     )
-                                    .foregroundStyle(item.groupId == nil ? .blue : .primary)
+                                    .foregroundStyle(draft.groupId == nil ? .blue : .primary)
                             }
                             .buttonStyle(PlainButtonStyle())
                             
                             ForEach(groupStore.groups) { group in
                                 Button {
-                                    item.groupId = group.id
+                                    draft.groupId = group.id
                                 } label: {
                                     HStack(spacing: 4) {
                                         Image(systemName: group.icon)
                                             .font(.caption)
                                         Text(group.name)
                                             .font(.system(.subheadline, design: .rounded))
-                                            .fontWeight(item.groupId == group.id ? .bold : .regular)
+                                            .fontWeight(draft.groupId == group.id ? .bold : .regular)
                                     }
                                     .padding(.horizontal, 14)
                                     .padding(.vertical, 8)
                                     .background(
                                         Capsule()
-                                            .fill(item.groupId == group.id ? group.color.swiftUIColor.opacity(0.15) : Color(.systemGray5))
+                                            .fill(draft.groupId == group.id ? group.color.swiftUIColor.opacity(0.15) : Color(.systemGray5))
                                     )
-                                    .foregroundStyle(item.groupId == group.id ? group.color.swiftUIColor : .primary)
+                                    .foregroundStyle(draft.groupId == group.id ? group.color.swiftUIColor : .primary)
                                 }
                                 .buttonStyle(PlainButtonStyle())
                             }
@@ -171,7 +220,7 @@ struct EditItemView: View {
                 
                 // 图片选择
                 Section {
-                    if let imageData = item.imageData,
+                    if let imageData = draft.imageData,
                        let uiImage = UIImage(data: imageData) {
                         Image(uiImage: uiImage)
                             .resizable()
@@ -202,9 +251,9 @@ struct EditItemView: View {
                                 .frame(height: 20)
                             
                             Button {
-                                item.imageData = nil
-                                item.compressedImageData = nil
-                                item.imageChanged = true
+                                draft.imageData = nil
+                                draft.compressedImageData = nil
+                                draft.imageChanged = true
                                 selectedPhoto = nil
                             } label: {
                                 HStack(spacing: 6) {
@@ -241,10 +290,10 @@ struct EditItemView: View {
                         .onChange(of: selectedPhoto) { _, newValue in
                             Task {
                                 if let data = try? await newValue?.loadTransferable(type: Data.self) {
-                                    item.imageData = data
-                                    item.imageChanged = true
+                                    draft.imageData = data
+                                    draft.imageChanged = true
                                     if let uiImage = UIImage(data: data) {
-                                        item.compressedImageData = uiImage.jpegData(compressionQuality: 0.7)
+                                        draft.compressedImageData = uiImage.jpegData(compressionQuality: 0.7)
                                     }
                                 }
                             }
@@ -258,7 +307,7 @@ struct EditItemView: View {
                 
                 // 详情
                 Section {
-                    TextEditor(text: $item.details)
+                    TextEditor(text: $draft.details)
                         .font(.system(.subheadline, design: .rounded))
                         .fontWeight(.semibold)
                         .frame(minHeight: 80)
@@ -314,7 +363,7 @@ struct EditItemView: View {
             }
             .customBlueConfirmAlert(
                 isPresented: $showDeleteConfirm,
-                message: "删除后无法恢复，确定要删除「\(item.name)」吗？",
+                message: "删除后无法恢复，确定要删除「\(draft.name)」吗？",
                 confirmText: "删除",
                 cancelText: "取消",
                 confirmColor: .blue,
@@ -322,7 +371,7 @@ struct EditItemView: View {
                 backgroundColor: .yellow,
                 width: 260,
                 onConfirm: {
-                    store.delete(item)
+                    store.delete(originalItem)
                     dismiss()
                 }
             )
@@ -331,15 +380,17 @@ struct EditItemView: View {
     }
     
     private func saveItem() {
-        item.ownedDate = ownedDate
-        store.update(item)
+        let updated = draft.applyChanges(to: originalItem)
+        store.update(updated)
         dismiss()
     }
 }
 
 #Preview {
+    let testItem = Item(name: "测试物品", details: "详情", purchaseLink: "", price: 100, type: "其他")
     EditItemView(
-        item: Item(name: "测试物品", details: "详情", purchaseLink: "", price: 100, type: "其他"),
+        draft: ItemDraft(item: testItem),
+        item: testItem,
         store: ItemStore(),
         groupStore: GroupStore()
     )

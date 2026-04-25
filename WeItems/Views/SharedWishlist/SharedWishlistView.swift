@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import Combine
 import PhotosUI
 
 // MARK: - 共享清单列表页
@@ -57,7 +58,7 @@ struct SharedWishlistListView: View {
             CreateSharedWishlistView(sharedStore: sharedStore, itemStore: itemStore, wishlistGroupStore: wishlistGroupStore)
         }
         .sheet(item: $editingList) { list in
-            EditSharedWishlistView(list: list, sharedStore: sharedStore, itemStore: itemStore, wishlistGroupStore: wishlistGroupStore)
+            EditSharedWishlistView(list: list, draft: SharedWishlistDraft(list: list, itemStore: itemStore), sharedStore: sharedStore, itemStore: itemStore, wishlistGroupStore: wishlistGroupStore)
         }
         .sheet(isPresented: $showingProUpgrade) {
             ProUpgradeView()
@@ -513,6 +514,197 @@ struct SharedWishlistRow: View {
     }
 }
 
+// MARK: - 心愿行子视图
+struct SharedWishItemRow: View {
+    let item: SharedWishItem
+    let listId: UUID
+    let isOwner: Bool
+    let myNickname: String
+    let isRemoteDeleted: Bool
+    @ObservedObject var sharedStore: SharedWishlistStore
+    let onTap: () -> Void
+    let onToggle: () -> Void
+    let onRemoteDeleted: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button {
+                if isRemoteDeleted {
+                    onRemoteDeleted()
+                } else {
+                    onToggle()
+                }
+            } label: {
+                Image(systemName: item.isCompleted ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(item.isCompleted ? .green : .gray.opacity(0.3))
+            }
+            .buttonStyle(PlainButtonStyle())
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.name)
+                    .font(.body)
+                    .strikethrough(item.isCompleted)
+                    .foregroundStyle(item.isCompleted ? .secondary : .primary)
+                HStack(spacing: 4) {
+                    Text("¥\(String(format: "%.0f", item.price))")
+                        .font(.system(.caption, design: .rounded))
+                        .fontWeight(.bold)
+                        .foregroundStyle(.pink)
+                    if let addedBy = item.addedBy, !addedBy.isEmpty {
+                        Text("·")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("\(addedBy)的心愿")
+                            .font(.caption)
+                            .foregroundStyle(.blue)
+                    }
+                    if item.isCompleted, let completedBy = item.completedBy, !completedBy.isEmpty {
+                        Text("·")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("已被\(completedBy)满足愿望")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    }
+                }
+            }
+
+            Spacer()
+
+            Image(systemName: "chevron.right")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 2)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if isRemoteDeleted {
+                onRemoteDeleted()
+            } else {
+                onTap()
+            }
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            let addedBy = item.addedBy ?? ""
+            let itemCanDelete = !addedBy.isEmpty ? (addedBy == myNickname) : isOwner
+            if itemCanDelete {
+                Button(role: .destructive) {
+                    sharedStore.deleteItem(listId: listId, itemId: item.id)
+                } label: {
+                    Label("删除", systemImage: "trash")
+                }
+            }
+        }
+    }
+}
+
+// MARK: - 同步状态标签行
+struct SyncStatusTagRow: View {
+    let ownerName: String?
+    let isCheckingRemote: Bool
+    let isRemoteDeleted: Bool
+    let shouldShowUnsynced: Bool
+    let isSyncing: Bool
+    let onSyncFromRemote: () -> Void
+    let onSyncToCloud: () -> Void
+    
+    var body: some View {
+        HStack {
+            if let ownerName = ownerName, !ownerName.isEmpty {
+                HStack(spacing: 4) {
+                    Image(systemName: "person.fill")
+                        .font(.caption2)
+                    Text("来自\(ownerName)的心愿")
+                        .font(.caption2)
+                        .fontWeight(.medium)
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Capsule().fill(Color.blue))
+            }
+            
+            Spacer()
+            
+            if isCheckingRemote {
+                HStack(spacing: 4) {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .tint(.white)
+                    Text("同步中")
+                        .font(.caption2)
+                        .fontWeight(.medium)
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Capsule().fill(Color.blue))
+            } else if isRemoteDeleted {
+                HStack(spacing: 4) {
+                    Image(systemName: "trash.fill")
+                        .font(.caption2)
+                    Text("心愿已删除")
+                        .font(.caption2)
+                        .fontWeight(.medium)
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Capsule().fill(Color.red))
+            } else if !shouldShowUnsynced {
+                Button {
+                    onSyncFromRemote()
+                } label: {
+                    HStack(spacing: 4) {
+                        if isSyncing {
+                            ProgressView()
+                                .controlSize(.mini)
+                                .tint(.white)
+                        } else {
+                            Image(systemName: "checkmark.icloud.fill")
+                                .font(.caption2)
+                        }
+                        Text(isSyncing ? "同步中..." : "已远端同步")
+                            .font(.caption2)
+                            .fontWeight(.medium)
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(isSyncing ? Color.orange : Color.green))
+                }
+                .buttonStyle(PlainButtonStyle())
+                .disabled(isSyncing)
+            } else {
+                Button {
+                    onSyncToCloud()
+                } label: {
+                    HStack(spacing: 4) {
+                        if isSyncing {
+                            ProgressView()
+                                .controlSize(.mini)
+                                .tint(.white)
+                        } else {
+                            Image(systemName: "icloud.and.arrow.up.fill")
+                                .font(.caption2)
+                        }
+                        Text(isSyncing ? "同步中..." : "未同步")
+                            .font(.caption2)
+                            .fontWeight(.medium)
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(isSyncing ? Color.orange : Color.yellow))
+                }
+                .buttonStyle(PlainButtonStyle())
+                .disabled(isSyncing)
+            }
+        }
+    }
+}
+
 // MARK: - 清单详情页
 struct SharedWishlistDetailView: View {
     let list: SharedWishlist
@@ -523,12 +715,14 @@ struct SharedWishlistDetailView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var isSyncing = false
     @State private var editingItem: SharedWishItem? = nil
+    @State private var editingWishDraft: SharedWishItemDraft? = nil
     @State private var viewingItem: SharedWishItem? = nil
     @State private var showingDeleteAlert = false
     @State private var isDeleting = false
     @State private var members: [String] = []
     @State private var isLoadingMembers = false
     @State private var showingEditList = false
+    @State private var editListDraft: SharedWishlistDraft? = nil
     
     // 同步时检测自己不在 number_list 中，弹出昵称输入框
     @State private var showingSyncNicknameInput = false
@@ -553,6 +747,7 @@ struct SharedWishlistDetailView: View {
     @State private var showingDeletedAlert = false
     @State private var isCheckingRemote = true
     @State private var showingAddWish = false
+    @State private var addWishDraft: NewSharedWishItemDraft? = nil
     
     private var currentList: SharedWishlist {
         sharedStore.lists.first(where: { $0.id == list.id }) ?? list
@@ -569,13 +764,81 @@ struct SharedWishlistDetailView: View {
         // 底层数据 isSynced == false 的情况
         // 如果进入时就已经是未同步，直接显示
         if wasAlreadyUnsynced {
+            print("[共享心愿] shouldShowUnsynced: wasAlreadyUnsynced=true → true")
             return true
         }
         // 进入时是已同步的，需要对比快照判断是否有本地修改
         guard let snapshot = snapshotItems else {
+            print("[共享心愿] shouldShowUnsynced: snapshot=nil → true")
             return true // 快照未初始化，兜底显示
         }
-        return !itemsAreEqual(currentList.items, snapshot)
+        let equal = itemsAreEqual(currentList.items, snapshot)
+        print("[共享心愿] shouldShowUnsynced: isSynced=false, wasAlreadyUnsynced=false, itemsEqual=\(equal), current.count=\(currentList.items.count), snapshot.count=\(snapshot.count) → \(!equal)")
+        return !equal
+    }
+    
+    @ViewBuilder
+    private var overviewSection: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("总金额")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("¥\(String(format: "%.2f", currentList.totalPrice))")
+                        .font(.title3)
+                        .fontWeight(.bold)
+                        .foregroundStyle(.green)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("已实现")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("¥\(String(format: "%.2f", currentList.completedPrice))")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.green)
+                }
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 2) {
+                Text("进度")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("\(currentList.completedCount)/\(currentList.items.count)")
+                    .font(.title2)
+                    .fontWeight(.bold)
+                    .foregroundStyle(.green)
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private var wishItemSections: some View {
+        let listId = currentList.id
+        let listIsOwner = currentList.isOwner
+        let listMyNickname = currentList.myNickname ?? ""
+        ForEach(groupedItems, id: \.type) { group in
+            Section(group.type) {
+                ForEach(group.items) { item in
+                    SharedWishItemRow(
+                        item: item,
+                        listId: listId,
+                        isOwner: listIsOwner,
+                        myNickname: listMyNickname,
+                        isRemoteDeleted: isRemoteDeleted,
+                        sharedStore: sharedStore,
+                        onTap: { viewingItem = item },
+                        onToggle: {
+                            withAnimation(.spring(duration: 0.25)) {
+                                sharedStore.toggleItemCompleted(listId: listId, itemId: item.id)
+                            }
+                        },
+                        onRemoteDeleted: { showingDeletedAlert = true }
+                    )
+                }
+            }
+        }
     }
     
     /// 按 displayType 分组后的心愿列表，保持类型顺序稳定
@@ -606,98 +869,15 @@ struct SharedWishlistDetailView: View {
             
             // 标签行（独立块，无白色背景）
             Section {
-                HStack {
-                    if let ownerName = currentList.ownerName, !ownerName.isEmpty {
-                        HStack(spacing: 4) {
-                            Image(systemName: "person.fill")
-                                .font(.caption2)
-                            Text("来自\(ownerName)的心愿")
-                                .font(.caption2)
-                                .fontWeight(.medium)
-                        }
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(Capsule().fill(Color.blue))
-                    }
-                    
-                    Spacer()
-                    
-                    if isCheckingRemote {
-                        HStack(spacing: 4) {
-                            ProgressView()
-                                .controlSize(.mini)
-                                .tint(.white)
-                            Text("同步中")
-                                .font(.caption2)
-                                .fontWeight(.medium)
-                        }
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(Capsule().fill(Color.blue))
-                    } else if isRemoteDeleted {
-                        HStack(spacing: 4) {
-                            Image(systemName: "trash.fill")
-                                .font(.caption2)
-                            Text("心愿已删除")
-                                .font(.caption2)
-                                .fontWeight(.medium)
-                        }
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(Capsule().fill(Color.red))
-                    } else if !shouldShowUnsynced {
-                        Button {
-                            syncFromRemote()
-                        } label: {
-                            HStack(spacing: 4) {
-                                if isSyncing {
-                                    ProgressView()
-                                        .controlSize(.mini)
-                                        .tint(.white)
-                                } else {
-                                    Image(systemName: "checkmark.icloud.fill")
-                                        .font(.caption2)
-                                }
-                                Text(isSyncing ? "同步中..." : "已远端同步")
-                                    .font(.caption2)
-                                    .fontWeight(.medium)
-                            }
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(Capsule().fill(isSyncing ? Color.orange : Color.green))
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                        .disabled(isSyncing)
-                    } else {
-                        Button {
-                            syncToCloud()
-                        } label: {
-                            HStack(spacing: 4) {
-                                if isSyncing {
-                                    ProgressView()
-                                        .controlSize(.mini)
-                                        .tint(.white)
-                                } else {
-                                    Image(systemName: "icloud.and.arrow.up.fill")
-                                        .font(.caption2)
-                                }
-                                Text(isSyncing ? "同步中..." : "未同步")
-                                    .font(.caption2)
-                                    .fontWeight(.medium)
-                            }
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(Capsule().fill(isSyncing ? Color.orange : Color.yellow))
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                        .disabled(isSyncing)
-                    }
-                }
+                SyncStatusTagRow(
+                    ownerName: currentList.ownerName,
+                    isCheckingRemote: isCheckingRemote,
+                    isRemoteDeleted: isRemoteDeleted,
+                    shouldShowUnsynced: shouldShowUnsynced,
+                    isSyncing: isSyncing,
+                    onSyncFromRemote: { syncFromRemote() },
+                    onSyncToCloud: { syncToCloud() }
+                )
             }
             .listRowBackground(Color.clear)
             .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
@@ -705,42 +885,7 @@ struct SharedWishlistDetailView: View {
             
             // 概览（总金额 + 进度）
             Section {
-                HStack {
-                    // 左侧：总金额 + 已实现
-                    VStack(alignment: .leading, spacing: 6) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("总金额")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Text("¥\(String(format: "%.2f", currentList.totalPrice))")
-                                .font(.title3)
-                                .fontWeight(.bold)
-                                .foregroundStyle(.green)
-                        }
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("已实现")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Text("¥\(String(format: "%.2f", currentList.completedPrice))")
-                                .font(.subheadline)
-                                .fontWeight(.medium)
-                                .foregroundStyle(.green)
-                        }
-                    }
-                    
-                    Spacer()
-                    
-                    // 右侧：进度
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text("进度")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text("\(currentList.completedCount)/\(currentList.items.count)")
-                            .font(.title2)
-                            .fontWeight(.bold)
-                            .foregroundStyle(.green)
-                    }
-                }
+                overviewSection
             }
             
             // 按类型分组的心愿列表
@@ -752,93 +897,14 @@ struct SharedWishlistDetailView: View {
                         .padding(.vertical, 20)
                 }
             } else {
-                ForEach(groupedItems, id: \.type) { group in
-                    Section(group.type) {
-                        ForEach(group.items) { item in
-                            HStack(spacing: 12) {
-                                Button {
-                                    if isRemoteDeleted {
-                                        showingDeletedAlert = true
-                                    } else {
-                                        withAnimation(.spring(duration: 0.25)) {
-                                            sharedStore.toggleItemCompleted(listId: currentList.id, itemId: item.id)
-                                        }
-                                    }
-                                } label: {
-                                    Image(systemName: item.isCompleted ? "checkmark.circle.fill" : "circle")
-                                        .font(.title3)
-                                        .foregroundStyle(item.isCompleted ? .green : .gray.opacity(0.3))
-                                }
-                                .buttonStyle(PlainButtonStyle())
-                                
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(item.name)
-                                        .font(.body)
-                                        .strikethrough(item.isCompleted)
-                                        .foregroundStyle(item.isCompleted ? .secondary : .primary)
-                                    HStack(spacing: 4) {
-                                        Text("¥\(String(format: "%.0f", item.price))")
-                                            .font(.system(.caption, design: .rounded))
-                                            .fontWeight(.bold)
-                                            .foregroundStyle(.pink)
-                                        if let addedBy = item.addedBy, !addedBy.isEmpty {
-                                            Text("·")
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                            Text("\(addedBy)的心愿")
-                                                .font(.caption)
-                                                .foregroundStyle(.blue)
-                                        }
-                                        if item.isCompleted, let completedBy = item.completedBy, !completedBy.isEmpty {
-                                            Text("·")
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                            Text("已被\(completedBy)满足愿望")
-                                                .font(.caption)
-                                                .foregroundStyle(.green)
-                                        }
-                                    }
-                                }
-                                
-                                Spacer()
-                                
-                                Image(systemName: "chevron.right")
-                                    .font(.caption)
-                                    .foregroundStyle(.tertiary)
-                            }
-                            .padding(.vertical, 2)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                if isRemoteDeleted {
-                                    showingDeletedAlert = true
-                                } else {
-                                    viewingItem = item
-                                }
-                            }
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                let itemCanDelete: Bool = {
-                                    if let addedBy = item.addedBy, !addedBy.isEmpty {
-                                        return addedBy == currentList.myNickname
-                                    }
-                                    return currentList.isOwner
-                                }()
-                                if itemCanDelete {
-                                    Button(role: .destructive) {
-                                        sharedStore.deleteItem(listId: currentList.id, itemId: item.id)
-                                    } label: {
-                                        Label("删除", systemImage: "trash")
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                wishItemSections
             }
             
             // 添加心愿按钮
             if !isRemoteDeleted {
                 Section {
                     Button {
+                        addWishDraft = NewSharedWishItemDraft(existingCustomTypes: currentList.existingCustomTypes)
                         showingAddWish = true
                     } label: {
                         HStack {
@@ -945,6 +1011,7 @@ struct SharedWishlistDetailView: View {
             if currentList.isOwner {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
+                        editListDraft = SharedWishlistDraft(list: currentList, itemStore: itemStore)
                         showingEditList = true
                     } label: {
                         Image(systemName: "square.and.pencil")
@@ -952,8 +1019,10 @@ struct SharedWishlistDetailView: View {
                 }
             }
         }
-        .sheet(isPresented: $showingEditList) {
-            EditSharedWishlistView(list: currentList, sharedStore: sharedStore, itemStore: itemStore, wishlistGroupStore: wishlistGroupStore)
+        .sheet(isPresented: $showingEditList, onDismiss: { editListDraft = nil }) {
+            if let draft = editListDraft {
+                EditSharedWishlistView(list: currentList, draft: draft, sharedStore: sharedStore, itemStore: itemStore, wishlistGroupStore: wishlistGroupStore)
+            }
         }
         .customBlueConfirmAlert(
             isPresented: $showingDeleteAlert,
@@ -979,13 +1048,41 @@ struct SharedWishlistDetailView: View {
         .onDisappear {
             autoSyncIfNeeded()
         }
-        .onChange(of: scenePhase) { _, newPhase in
+        .onChange(of: scenePhase) { newPhase in
             if newPhase == .background || newPhase == .inactive {
                 autoSyncIfNeeded()
             }
         }
         .onAppear {
             let l = currentList
+            
+            // 清理：如果 item 同时有 imageUrl 和 imageData，说明图片已上传到 COS，删除本地 imageData 节省空间
+            // 同步：如果 SharedWishItem 还没有 imageUrl，但其 sourceItemId 对应的源 Item 已有 imageUrl，则同步过来
+            if let li = sharedStore.lists.firstIndex(where: { $0.id == list.id }) {
+                var needsSave = false
+                for j in sharedStore.lists[li].items.indices {
+                    let item = sharedStore.lists[li].items[j]
+                    // 清理：imageUrl 存在时删除本地 imageData
+                    if let url = item.imageUrl, !url.isEmpty, item.imageData != nil {
+                        print("[共享心愿] 清理已上传图片的本地 imageData: \(item.name)")
+                        sharedStore.lists[li].items[j].imageData = nil
+                        needsSave = true
+                    }
+                    // 同步：从源 Item 获取 imageUrl
+                    if (item.imageUrl ?? "").isEmpty,
+                       let sourceId = item.sourceItemId,
+                       let sourceItem = itemStore.items.first(where: { $0.id == sourceId }),
+                       let sourceUrl = sourceItem.imageUrl, !sourceUrl.isEmpty {
+                        print("[共享心愿] 从源心愿同步 imageUrl: \(item.name) -> \(sourceUrl)")
+                        sharedStore.lists[li].items[j].imageUrl = sourceUrl
+                        sharedStore.lists[li].items[j].imageData = nil
+                        needsSave = true
+                    }
+                }
+                if needsSave {
+                    sharedStore.save()
+                }
+            }
             
             // 记录进入时的快照
             if snapshotItems == nil {
@@ -1027,20 +1124,23 @@ struct SharedWishlistDetailView: View {
             print("items count: \(l.items.count)")
             for (i, item) in l.items.enumerated() {
                 let imgInfo = item.imageUrl ?? "nil"
-                print("  [\(i)] name: \(item.name), price: \(item.price), isCompleted: \(item.isCompleted), displayType: \(item.displayType ?? "nil"), imageUrl: \(imgInfo)")
+                print("  [\(i)] name: \(item.name), id: \(item.id.uuidString), price: \(item.price), isCompleted: \(item.isCompleted), displayType: \(item.displayType ?? "nil"), imageUrl: \(imgInfo)")
             }
             print("==================================")
             loadMembers()
         }
-        .sheet(isPresented: $showingAddWish) {
-            AddSharedWishItemView(listId: currentList.id, sharedStore: sharedStore, existingCustomTypes: currentList.existingCustomTypes)
+        .sheet(isPresented: $showingAddWish, onDismiss: { addWishDraft = nil }) {
+            if let draft = addWishDraft {
+                AddSharedWishItemView(listId: currentList.id, draft: draft, sharedStore: sharedStore, itemStore: itemStore, existingCustomTypes: currentList.existingCustomTypes)
+            }
         }
         .sheet(item: $viewingItem) { item in
             SharedWishItemDetailView(
                 item: item,
                 listId: currentList.id,
                 isOwner: currentList.isOwner,
-                sharedStore: sharedStore
+                sharedStore: sharedStore,
+                itemStore: itemStore
             )
         }
         .sheet(item: $editingItem) { item in
@@ -1052,11 +1152,14 @@ struct SharedWishlistDetailView: View {
                 }
                 return false
             }()
+            let draft = SharedWishItemDraft(item: item)
             EditSharedWishItemView(
-                item: item,
+                draft: draft,
+                originalItem: item,
                 listId: currentList.id,
                 isOwner: itemCanEdit,
-                sharedStore: sharedStore
+                sharedStore: sharedStore,
+                itemStore: itemStore
             )
         }
         .customInputAlert(
@@ -1297,6 +1400,16 @@ struct SharedWishlistDetailView: View {
                     await MainActor.run {
                         for item in items where uploadedItemIds.contains(item.id) && item.imageUrl != nil {
                             sharedStore.updateItemImageUrl(listId: listId, itemId: item.id, imageUrl: item.imageUrl!)
+                            // 回写 imageUrl 到源 Item（如果源 Item 没有 imageUrl）
+                            if let sourceId = item.sourceItemId,
+                               let sourceItem = itemStore.items.first(where: { $0.id == sourceId }),
+                               (sourceItem.imageUrl ?? "").isEmpty {
+                                if let si = itemStore.items.firstIndex(where: { $0.id == sourceId }) {
+                                    itemStore.items[si].imageUrl = item.imageUrl!
+                                    itemStore.items[si].imageChanged = true
+                                    print("[共享心愿] 回写 imageUrl 到源 Item: \(sourceItem.name) -> \(item.imageUrl!)")
+                                }
+                            }
                         }
                     }
                 }
@@ -1459,6 +1572,10 @@ struct SharedWishlistDetailView: View {
                 if let record = record {
                     // 将远端数据转为本地模型，完全覆盖本地
                     let remoteWishItems = record.wishinfo?.items ?? []
+                    print("[共享心愿] syncFromRemote 远端共 \(remoteWishItems.count) 个心愿（含无 id）")
+                    for remote in remoteWishItems {
+                        print("[共享心愿] syncFromRemote remote item: name=\(remote.name ?? "未知"), id=\(remote.id ?? "nil")")
+                    }
                     // 获取本地 items 的 imageData 映射，用于保留本地图片
                     let localItems = currentList.items
                     let localImageDataMap: [String: Data] = Dictionary(uniqueKeysWithValues:
@@ -1509,10 +1626,22 @@ struct SharedWishlistDetailView: View {
                     
                     syncSucceeded = true
                     print("[共享心愿] syncFromRemote 拉取远端成功: \(remoteItems.count) 个心愿")
+                    for item in remoteItems {
+                        print("[共享心愿] syncFromRemote item: name=\(item.name), id=\(item.id.uuidString)")
+                    }
+                    
+                    // 过滤掉远端墓碑中已删除的心愿（被其他用户删除的）
+                    let remoteDeletedIds = Set((record.wishinfo?.deletedIds ?? []).map { $0.id })
+                    var filteredItems = remoteItems.filter { !remoteDeletedIds.contains($0.id.uuidString) }
+                    if !remoteDeletedIds.isEmpty {
+                        print("[共享心愿] syncFromRemote 远端墓碑过滤: \(remoteItems.count) -> \(filteredItems.count)")
+                    }
                     
                     // 过滤掉本地已删除的心愿
                     let deletedNames = sharedStore.deletedItemNames[wishGroupId] ?? []
-                    let filteredItems = deletedNames.isEmpty ? remoteItems : remoteItems.filter { !deletedNames.contains($0.name) }
+                    if !deletedNames.isEmpty {
+                        filteredItems = filteredItems.filter { !deletedNames.contains($0.name) }
+                    }
                     
                     // 用远端数据覆盖本地（已排除本地删除的）
                     await MainActor.run {
@@ -1785,7 +1914,7 @@ struct CreateSharedWishlistView: View {
     private func save() {
         let selectedItems = wishlistItems.filter { selectedItemIds.contains($0.id) }
         let sharedItems = selectedItems
-            .map { SharedWishItem(sourceItemId: $0.id, name: $0.name, price: $0.price, displayType: $0.effectiveDisplayType, imageUrl: $0.imageUrl, purchaseLink: $0.purchaseLink.isEmpty ? nil : $0.purchaseLink, details: $0.details.isEmpty ? nil : $0.details) }
+            .map { SharedWishItem(sourceItemId: $0.id, name: $0.name, price: $0.price, displayType: $0.effectiveDisplayType, imageUrl: $0.imageUrl, imageData: $0.imageData, purchaseLink: $0.purchaseLink.isEmpty ? nil : $0.purchaseLink, details: $0.details.isEmpty ? nil : $0.details) }
         
         // 生成 16 位随机数 ID
         let wishGroupId = CloudBaseClient.generateWishGroupId()
@@ -1836,34 +1965,16 @@ struct EditSharedWishlistView: View {
     @ObservedObject var wishlistGroupStore: WishlistGroupStore
     
     let originalList: SharedWishlist
-    @State private var name: String
-    @State private var emoji: String
-    @State private var selectedItemIds: Set<UUID>
-    @State private var manualItems: [SharedWishItem]
-    @State private var filterGroupId: UUID? = nil
-    @State private var syncGroup: Bool = false
+    @ObservedObject var draft: SharedWishlistDraft
     
     private let emojis = ["🎁", "🎂", "🎄", "💝", "🏠", "✈️", "🎮", "📱", "👗", "🎵", "📚", "🍰", "🌟", "💍", "🎯", "🎪"]
     
-    init(list: SharedWishlist, sharedStore: SharedWishlistStore, itemStore: ItemStore, wishlistGroupStore: WishlistGroupStore) {
+    init(list: SharedWishlist, draft: SharedWishlistDraft, sharedStore: SharedWishlistStore, itemStore: ItemStore, wishlistGroupStore: WishlistGroupStore) {
         self.originalList = list
+        self.draft = draft
         self.sharedStore = sharedStore
         self.itemStore = itemStore
         self.wishlistGroupStore = wishlistGroupStore
-        _name = State(initialValue: list.name)
-        _emoji = State(initialValue: list.emoji)
-        _filterGroupId = State(initialValue: list.linkedGroupId)
-        _syncGroup = State(initialValue: list.linkedGroupId != nil)
-        
-        // syncGroup 开启时，选中该分组下所有心愿；否则从 sourceItemId 恢复
-        if let lgId = list.linkedGroupId {
-            let groupItemIds = Set(itemStore.items.filter { $0.listType == .wishlist && $0.wishlistGroupId == lgId }.map { $0.id })
-            _selectedItemIds = State(initialValue: groupItemIds)
-        } else {
-            let linked = Set(list.items.compactMap(\.sourceItemId))
-            _selectedItemIds = State(initialValue: linked)
-        }
-        _manualItems = State(initialValue: list.items.filter { $0.sourceItemId == nil })
     }
     
     private var wishlistItems: [Item] {
@@ -1871,7 +1982,7 @@ struct EditSharedWishlistView: View {
     }
     
     private var filteredWishlistItems: [Item] {
-        if let groupId = filterGroupId {
+        if let groupId = draft.filterGroupId {
             return wishlistItems.filter { $0.wishlistGroupId == groupId }
         }
         return wishlistItems
@@ -1881,7 +1992,7 @@ struct EditSharedWishlistView: View {
         NavigationStack {
             Form {
                 Section("清单信息") {
-                    TextField("清单名称", text: $name)
+                    TextField("清单名称", text: $draft.name)
                     
                     VStack(alignment: .leading, spacing: 8) {
                         Text("选择图标")
@@ -1890,20 +2001,20 @@ struct EditSharedWishlistView: View {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 44))], spacing: 10) {
                             ForEach(emojis, id: \.self) { e in
                                 Button {
-                                    emoji = e
+                                    draft.emoji = e
                                 } label: {
                                     Text(e)
                                         .font(.title2)
                                         .frame(width: 44, height: 44)
                                         .background(
-                                            emoji == e
+                                            draft.emoji == e
                                             ? Color.green.opacity(0.2)
                                             : Color.gray.opacity(0.08)
                                         )
                                         .clipShape(RoundedRectangle(cornerRadius: 10))
                                         .overlay(
                                             RoundedRectangle(cornerRadius: 10)
-                                                .stroke(emoji == e ? Color.green : Color.clear, lineWidth: 2)
+                                                .stroke(draft.emoji == e ? Color.green : Color.clear, lineWidth: 2)
                                         )
                                         .contentShape(Rectangle())
                                 }
@@ -1919,8 +2030,8 @@ struct EditSharedWishlistView: View {
                     Section("按分组筛选") {
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 8) {
-                                GroupFilterChip(name: "全部", isSelected: filterGroupId == nil) {
-                                    filterGroupId = nil
+                                GroupFilterChip(name: "全部", isSelected: draft.filterGroupId == nil) {
+                                    draft.filterGroupId = nil
                                 }
                                 
                                 ForEach(wishlistGroupStore.groups) { group in
@@ -1928,24 +2039,24 @@ struct EditSharedWishlistView: View {
                                         name: group.name,
                                         icon: group.icon,
                                         color: group.color.swiftUIColor,
-                                        isSelected: filterGroupId == group.id
+                                        isSelected: draft.filterGroupId == group.id
                                     ) {
-                                        filterGroupId = group.id
+                                        draft.filterGroupId = group.id
                                     }
                                 }
                             }
                         }
                         
-                        if !filteredWishlistItems.isEmpty && !syncGroup {
-                            let allFilteredSelected = filteredWishlistItems.allSatisfy { selectedItemIds.contains($0.id) }
+                        if !filteredWishlistItems.isEmpty && !draft.syncGroup {
+                            let allFilteredSelected = filteredWishlistItems.allSatisfy { draft.selectedItemIds.contains($0.id) }
                             Button {
                                 if allFilteredSelected {
                                     for item in filteredWishlistItems {
-                                        selectedItemIds.remove(item.id)
+                                        draft.selectedItemIds.remove(item.id)
                                     }
                                 } else {
                                     for item in filteredWishlistItems {
-                                        selectedItemIds.insert(item.id)
+                                        draft.selectedItemIds.insert(item.id)
                                     }
                                 }
                             } label: {
@@ -1960,22 +2071,22 @@ struct EditSharedWishlistView: View {
                         }
                         
                         // 同步分组开关
-                        if filterGroupId != nil && !filteredWishlistItems.isEmpty {
-                            Toggle(isOn: $syncGroup) {
+                        if draft.filterGroupId != nil && !filteredWishlistItems.isEmpty {
+                            Toggle(isOn: $draft.syncGroup) {
                                 Text("同步分组")
                                     .font(.system(.subheadline, design: .rounded))
                                     .fontWeight(.bold)
                             }
                             .tint(.green)
-                            .onChange(of: syncGroup) { _, newValue in
+                            .onChange(of: draft.syncGroup) { _, newValue in
                                 if newValue {
                                     for item in filteredWishlistItems {
-                                        selectedItemIds.insert(item.id)
+                                        draft.selectedItemIds.insert(item.id)
                                     }
                                 }
                             }
                             
-                            if syncGroup {
+                            if draft.syncGroup {
                                 Text("该分组后续新增、编辑、删除心愿都会自动同步到此共享清单")
                                     .font(.system(.caption, design: .rounded))
                                     .fontWeight(.bold)
@@ -1985,7 +2096,7 @@ struct EditSharedWishlistView: View {
                     }
                 }
                 
-                if !syncGroup {
+                if !draft.syncGroup {
                     Section {
                         if filteredWishlistItems.isEmpty {
                             Text("暂无心愿可添加")
@@ -1994,11 +2105,11 @@ struct EditSharedWishlistView: View {
                                 .padding(.vertical, 20)
                         } else {
                             ForEach(filteredWishlistItems) { item in
-                                WishSelectRow(item: item, isSelected: selectedItemIds.contains(item.id)) {
-                                    if selectedItemIds.contains(item.id) {
-                                        selectedItemIds.remove(item.id)
+                                WishSelectRow(item: item, isSelected: draft.selectedItemIds.contains(item.id)) {
+                                    if draft.selectedItemIds.contains(item.id) {
+                                        draft.selectedItemIds.remove(item.id)
                                     } else {
-                                        selectedItemIds.insert(item.id)
+                                        draft.selectedItemIds.insert(item.id)
                                     }
                                 }
                             }
@@ -2007,7 +2118,7 @@ struct EditSharedWishlistView: View {
                         HStack {
                             Text("选择心愿")
                             Spacer()
-                            Text("已选 \(selectedItemIds.count) 个")
+                            Text("已选 \(draft.selectedItemIds.count) 个")
                                 .font(.caption)
                                 .foregroundStyle(.green)
                         }
@@ -2023,7 +2134,7 @@ struct EditSharedWishlistView: View {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("保存") { save() }
                         .fontWeight(.semibold)
-                        .disabled(name.isEmpty)
+                        .disabled(draft.name.isEmpty)
                 }
             }
         }
@@ -2037,10 +2148,10 @@ struct EditSharedWishlistView: View {
         
         // syncGroup 开启时，直接用分组下所有心愿；否则用手动选择的
         let itemsToLink: [Item]
-        if syncGroup, let gId = filterGroupId {
+        if draft.syncGroup, let gId = draft.filterGroupId {
             itemsToLink = wishlistItems.filter { $0.wishlistGroupId == gId }
         } else {
-            itemsToLink = wishlistItems.filter { selectedItemIds.contains($0.id) }
+            itemsToLink = wishlistItems.filter { draft.selectedItemIds.contains($0.id) }
         }
         
         let linkedItems = itemsToLink
@@ -2052,16 +2163,17 @@ struct EditSharedWishlistView: View {
                     isCompleted: existingMap[item.id] ?? false,
                     displayType: item.effectiveDisplayType,
                     imageUrl: item.imageUrl,
+                    imageData: item.imageData,
                     purchaseLink: item.purchaseLink.isEmpty ? nil : item.purchaseLink,
                     details: item.details.isEmpty ? nil : item.details
                 )
             }
         
         var updated = originalList
-        updated.name = name
-        updated.emoji = emoji
-        updated.items = manualItems + linkedItems
-        updated.linkedGroupId = syncGroup ? filterGroupId : nil
+        updated.name = draft.name
+        updated.emoji = draft.emoji
+        updated.items = draft.manualItems + linkedItems
+        updated.linkedGroupId = draft.syncGroup ? draft.filterGroupId : nil
         sharedStore.update(updated)
         dismiss()
     }
@@ -2071,40 +2183,33 @@ struct EditSharedWishlistView: View {
 struct EditSharedWishItemView: View {
     @Environment(\.dismiss) private var dismiss
     var sharedStore: SharedWishlistStore
+    @ObservedObject var itemStore: ItemStore
     
     let listId: UUID
     let originalItem: SharedWishItem
     let isOwner: Bool
     
-    @State private var name: String
-    @State private var priceText: String
-    @State private var displayType: String
-    @State private var isCompleted: Bool
-    @State private var purchaseLink: String
-    @State private var details: String
-    @State private var imageData: Data?
+    @ObservedObject var draft: SharedWishItemDraft
+    
     @State private var showingImagePicker = false
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var showDeleteConfirm = false
     @State private var fullScreenImage: UIImage? = nil
     @State private var showItemNotFound = false
+    @State private var showingNewTypeInput = false
+    @State private var newTypeInput = ""
     
-    init(item: SharedWishItem, listId: UUID, isOwner: Bool, sharedStore: SharedWishlistStore) {
-        self.originalItem = item
+    init(draft: SharedWishItemDraft, originalItem: SharedWishItem, listId: UUID, isOwner: Bool, sharedStore: SharedWishlistStore, itemStore: ItemStore) {
+        self.draft = draft
+        self.originalItem = originalItem
         self.listId = listId
         self.isOwner = isOwner
         self.sharedStore = sharedStore
-        _name = State(initialValue: item.name)
-        _priceText = State(initialValue: String(format: "%.0f", item.price))
-        _displayType = State(initialValue: item.displayType ?? "")
-        _isCompleted = State(initialValue: item.isCompleted)
-        _purchaseLink = State(initialValue: item.purchaseLink ?? "")
-        _details = State(initialValue: item.details ?? "")
-        _imageData = State(initialValue: item.imageData)
+        self.itemStore = itemStore
     }
     
     private var isValid: Bool {
-        !name.trimmingCharacters(in: .whitespaces).isEmpty
+        !draft.name.trimmingCharacters(in: .whitespaces).isEmpty
     }
     
     var body: some View {
@@ -2114,11 +2219,6 @@ struct EditSharedWishItemView: View {
     }
     
     // MARK: - Owner 编辑视图（与编辑普通心愿一致）
-    @State private var isCustomDisplayType: Bool = false
-    @State private var customDisplayType: String = ""
-    @State private var selectedStandardType: ItemType = .other
-    @State private var showingNewTypeInput = false
-    @State private var newTypeInput = ""
     
     private var ownerEditView: some View {
         ScrollView {
@@ -2126,9 +2226,9 @@ struct EditSharedWishItemView: View {
                 // 📝 心愿详情
                 VStack(alignment: .leading, spacing: 10) {
                     CartoonSectionHeader(emoji: "📝", title: "心愿详情", color: .blue)
-                    CartoonTextField(placeholder: "心愿名字", text: $name)
-                    CartoonTextField(placeholder: "价格", text: $priceText, keyboardType: .decimalPad)
-                    CartoonTextField(placeholder: "购买链接", text: $purchaseLink, keyboardType: .URL)
+                    CartoonTextField(placeholder: "心愿名字", text: $draft.name)
+                    CartoonTextField(placeholder: "价格", text: $draft.priceText, keyboardType: .decimalPad)
+                    CartoonTextField(placeholder: "购买链接", text: $draft.purchaseLink, keyboardType: .URL)
                 }
                 .cartoonCard()
                 
@@ -2142,7 +2242,7 @@ struct EditSharedWishItemView: View {
                             .fontWeight(.semibold)
                             .foregroundStyle(.primary)
                         Spacer()
-                        Toggle("", isOn: $isCustomDisplayType)
+                        Toggle("", isOn: $draft.isCustomDisplayType)
                             .labelsHidden()
                             .tint(.pink)
                     }
@@ -2152,7 +2252,7 @@ struct EditSharedWishItemView: View {
                             .fill(Color(.tertiarySystemGroupedBackground))
                     )
                     
-                    if isCustomDisplayType {
+                    if draft.isCustomDisplayType {
                         FlowLayout(spacing: 8) {
                             // 新增自定义类型 tag
                             Button {
@@ -2177,8 +2277,8 @@ struct EditSharedWishItemView: View {
                             .buttonStyle(PlainButtonStyle())
                         }
                         
-                        if !customDisplayType.isEmpty {
-                            Text("当前：\(customDisplayType)")
+                        if !draft.customDisplayType.isEmpty {
+                            Text("当前：\(draft.customDisplayType)")
                                 .font(.system(.caption, design: .rounded))
                                 .foregroundStyle(.purple)
                         }
@@ -2186,26 +2286,26 @@ struct EditSharedWishItemView: View {
                         FlowLayout(spacing: 8) {
                             ForEach(ItemType.allCases, id: \.self) { type in
                                 Button {
-                                    selectedStandardType = type
-                                    displayType = type.rawValue
+                                    draft.selectedStandardType = type
+                                    draft.displayType = type.rawValue
                                 } label: {
                                     HStack(spacing: 4) {
                                         type.iconImage(size: 20)
                                             .font(.caption)
                                         Text(type.rawValue)
                                             .font(.system(.subheadline, design: .rounded))
-                                            .fontWeight(selectedStandardType == type ? .bold : .medium)
+                                            .fontWeight(draft.selectedStandardType == type ? .bold : .medium)
                                     }
                                     .padding(.horizontal, 14)
                                     .padding(.vertical, 8)
                                     .background(
                                         Capsule()
-                                            .fill(type.color.opacity(selectedStandardType == type ? 0.2 : 0.08))
+                                            .fill(type.color.opacity(draft.selectedStandardType == type ? 0.2 : 0.08))
                                     )
-                                    .foregroundStyle(selectedStandardType == type ? type.color : type.color.opacity(0.7))
+                                    .foregroundStyle(draft.selectedStandardType == type ? type.color : type.color.opacity(0.7))
                                     .overlay(
                                         Capsule()
-                                            .stroke(selectedStandardType == type ? type.color.opacity(0.3) : Color.clear, lineWidth: 1)
+                                            .stroke(draft.selectedStandardType == type ? type.color.opacity(0.3) : Color.clear, lineWidth: 1)
                                     )
                                 }
                                 .buttonStyle(PlainButtonStyle())
@@ -2220,7 +2320,7 @@ struct EditSharedWishItemView: View {
                     CartoonSectionHeader(emoji: "📷", title: "照片", color: .blue)
                     
                     VStack(spacing: 0) {
-                        if let imageData = imageData,
+                        if let imageData = draft.imageData,
                            let uiImage = UIImage(data: imageData) {
                             Image(uiImage: uiImage)
                                 .resizable()
@@ -2249,7 +2349,7 @@ struct EditSharedWishItemView: View {
                                     .frame(height: 20)
                                 
                                 Button {
-                                    self.imageData = nil
+                                    draft.imageData = nil
                                     selectedPhoto = nil
                                 } label: {
                                     HStack(spacing: 6) {
@@ -2311,7 +2411,7 @@ struct EditSharedWishItemView: View {
                                     .frame(height: 20)
                                 
                                 Button {
-                                    self.imageData = nil
+                                    draft.imageData = nil
                                     selectedPhoto = nil
                                 } label: {
                                     HStack(spacing: 6) {
@@ -2345,7 +2445,7 @@ struct EditSharedWishItemView: View {
                             .onChange(of: selectedPhoto) { _, newValue in
                                 Task {
                                     if let data = try? await newValue?.loadTransferable(type: Data.self) {
-                                        imageData = data
+                                        draft.imageData = data
                                     }
                                 }
                             }
@@ -2356,14 +2456,14 @@ struct EditSharedWishItemView: View {
                     
                     // Say Something
                     CartoonSectionHeader(emoji: "💬", title: "Say Something", color: .blue)
-                    TextEditor(text: $details)
+                    TextEditor(text: $draft.details)
                         .font(.system(.body, design: .rounded))
                         .fontWeight(.semibold)
                         .frame(minHeight: 60)
                         .scrollContentBackground(.hidden)
                         .autocorrectionDisabled()
                         .overlay(alignment: .topLeading) {
-                            if details.isEmpty {
+                            if draft.details.isEmpty {
                                 Text("说点什么...")
                                     .font(.system(.body, design: .rounded))
                                     .foregroundStyle(.tertiary)
@@ -2384,7 +2484,7 @@ struct EditSharedWishItemView: View {
                             .font(.subheadline)
                             .foregroundStyle(.primary)
                         Spacer()
-                        Toggle("", isOn: $isCompleted)
+                        Toggle("", isOn: $draft.isCompleted)
                             .labelsHidden()
                             .tint(.green)
                     }
@@ -2394,7 +2494,7 @@ struct EditSharedWishItemView: View {
                             .fill(Color(.tertiarySystemGroupedBackground))
                     )
                     
-                    if isCompleted, let completedBy = originalItem.completedBy, !completedBy.isEmpty {
+                    if draft.isCompleted, let completedBy = originalItem.completedBy, !completedBy.isEmpty {
                         HStack(spacing: 6) {
                             Text("🌟")
                             Text("实现者：")
@@ -2434,6 +2534,9 @@ struct EditSharedWishItemView: View {
             .padding(.bottom, 20)
         }
         .background(Color(.systemGroupedBackground))
+        .onAppear {
+            itemStore.cleanupOrphanedCustomDisplayTypes()
+        }
         .navigationTitle("编辑心愿")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -2459,7 +2562,7 @@ struct EditSharedWishItemView: View {
         }
         .customBlueConfirmAlert(
             isPresented: $showDeleteConfirm,
-            message: "删除后无法恢复，确定要删除「\(name)」吗？",
+            message: "删除后无法恢复，确定要删除「\(draft.name)」吗？",
             confirmText: "删除",
             cancelText: "取消",
             confirmColor: .blue,
@@ -2480,24 +2583,14 @@ struct EditSharedWishItemView: View {
             onConfirm: {
                 let trimmed = newTypeInput.trimmingCharacters(in: .whitespaces)
                 if !trimmed.isEmpty {
-                    customDisplayType = trimmed
-                    displayType = trimmed
-                    isCustomDisplayType = true
+                    draft.customDisplayType = trimmed
+                    draft.displayType = trimmed
+                    draft.isCustomDisplayType = true
+                    itemStore.addCustomDisplayType(trimmed)
                 }
             }
         )
         .fullScreenImageViewer(uiImage: $fullScreenImage)
-        .onAppear {
-            // 初始化自定义类型状态
-            let dt = originalItem.displayType ?? ""
-            if let standardType = ItemType(rawValue: dt) {
-                isCustomDisplayType = false
-                selectedStandardType = standardType
-            } else if !dt.isEmpty {
-                isCustomDisplayType = true
-                customDisplayType = dt
-            }
-        }
     }
     
     // MARK: - 非 Owner 详情视图
@@ -2650,7 +2743,7 @@ struct EditSharedWishItemView: View {
                             .font(.subheadline)
                             .foregroundStyle(.primary)
                         Spacer()
-                        Toggle("", isOn: $isCompleted)
+                        Toggle("", isOn: $draft.isCompleted)
                             .labelsHidden()
                             .tint(.green)
                     }
@@ -2692,19 +2785,19 @@ struct EditSharedWishItemView: View {
         var updated = originalItem
         if isOwner {
             // Owner 可以修改所有字段
-            updated.name = name.trimmingCharacters(in: .whitespaces)
-            updated.price = Double(priceText) ?? originalItem.price
-            let finalDisplayType = isCustomDisplayType ? customDisplayType : displayType
+            updated.name = draft.name.trimmingCharacters(in: .whitespaces)
+            updated.price = Double(draft.priceText) ?? originalItem.price
+            let finalDisplayType = draft.isCustomDisplayType ? draft.customDisplayType : draft.displayType
             updated.displayType = finalDisplayType.trimmingCharacters(in: .whitespaces).isEmpty ? nil : finalDisplayType.trimmingCharacters(in: .whitespaces)
-            updated.purchaseLink = purchaseLink.trimmingCharacters(in: .whitespaces).isEmpty ? nil : purchaseLink.trimmingCharacters(in: .whitespaces)
-            updated.details = details.trimmingCharacters(in: .whitespaces).isEmpty ? nil : details.trimmingCharacters(in: .whitespaces)
-            updated.imageData = imageData
+            updated.purchaseLink = draft.purchaseLink.trimmingCharacters(in: .whitespaces).isEmpty ? nil : draft.purchaseLink.trimmingCharacters(in: .whitespaces)
+            updated.details = draft.details.trimmingCharacters(in: .whitespaces).isEmpty ? nil : draft.details.trimmingCharacters(in: .whitespaces)
+            updated.imageData = draft.imageData
         }
         // owner 和非 owner 都可以修改已实现状态
-        updated.isCompleted = isCompleted
-        if isCompleted && originalItem.completedBy == nil {
+        updated.isCompleted = draft.isCompleted
+        if draft.isCompleted && originalItem.completedBy == nil {
             updated.completedBy = TokenStorage.shared.getPhoneNumber() ?? "未知用户"
-        } else if !isCompleted {
+        } else if !draft.isCompleted {
             updated.completedBy = nil
         }
         let success = sharedStore.updateItem(listId: listId, item: updated)
@@ -2720,21 +2813,24 @@ struct EditSharedWishItemView: View {
 struct SharedWishItemDetailView: View {
     @Environment(\.dismiss) private var dismiss
     var sharedStore: SharedWishlistStore
+    @ObservedObject var itemStore: ItemStore
     
     let listId: UUID
     let isOwner: Bool
     @State private var item: SharedWishItem
     @State private var showingEdit = false
+    @State private var editDraft: SharedWishItemDraft? = nil
     @State private var showDeleteConfirm = false
     @State private var fullScreenImage: UIImage? = nil
     @State private var toastMessage: String?
     @State private var showToast = false
     @State private var toastAction: (() -> Void)?
     
-    init(item: SharedWishItem, listId: UUID, isOwner: Bool, sharedStore: SharedWishlistStore) {
+    init(item: SharedWishItem, listId: UUID, isOwner: Bool, sharedStore: SharedWishlistStore, itemStore: ItemStore) {
         self.listId = listId
         self.isOwner = isOwner
         self.sharedStore = sharedStore
+        self.itemStore = itemStore
         _item = State(initialValue: item)
     }
     
@@ -2954,18 +3050,23 @@ struct SharedWishItemDetailView: View {
                 if canEdit {
                     ToolbarItem(placement: .navigationBarTrailing) {
                         Button("编辑") {
+                            editDraft = SharedWishItemDraft(item: currentItem)
                             showingEdit = true
                         }
                     }
                 }
             }
-            .sheet(isPresented: $showingEdit) {
-                EditSharedWishItemView(
-                    item: currentItem,
-                    listId: listId,
-                    isOwner: canEdit,
-                    sharedStore: sharedStore
-                )
+            .sheet(isPresented: $showingEdit, onDismiss: { editDraft = nil }) {
+                if let draft = editDraft {
+                    EditSharedWishItemView(
+                        draft: draft,
+                        originalItem: currentItem,
+                        listId: listId,
+                        isOwner: canEdit,
+                        sharedStore: sharedStore,
+                        itemStore: itemStore
+                    )
+                }
             }
             .customBlueConfirmAlert(
                 isPresented: $showDeleteConfirm,
@@ -3067,42 +3168,25 @@ struct SharedWishItemDetailView: View {
 struct AddSharedWishItemView: View {
     @Environment(\.dismiss) private var dismiss
     var sharedStore: SharedWishlistStore
+    @ObservedObject var itemStore: ItemStore
     
     let listId: UUID
     let existingCustomTypes: [String]
-    @State private var name = ""
-    @State private var priceText = ""
-    @State private var purchaseLink = ""
-    @State private var details = ""
-    @State private var syncToMyWishlist = false
+    @ObservedObject var draft: NewSharedWishItemDraft
     
     // 照片
-    @State private var imageData: Data?
     @State private var selectedPhoto: PhotosPickerItem?
     
-    // 展示类型
-    @State private var isCustomDisplayType = false
-    @State private var customDisplayType = ""
-    @State private var selectedDisplayType: ItemType = .other
+    // UI 状态
     @State private var showingNewTypeInput = false
     @State private var newTypeInput = ""
     
-    private var isValid: Bool {
-        !name.trimmingCharacters(in: .whitespaces).isEmpty
-    }
-    
-    private var finalType: String {
-        isCustomDisplayType ? customDisplayType : selectedDisplayType.rawValue
-    }
-    
-    init(listId: UUID, sharedStore: SharedWishlistStore, existingCustomTypes: [String] = []) {
+    init(listId: UUID, draft: NewSharedWishItemDraft, sharedStore: SharedWishlistStore, itemStore: ItemStore, existingCustomTypes: [String] = []) {
         self.listId = listId
+        self.draft = draft
         self.sharedStore = sharedStore
+        self.itemStore = itemStore
         self.existingCustomTypes = existingCustomTypes
-        // 如果清单已有自定义类型，自动开启自定义类型模式
-        if !existingCustomTypes.isEmpty {
-            _isCustomDisplayType = State(initialValue: true)
-        }
     }
     
     var body: some View {
@@ -3112,9 +3196,9 @@ struct AddSharedWishItemView: View {
                     // 📝 基本信息
                     VStack(alignment: .leading, spacing: 10) {
                         CartoonSectionHeader(emoji: "📝", title: "心愿详情", color: .green)
-                        CartoonTextField(placeholder: "心愿名字", text: $name)
-                        CartoonTextField(placeholder: "价格", text: $priceText, keyboardType: .decimalPad)
-                        CartoonTextField(placeholder: "购买链接", text: $purchaseLink, keyboardType: .URL)
+                        CartoonTextField(placeholder: "心愿名字", text: $draft.name)
+                        CartoonTextField(placeholder: "价格", text: $draft.priceText, keyboardType: .decimalPad)
+                        CartoonTextField(placeholder: "购买链接", text: $draft.purchaseLink, keyboardType: .URL)
                     }
                     .cartoonCard()
                     
@@ -3129,37 +3213,37 @@ struct AddSharedWishItemView: View {
                                 .fontWeight(.semibold)
                                 .foregroundStyle(.primary)
                             Spacer()
-                            Toggle("", isOn: $isCustomDisplayType)
-                                .labelsHidden()
-                                .tint(.green)
-                        }
-                        .padding(12)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12)
-                                .fill(Color(.tertiarySystemGroupedBackground))
-                        )
-                        
-                        if isCustomDisplayType {
+                        Toggle("", isOn: $draft.isCustomDisplayType)
+                            .labelsHidden()
+                            .tint(.green)
+                    }
+                    .padding(12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color(.tertiarySystemGroupedBackground))
+                    )
+                    
+                    if draft.isCustomDisplayType {
                             // 已有自定义类型 + 新增 tag
                             FlowLayout(spacing: 8) {
                                 // 清单中已有的自定义类型
                                 ForEach(existingCustomTypes, id: \.self) { type in
                                     Button {
-                                        customDisplayType = type
+                                        draft.customDisplayType = type
                                     } label: {
                                         Text(type)
                                             .font(.system(.subheadline, design: .rounded))
-                                            .fontWeight(customDisplayType == type ? .bold : .medium)
+                                            .fontWeight(draft.customDisplayType == type ? .bold : .medium)
                                             .padding(.horizontal, 14)
                                             .padding(.vertical, 8)
                                             .background(
                                                 Capsule()
-                                                    .fill(Color.green.opacity(customDisplayType == type ? 0.2 : 0.08))
+                                                    .fill(Color.green.opacity(draft.customDisplayType == type ? 0.2 : 0.08))
                                             )
-                                            .foregroundStyle(customDisplayType == type ? .green : .green.opacity(0.7))
+                                            .foregroundStyle(draft.customDisplayType == type ? .green : .green.opacity(0.7))
                                             .overlay(
                                                 Capsule()
-                                                    .stroke(customDisplayType == type ? Color.green.opacity(0.3) : Color.clear, lineWidth: 1)
+                                                    .stroke(draft.customDisplayType == type ? Color.green.opacity(0.3) : Color.clear, lineWidth: 1)
                                             )
                                     }
                                     .buttonStyle(PlainButtonStyle())
@@ -3188,8 +3272,8 @@ struct AddSharedWishItemView: View {
                                 .buttonStyle(PlainButtonStyle())
                             }
                             
-                            if !customDisplayType.isEmpty {
-                                Text("当前：\(customDisplayType)")
+                            if !draft.customDisplayType.isEmpty {
+                                Text("当前：\(draft.customDisplayType)")
                                     .font(.system(.caption, design: .rounded))
                                     .foregroundStyle(.green)
                             }
@@ -3198,25 +3282,25 @@ struct AddSharedWishItemView: View {
                             FlowLayout(spacing: 8) {
                                 ForEach(ItemType.allCases, id: \.self) { type in
                                     Button {
-                                        selectedDisplayType = type
+                                        draft.selectedDisplayType = type
                                     } label: {
                                         HStack(spacing: 4) {
                                             type.iconImage(size: 20)
                                                 .font(.caption)
                                             Text(type.rawValue)
                                                 .font(.system(.subheadline, design: .rounded))
-                                                .fontWeight(selectedDisplayType == type ? .bold : .medium)
+                                                .fontWeight(draft.selectedDisplayType == type ? .bold : .medium)
                                         }
                                         .padding(.horizontal, 14)
                                         .padding(.vertical, 8)
                                         .background(
                                             Capsule()
-                                                .fill(type.color.opacity(selectedDisplayType == type ? 0.2 : 0.08))
+                                                .fill(type.color.opacity(draft.selectedDisplayType == type ? 0.2 : 0.08))
                                         )
-                                        .foregroundStyle(selectedDisplayType == type ? type.color : type.color.opacity(0.7))
+                                        .foregroundStyle(draft.selectedDisplayType == type ? type.color : type.color.opacity(0.7))
                                         .overlay(
                                             Capsule()
-                                                .stroke(selectedDisplayType == type ? type.color.opacity(0.3) : Color.clear, lineWidth: 1)
+                                                .stroke(draft.selectedDisplayType == type ? type.color.opacity(0.3) : Color.clear, lineWidth: 1)
                                         )
                                     }
                                     .buttonStyle(PlainButtonStyle())
@@ -3230,7 +3314,7 @@ struct AddSharedWishItemView: View {
                     VStack(alignment: .leading, spacing: 14) {
                         CartoonSectionHeader(emoji: "📷", title: "照片", color: .green)
                         
-                        if let imageData = imageData,
+                        if let imageData = draft.imageData,
                            let uiImage = UIImage(data: imageData) {
                             Image(uiImage: uiImage)
                                 .resizable()
@@ -3259,7 +3343,7 @@ struct AddSharedWishItemView: View {
                                     .frame(height: 20)
                                 
                                 Button {
-                                    self.imageData = nil
+                                    draft.imageData = nil
                                     selectedPhoto = nil
                                 } label: {
                                     HStack(spacing: 6) {
@@ -3300,7 +3384,7 @@ struct AddSharedWishItemView: View {
                     .onChange(of: selectedPhoto) { _, newItem in
                         Task {
                             if let data = try? await newItem?.loadTransferable(type: Data.self) {
-                                await MainActor.run { imageData = data }
+                                await MainActor.run { draft.imageData = data }
                             }
                         }
                     }
@@ -3308,14 +3392,14 @@ struct AddSharedWishItemView: View {
                     // 💬 备注
                     VStack(alignment: .leading, spacing: 10) {
                         CartoonSectionHeader(emoji: "💬", title: "Say Something", color: .green)
-                        TextEditor(text: $details)
+                        TextEditor(text: $draft.details)
                             .font(.system(.body, design: .rounded))
                             .fontWeight(.semibold)
                             .frame(minHeight: 60)
                             .scrollContentBackground(.hidden)
                             .autocorrectionDisabled()
                             .overlay(alignment: .topLeading) {
-                                if details.isEmpty {
+                                if draft.details.isEmpty {
                                     Text("说点什么...")
                                         .font(.system(.body, design: .rounded))
                                         .foregroundStyle(.tertiary)
@@ -3329,7 +3413,7 @@ struct AddSharedWishItemView: View {
                     
                     // 同步到我的心愿
                     VStack(alignment: .leading, spacing: 10) {
-                        Toggle(isOn: $syncToMyWishlist) {
+                        Toggle(isOn: $draft.syncToMyWishlist) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("同步到我的心愿")
                                     .font(.system(.subheadline, design: .rounded))
@@ -3349,6 +3433,9 @@ struct AddSharedWishItemView: View {
                 .padding(.bottom, 20)
             }
             .background(Color(.systemGroupedBackground))
+            .onAppear {
+                itemStore.cleanupOrphanedCustomDisplayTypes()
+            }
             .navigationTitle("添加心愿")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -3363,7 +3450,7 @@ struct AddSharedWishItemView: View {
                             .fontWeight(.bold)
                             .foregroundStyle(.green)
                     }
-                    .disabled(!isValid)
+                    .disabled(!draft.isValid)
                 }
             }
             .customInputAlert(
@@ -3375,7 +3462,8 @@ struct AddSharedWishItemView: View {
                 onConfirm: {
                     let trimmed = newTypeInput.trimmingCharacters(in: .whitespaces)
                     if !trimmed.isEmpty {
-                        customDisplayType = trimmed
+                        draft.customDisplayType = trimmed
+                        itemStore.addCustomDisplayType(trimmed)
                     }
                 }
             )
@@ -3383,17 +3471,17 @@ struct AddSharedWishItemView: View {
     }
     
     private func save() {
-        let trimmedName = name.trimmingCharacters(in: .whitespaces)
-        let price = Double(priceText) ?? 0
-        let type = finalType
-        let trimmedLink = purchaseLink.trimmingCharacters(in: .whitespaces)
-        let trimmedDetails = details.trimmingCharacters(in: .whitespaces)
+        let trimmedName = draft.name.trimmingCharacters(in: .whitespaces)
+        let price = Double(draft.priceText) ?? 0
+        let type = draft.finalType
+        let trimmedLink = draft.purchaseLink.trimmingCharacters(in: .whitespaces)
+        let trimmedDetails = draft.details.trimmingCharacters(in: .whitespaces)
         
         let newItem = SharedWishItem(
             name: trimmedName,
             price: price,
             displayType: type.isEmpty ? nil : type,
-            imageData: imageData,
+            imageData: draft.imageData,
             purchaseLink: trimmedLink.isEmpty ? nil : trimmedLink,
             details: trimmedDetails.isEmpty ? nil : trimmedDetails,
             addedBy: sharedStore.lists.first(where: { $0.id == listId })?.myNickname ?? "我"
@@ -3402,7 +3490,7 @@ struct AddSharedWishItemView: View {
         sharedStore.addItem(listId: listId, item: newItem)
         
         // 同步到我的心愿清单
-        if syncToMyWishlist {
+        if draft.syncToMyWishlist {
             let wishItem = Item(
                 name: trimmedName,
                 details: trimmedDetails,
@@ -3582,6 +3670,100 @@ struct ShareToFriendsBlock: View {
         .buttonStyle(PlainButtonStyle())
         .sheet(isPresented: $showingShareSheet) {
             ShareWishGroupIdSheet(wishGroupId: wishGroupId)
+        }
+    }
+}
+
+// MARK: - Draft 类（防止嵌套 sheet 切后台数据丢失）
+
+/// 编辑共享心愿的 Draft
+class SharedWishItemDraft: ObservableObject {
+    @Published var name: String
+    @Published var priceText: String
+    @Published var displayType: String
+    @Published var isCompleted: Bool
+    @Published var purchaseLink: String
+    @Published var details: String
+    @Published var imageData: Data?
+    @Published var isCustomDisplayType: Bool
+    @Published var customDisplayType: String
+    @Published var selectedStandardType: ItemType
+    
+    init(item: SharedWishItem) {
+        self.name = item.name
+        self.priceText = String(format: "%.0f", item.price)
+        self.displayType = item.displayType ?? ""
+        self.isCompleted = item.isCompleted
+        self.purchaseLink = item.purchaseLink ?? ""
+        self.details = item.details ?? ""
+        self.imageData = item.imageData
+        
+        let dt = item.displayType ?? ""
+        if let standardType = ItemType(rawValue: dt) {
+            self.isCustomDisplayType = false
+            self.selectedStandardType = standardType
+            self.customDisplayType = ""
+        } else if !dt.isEmpty {
+            self.isCustomDisplayType = true
+            self.customDisplayType = dt
+            self.selectedStandardType = .other
+        } else {
+            self.isCustomDisplayType = false
+            self.selectedStandardType = .other
+            self.customDisplayType = ""
+        }
+    }
+}
+
+/// 编辑共享清单的 Draft
+class SharedWishlistDraft: ObservableObject {
+    @Published var name: String
+    @Published var emoji: String
+    @Published var selectedItemIds: Set<UUID>
+    @Published var manualItems: [SharedWishItem]
+    @Published var filterGroupId: UUID?
+    @Published var syncGroup: Bool
+    
+    init(list: SharedWishlist, itemStore: ItemStore) {
+        self.name = list.name
+        self.emoji = list.emoji
+        _filterGroupId = Published(initialValue: list.linkedGroupId)
+        _syncGroup = Published(initialValue: list.linkedGroupId != nil)
+        
+        if let lgId = list.linkedGroupId {
+            let groupItemIds = Set(itemStore.items.filter { $0.listType == .wishlist && $0.wishlistGroupId == lgId }.map { $0.id })
+            _selectedItemIds = Published(initialValue: groupItemIds)
+        } else {
+            let linked = Set(list.items.compactMap(\.sourceItemId))
+            _selectedItemIds = Published(initialValue: linked)
+        }
+        _manualItems = Published(initialValue: list.items.filter { $0.sourceItemId == nil })
+    }
+}
+
+/// 新增共享心愿的 Draft
+class NewSharedWishItemDraft: ObservableObject {
+    @Published var name: String = ""
+    @Published var priceText: String = ""
+    @Published var purchaseLink: String = ""
+    @Published var details: String = ""
+    @Published var syncToMyWishlist: Bool = false
+    @Published var imageData: Data?
+    @Published var isCustomDisplayType: Bool = false
+    @Published var customDisplayType: String = ""
+    @Published var selectedDisplayType: ItemType = .other
+    
+    var isValid: Bool {
+        !name.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+    
+    var finalType: String {
+        isCustomDisplayType ? customDisplayType : selectedDisplayType.rawValue
+    }
+    
+    init(existingCustomTypes: [String] = []) {
+        if !existingCustomTypes.isEmpty {
+            isCustomDisplayType = true
         }
     }
 }

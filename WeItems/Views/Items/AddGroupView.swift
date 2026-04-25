@@ -7,16 +7,19 @@ import SwiftUI
 
 struct AddGroupView: View {
     @Environment(\.dismiss) private var dismiss
-    @ObservedObject var groupStore: GroupStore
+    var groupStore: GroupStore
+    var editingGroup: ItemGroup? = nil
+    var onDeleteGroup: ((ItemGroup) -> Void)? = nil
 
     @State private var name = ""
     @State private var selectedIcon = "folder"
     @State private var selectedColor: GroupColor = .blue
+    @State private var showDeleteConfirm = false
 
     private let icons = [
         "folder", "tray", "archivebox", "briefcase", "bag",
         "cart", "gift", "heart", "star", "house",
-        "car", "airplane", "desktopcomputer", "iphone", "watch",
+        "car", "airplane", "macbook", "iphone", "applewatch",
         "camera", "headphones", "gamecontroller", "book", "graduationcap"
     ]
 
@@ -55,12 +58,15 @@ struct AddGroupView: View {
 
     private var colorSection: some View {
         Section("颜色") {
-            HStack(spacing: 16) {
-                ForEach(GroupColor.allCases, id: \.self) { color in
-                    colorButton(for: color)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 16) {
+                    ForEach(GroupColor.allCases, id: \.self) { color in
+                        colorButton(for: color)
+                    }
                 }
+                .padding(.vertical, 8)
             }
-            .padding(.vertical, 8)
+            .listRowInsets(EdgeInsets())
         }
     }
 
@@ -113,9 +119,19 @@ struct AddGroupView: View {
 
                 iconSection
                 colorSection
-                previewSection
+                if editingGroup == nil {
+                    previewSection
+                }
+                
+                if editingGroup != nil {
+                    Section {
+                        Button("删除分组", role: .destructive) {
+                            showDeleteConfirm = true
+                        }
+                    }
+                }
             }
-            .navigationTitle("新建分组")
+            .navigationTitle(editingGroup != nil ? "编辑分组" : "新建分组")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
@@ -125,13 +141,36 @@ struct AddGroupView: View {
                 }
 
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("创建") {
-                        createGroup()
+                    Button(editingGroup != nil ? "保存" : "创建") {
+                        if let editingGroup = editingGroup {
+                            saveGroup(editingGroup)
+                        } else {
+                            createGroup()
+                        }
                     }
                     .disabled(!isValid)
                     .fontWeight(.semibold)
                 }
             }
+            .onAppear {
+                if let group = editingGroup {
+                    name = group.name
+                    selectedIcon = group.icon
+                    selectedColor = group.color
+                }
+            }
+        }
+        .presentationDetents([.medium])
+        .alert("删除分组", isPresented: $showDeleteConfirm) {
+            Button("取消", role: .cancel) {}
+            Button("删除", role: .destructive) {
+                if let group = editingGroup {
+                    onDeleteGroup?(group)
+                    dismiss()
+                }
+            }
+        } message: {
+            Text("删除分组后，该分组下的物品将变为无分组状态。确定要删除吗？")
         }
     }
 
@@ -142,6 +181,15 @@ struct AddGroupView: View {
             color: selectedColor
         )
         groupStore.add(newGroup)
+        dismiss()
+    }
+    
+    private func saveGroup(_ group: ItemGroup) {
+        var updated = group
+        updated.name = name
+        updated.icon = selectedIcon
+        updated.color = selectedColor
+        groupStore.update(updated)
         dismiss()
     }
 }

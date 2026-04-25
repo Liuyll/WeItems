@@ -17,6 +17,7 @@ from pathlib import Path
 # ==================== 配置 ====================
 PROJECT_DIR = Path(__file__).parent
 PROJECT_FILE = PROJECT_DIR / "WeItems.xcodeproj"
+PBXPROJ_PATH = PROJECT_FILE / "project.pbxproj"
 SCHEME = "WeItems"
 TEAM_ID = "B2LAVCCYQM"
 BUILD_DIR = PROJECT_DIR / "build"
@@ -92,6 +93,50 @@ def clean_build():
         capture=True
     )
     print("  ✅ 清理完成")
+
+
+def increment_build_number():
+    """读取并自增 CURRENT_PROJECT_VERSION，version 变更时重置为 1"""
+    content = PBXPROJ_PATH.read_text(encoding="utf-8")
+
+    # 读取当前 MARKETING_VERSION
+    version_match = re.search(r'MARKETING_VERSION\s*=\s*([^;]+);', content)
+    if not version_match:
+        print("⚠️  未找到 MARKETING_VERSION，跳过自增")
+        return
+    marketing_version = version_match.group(1).strip()
+
+    # 读取当前 BUILD_NUMBER
+    build_pattern = re.compile(r'(CURRENT_PROJECT_VERSION\s*=\s*)(\d+)(;)')
+    build_matches = build_pattern.findall(content)
+    if not build_matches:
+        print("⚠️  未找到 CURRENT_PROJECT_VERSION，跳过自增")
+        return
+    old_num = int(build_matches[0][1])
+
+    # 检查 version 是否变更
+    version_file = PROJECT_DIR / ".last_marketing_version"
+    last_version = ""
+    if version_file.exists():
+        last_version = version_file.read_text().strip()
+
+    if marketing_version != last_version:
+        # version 变更，重置为 1
+        new_num = 1
+        print(f"  📌 Version changed: {last_version or '(none)'} → {marketing_version}, reset build to 1")
+    else:
+        # version 未变更，+1
+        new_num = old_num + 1
+        print(f"  ✅ Build Number: {old_num} → {new_num}")
+
+    def replacer(m):
+        return f'{m.group(1)}{new_num}{m.group(3)}'
+
+    new_content = build_pattern.sub(replacer, content)
+    PBXPROJ_PATH.write_text(new_content, encoding="utf-8")
+
+    # 记录当前 version
+    version_file.write_text(marketing_version, encoding="utf-8")
 
 
 def archive():
@@ -301,10 +346,13 @@ def main():
     if do_clean:
         clean_build()
 
-    # 3. 编译 Archive
+    # 3. 自增 Build Number
+    increment_build_number()
+
+    # 4. 编译 Archive
     archive()
 
-    # 4. 导出 IPA
+    # 5. 导出 IPA
     if not no_export:
         create_export_plist(method=method)
         ipa_path = export_ipa()

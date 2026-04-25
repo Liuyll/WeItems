@@ -12,6 +12,7 @@ struct ItemDetailView: View {
     let group: ItemGroup?
     var sharedStore: SharedWishlistStore?
     var wishlistGroupStore: WishlistGroupStore?
+    var groupStore: GroupStore?
     
     @State private var showingArchiveConfirm = false
     @State private var showingSoldSheet = false
@@ -19,6 +20,7 @@ struct ItemDetailView: View {
     @State private var showingFulfillWishConfirm = false
     @State private var showingAddToSharedWishlist = false
     @State private var showingEditWish = false
+    @State private var showingEditItem = false
     @State private var toastMessage: String?
     @State private var showToast = false
     @State private var toastAction: (() -> Void)?
@@ -438,12 +440,14 @@ struct ItemDetailView: View {
             .navigationTitle(item.listType == .wishlist ? "心愿详情" : "物品详情")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                if item.listType == .wishlist {
-                    ToolbarItem(placement: .navigationBarLeading) {
-                        Button {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    if item.listType == .wishlist {
+                        Button("编辑") {
                             showingEditWish = true
-                        } label: {
-                            Text("编辑")
+                        }
+                    } else if item.listType == .items, groupStore != nil {
+                        Button("编辑") {
+                            showingEditItem = true
                         }
                     }
                 }
@@ -454,13 +458,21 @@ struct ItemDetailView: View {
                 }
             }
             .sheet(isPresented: $showingEditWish, onDismiss: {
-                // 编辑完成后从 store 刷新 item，保持数据一致
                 if let updated = store.items.first(where: { $0.id == item.id }) {
                     item = updated
                 }
             }) {
                 if let groupStore = wishlistGroupStore {
                     EditWishlistItemView(item: item, store: store, wishlistGroupStore: groupStore, sharedWishlistStore: sharedStore)
+                }
+            }
+            .sheet(isPresented: $showingEditItem, onDismiss: {
+                if let updated = store.items.first(where: { $0.id == item.id }) {
+                    item = updated
+                }
+            }) {
+                if let gs = groupStore {
+                    EditItemView(item: item, store: store, groupStore: gs)
                 }
             }
             .sheet(isPresented: $showingSoldSheet) {
@@ -590,7 +602,7 @@ struct ItemDetailView: View {
 struct AddToSharedWishlistSheet: View {
     @Environment(\.dismiss) private var dismiss
     let item: Item
-    @ObservedObject var sharedStore: SharedWishlistStore
+    var sharedStore: SharedWishlistStore
     
     @State private var showingCreateNew = false
     @State private var newListName = ""

@@ -8,8 +8,8 @@ import PhotosUI
 
 struct AddItemView: View {
     @Environment(\.dismiss) private var dismiss
-    @ObservedObject var store: ItemStore
-    @ObservedObject var groupStore: GroupStore
+    var store: ItemStore
+    var groupStore: GroupStore
     
     var defaultGroupId: UUID?
     
@@ -25,7 +25,6 @@ struct AddItemView: View {
     @State private var fullScreenImage: UIImage? = nil
     
     @State private var showingAddGroup = false
-    @State private var showingDuplicateAlert = false
     @State private var spiritTravelCount = 0
     @State private var isLargeItem = false
     @State private var isPriceless = false
@@ -310,16 +309,11 @@ struct AddItemView: View {
             }) { kind in
                 switch kind {
                 case .spiritTravel:
-                    SpiritTravelCelebrationView(count: spiritTravelCount)
+                    SpiritTravelCelebrationView(count: spiritTravelCount, itemName: savedItemName, imageData: selectedImageData, details: details)
                 case .lifeGood:
                     LifeGoodCelebrationView(count: lifeGoodCount, itemName: savedItemName, imageData: selectedImageData, details: details)
                 }
             }
-            .customInfoAlert(
-                isPresented: $showingDuplicateAlert,
-                title: "同名物品已存在",
-                message: "已存在名为「\(name)」的物品，请更换名称后重试。"
-            )
             .onAppear {
                 selectedGroupId = defaultGroupId
             }
@@ -334,14 +328,7 @@ struct AddItemView: View {
             guard let parsed = Double(price) else { return }
             priceValue = parsed
         }
-        
-        // 检查是否存在同名物品
-        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        if store.items.contains(where: { $0.name == trimmedName }) {
-            showingDuplicateAlert = true
-            return
-        }
-        
+
         let newItem = Item(
             name: name,
             details: details,

@@ -66,6 +66,9 @@ struct WishlistView: View {
     @State private var navigatingSharedList: SharedWishlist? = nil
     @Binding var selectedGroupId: UUID?
     @State private var lastScrollOffset: CGFloat = 0
+    @State private var groupToDelete: ItemGroup? = nil
+    @State private var showDeleteGroupAlert = false
+    @State private var editingGroup: ItemGroup? = nil
     
     private var currentItems: [Item] {
         var filtered = store.items.filter { $0.listType == .wishlist }
@@ -93,7 +96,14 @@ struct WishlistView: View {
             WishlistGroupSelectorView(
                 groupStore: wishlistGroupStore,
                 selectedGroupId: $selectedGroupId,
-                onAddGroup: { showingAddGroup = true }
+                onAddGroup: { showingAddGroup = true },
+                onDeleteGroup: { group in
+                    groupToDelete = group
+                    showDeleteGroupAlert = true
+                },
+                onEditGroup: { group in
+                    editingGroup = group
+                }
             )
             
             ScrollView {
@@ -243,6 +253,46 @@ struct WishlistView: View {
                 SharedWishlistDetailView(list: list, sharedStore: sharedWishlistStore, itemStore: store, wishlistGroupStore: wishlistGroupStore)
             }
         }
+        .sheet(item: $editingGroup) { group in
+            AddWishlistGroupView(groupStore: wishlistGroupStore, editingGroup: group, onDeleteGroup: { group in
+                let wishesInGroup = store.items.filter { $0.listType == .wishlist && $0.wishlistGroupId == group.id }
+                for wish in wishesInGroup {
+                    var updated = wish
+                    updated.wishlistGroupId = nil
+                    store.update(updated)
+                }
+                wishlistGroupStore.delete(group)
+                if selectedGroupId == group.id {
+                    selectedGroupId = nil
+                }
+            })
+        }
+        .customBlueConfirmAlert(
+            isPresented: $showDeleteGroupAlert,
+            message: "删除分组后，该分组下的心愿将变为无分组状态。确定要删除吗？",
+            confirmText: "删除",
+            cancelText: "取消",
+            confirmColor: .red,
+            cancelColor: .green,
+            backgroundColor: .yellow,
+            width: 260,
+            onConfirm: {
+                if let group = groupToDelete {
+                    // 心愿移到无分组
+                    let wishesInGroup = store.items.filter { $0.listType == .wishlist && $0.wishlistGroupId == group.id }
+                    for wish in wishesInGroup {
+                        var updated = wish
+                        updated.wishlistGroupId = nil
+                        store.update(updated)
+                    }
+                    wishlistGroupStore.delete(group)
+                    if selectedGroupId == group.id {
+                        selectedGroupId = nil
+                    }
+                }
+                groupToDelete = nil
+            }
+        )
     }
 }
 
@@ -282,6 +332,10 @@ struct WishlistGroupSelectorView: View {
     @ObservedObject var groupStore: WishlistGroupStore
     @Binding var selectedGroupId: UUID?
     let onAddGroup: () -> Void
+    var onDeleteGroup: ((ItemGroup) -> Void)? = nil
+    var onEditGroup: ((ItemGroup) -> Void)? = nil
+    
+    @State private var justLongPressed = false
     
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -306,10 +360,24 @@ struct WishlistGroupSelectorView: View {
                         color: group.color.swiftUIColor,
                         isSelected: selectedGroupId == group.id
                     ) {
+                        if justLongPressed {
+                            justLongPressed = false
+                            return
+                        }
                         withAnimation(.spring(duration: 0.2)) {
                             selectedGroupId = group.id
                         }
                     }
+                    .simultaneousGesture(
+                        LongPressGesture(minimumDuration: 0.5)
+                            .onEnded { _ in
+                                justLongPressed = true
+                                onEditGroup?(group)
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                    justLongPressed = false
+                                }
+                            }
+                    )
                 }
                 
                 // 添加分组按钮
@@ -536,8 +604,8 @@ struct WishlistCard: View {
 // 添加心愿物品视图
 struct AddWishlistItemView: View {
     @Environment(\.dismiss) private var dismiss
-    @ObservedObject var store: ItemStore
-    @ObservedObject var wishlistGroupStore: WishlistGroupStore
+    var store: ItemStore
+    var wishlistGroupStore: WishlistGroupStore
     var sharedWishlistStore: SharedWishlistStore? = nil
     
     var defaultGroupId: UUID?
@@ -1020,8 +1088,8 @@ struct AddWishlistItemView: View {
 // 编辑心愿物品视图
 struct EditWishlistItemView: View {
     @Environment(\.dismiss) private var dismiss
-    @ObservedObject var store: ItemStore
-    @ObservedObject var wishlistGroupStore: WishlistGroupStore
+    var store: ItemStore
+    var wishlistGroupStore: WishlistGroupStore
     var sharedWishlistStore: SharedWishlistStore? = nil
     
     let originalItem: Item
@@ -1481,7 +1549,7 @@ struct EditWishlistItemView: View {
                 cancelText: "取消",
                 confirmColor: .blue,
                 cancelColor: .green,
-                backgroundColor: .red,
+                backgroundColor: .yellow,
                 width: 260,
                 onConfirm: {
                     sharedWishlistStore?.syncWishDeleted(itemId: originalItem.id, groupId: originalItem.wishlistGroupId)
@@ -1527,11 +1595,14 @@ struct EditWishlistItemView: View {
 // 添加心愿清单分组视图
 struct AddWishlistGroupView: View {
     @Environment(\.dismiss) private var dismiss
-    @ObservedObject var groupStore: WishlistGroupStore
+    var groupStore: WishlistGroupStore
+    var editingGroup: ItemGroup? = nil
+    var onDeleteGroup: ((ItemGroup) -> Void)? = nil
     
     @State private var name = ""
     @State private var selectedIcon = "folder"
     @State private var selectedColor: GroupColor = .pink
+    @State private var showDeleteConfirm = false
     
     private let icons = ["folder", "star", "heart", "bag", "cart", "gift", "house", "car", "airplane", "gamecontroller", "books.vertical", "tv", "headphones", "shoe", "tshirt", "laptopcomputer", "iphone", "camera", "bicycle"]
     
@@ -1598,8 +1669,15 @@ struct AddWishlistGroupView: View {
                     }
                     .padding(.vertical, 8)
                 }
+                
+                if editingGroup != nil {
+                    Section {
+                        Button("删除分组", role: .destructive) {
+                            showDeleteConfirm = true
+                        }
+                    }
+                }
             }
-            .navigationTitle("新建分组")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
@@ -1609,19 +1687,51 @@ struct AddWishlistGroupView: View {
                 }
                 
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("保存") {
-                        saveGroup()
+                    Button(editingGroup != nil ? "保存" : "创建") {
+                        if let editingGroup = editingGroup {
+                            updateGroup(editingGroup)
+                        } else {
+                            saveGroup()
+                        }
                     }
                     .disabled(!isValid)
                     .fontWeight(.semibold)
                 }
             }
+            .onAppear {
+                if let group = editingGroup {
+                    name = group.name
+                    selectedIcon = group.icon
+                    selectedColor = group.color
+                }
+            }
+        }
+        .presentationDetents([.medium])
+        .alert("删除分组", isPresented: $showDeleteConfirm) {
+            Button("取消", role: .cancel) {}
+            Button("删除", role: .destructive) {
+                if let group = editingGroup {
+                    onDeleteGroup?(group)
+                    dismiss()
+                }
+            }
+        } message: {
+            Text("删除分组后，该分组下的心愿将变为无分组状态。确定要删除吗？")
         }
     }
     
     private func saveGroup() {
         let newGroup = ItemGroup(name: name, icon: selectedIcon, color: selectedColor)
         groupStore.add(newGroup)
+        dismiss()
+    }
+    
+    private func updateGroup(_ group: ItemGroup) {
+        var updated = group
+        updated.name = name
+        updated.icon = selectedIcon
+        updated.color = selectedColor
+        groupStore.update(updated)
         dismiss()
     }
 }

@@ -49,7 +49,9 @@ class WishlistGroupStore: ObservableObject {
     
     func update(_ group: ItemGroup) {
         if let index = groups.firstIndex(where: { $0.id == group.id }) {
-            groups[index] = group
+            var updated = group
+            updated.updatedAt = Date()
+            groups[index] = updated
             saveGroups()
         }
     }
@@ -59,19 +61,27 @@ class WishlistGroupStore: ObservableObject {
         return groups.first(where: { $0.id == id })
     }
     
-    /// 合并远端分组到本地（远端独有的添加，已有的保留本地版本）
+    /// 合并远端分组到本地（与远端 merge 逻辑一致：取 updatedAt 更新的版本）
     func applyRemoteGroups(_ remoteGroups: [ItemGroup]) {
-        let localIds = Set(groups.map { $0.id })
         var changed = false
         for remoteGroup in remoteGroups {
-            if !localIds.contains(remoteGroup.id) {
+            if let index = groups.firstIndex(where: { $0.id == remoteGroup.id }) {
+                // 已存在：取 updatedAt 更新的版本
+                let localTimestamp = floor(groups[index].updatedAt.timeIntervalSince1970)
+                let remoteTimestamp = floor(remoteGroup.updatedAt.timeIntervalSince1970)
+                if remoteTimestamp > localTimestamp {
+                    groups[index] = remoteGroup
+                    changed = true
+                }
+            } else {
+                // 不存在：添加
                 groups.append(remoteGroup)
                 changed = true
             }
         }
         if changed {
             saveGroups()
-            print("[WishlistGroupStore] 合并远端分组: 新增 \(groups.count - localIds.count) 个")
+            print("[WishlistGroupStore] 合并远端分组: 更新/新增完成，共 \(groups.count) 个")
         }
     }
     

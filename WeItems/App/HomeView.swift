@@ -332,11 +332,9 @@ struct HomeView: View {
                 let ownerName = sharedRecord.effectiveOwnerName
                 let remoteItems = sharedRecord.wishinfo?.items ?? []
                 
-                let sharedItems: [SharedWishItem] = remoteItems.map { remote in
-                    let remoteUUID: UUID = {
-                        if let idStr = remote.id, let uuid = UUID(uuidString: idStr) { return uuid }
-                        return UUID()
-                    }()
+                let sharedItems: [SharedWishItem] = remoteItems.compactMap { remote in
+                    guard let idStr = remote.id, !idStr.isEmpty,
+                          let remoteUUID = UUID(uuidString: idStr) else { return nil }
                     return SharedWishItem(
                         id: remoteUUID,
                         sourceItemId: remote.sourceItemId.flatMap { UUID(uuidString: $0) },
@@ -403,7 +401,7 @@ struct HomeView: View {
             )
         }
         
-        // 下载远端物品/心愿的图片
+        // 收集需要下载图片的远端物品/心愿
         var allRemoteItems: [Item] = []
         if let result = itemsSyncResult { allRemoteItems.append(contentsOf: result.remoteOnlyItems) }
         if let result = wishesSyncResult { allRemoteItems.append(contentsOf: result.remoteOnlyItems) }
@@ -414,13 +412,8 @@ struct HomeView: View {
                 imageUrlsToDownload[item.id.uuidString] = remoteUrl
             }
         }
-        var downloadedImages: [String: Data] = [:]
-        if !imageUrlsToDownload.isEmpty {
-            print("[自动同步] 开始下载 \(imageUrlsToDownload.count) 张远端图片...")
-            downloadedImages = await client.downloadRemoteImages(imageUrls: imageUrlsToDownload)
-        }
         
-        // 处理物品/心愿同步结果
+        // 先添加物品/心愿数据（不等图片下载），让列表立即展示
         await MainActor.run {
             if let result = itemsSyncResult {
                 for deletedId in result.deletedLocalItemIds {
@@ -428,7 +421,6 @@ struct HomeView: View {
                 }
                 for var remoteItem in result.remoteOnlyItems {
                     guard !remoteItem.itemId.isEmpty, !store.items.contains(where: { $0.itemId == remoteItem.itemId }) else { continue }
-                    if let imageData = downloadedImages[remoteItem.id.uuidString] { remoteItem.imageData = imageData }
                     remoteItem.isSynced = true; store.add(remoteItem)
                 }
             }
@@ -438,7 +430,6 @@ struct HomeView: View {
                 }
                 for var remoteItem in result.remoteOnlyItems {
                     guard !remoteItem.itemId.isEmpty, !store.items.contains(where: { $0.itemId == remoteItem.itemId }) else { continue }
-                    if let imageData = downloadedImages[remoteItem.id.uuidString] { remoteItem.imageData = imageData }
                     remoteItem.isSynced = true; store.add(remoteItem)
                 }
             }
@@ -493,6 +484,26 @@ struct HomeView: View {
             
             isAutoSyncing = false
             showSyncToastMessage("同步完成")
+        }
+        
+        // 后台异步下载远端图片（不阻塞数据展示）
+        if !imageUrlsToDownload.isEmpty {
+            Task {
+                print("[自动同步] 后台下载 \(imageUrlsToDownload.count) 张远端图片...")
+                let downloadedImages = await client.downloadRemoteImages(imageUrls: imageUrlsToDownload)
+                await MainActor.run {
+                    for (itemIdStr, imageData) in downloadedImages {
+                        guard let uuid = UUID(uuidString: itemIdStr) else { continue }
+                        if let index = store.items.firstIndex(where: { $0.id == uuid }) {
+                            store.items[index].imageData = imageData
+                            _ = store.saveImage(imageData, for: uuid)
+                        }
+                    }
+                    if !downloadedImages.isEmpty {
+                        print("[自动同步] 后台图片下载完成: \(downloadedImages.count) 张")
+                    }
+                }
+            }
         }
     }
     
@@ -671,10 +682,15 @@ struct HomeView: View {
             .onAppear {
                 checkClipboardForSharedWishlist()
                 checkICloudAutoSync()
+                startICloudSyncTimer()
             }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
                 checkClipboardForSharedWishlist()
                 checkICloudAutoSync()
+                startICloudSyncTimer()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+                stopICloudSyncTimer()
             }
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name("AddItemFromSharedWish"))) { notification in
                 if let item = notification.object as? Item {
@@ -743,6 +759,7 @@ struct HomeView: View {
     
     // MARK: - iCloud 自动同步
     @State private var isICloudAutoSyncing = false
+    @State private var iCloudSyncTimer: Timer? = nil
     
     /// 检查是否需要 iCloud 自动同步：VIP + 开关开启 + 上次同步超过 1 小时 + 有需要同步的变更
     private func checkICloudAutoSync() {
@@ -808,6 +825,22 @@ struct HomeView: View {
         return UserDefaults.standard.bool(forKey: "iCloudAutoSyncEnabled")
     }
     
+    /// 启动 iCloud 自动同步定时器（每 1 小时检测一次）
+    private func startICloudSyncTimer() {
+        stopICloudSyncTimer()
+        iCloudSyncTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { _ in
+            DispatchQueue.main.async {
+                checkICloudAutoSync()
+            }
+        }
+    }
+    
+    /// 停止 iCloud 自动同步定时器
+    private func stopICloudSyncTimer() {
+        iCloudSyncTimer?.invalidate()
+        iCloudSyncTimer = nil
+    }
+    
     /// 检查剪贴板是否包含 sharewish_ 开头的共享清单 ID
     private func checkClipboardForSharedWishlist() {
         guard authManager.isAuthenticated else { return }
@@ -861,11 +894,9 @@ struct HomeView: View {
                 let ownerName = record.effectiveOwnerName
                 let remoteItems = record.wishinfo?.items ?? []
                 
-                let sharedItems: [SharedWishItem] = remoteItems.map { remote in
-                    let remoteUUID: UUID = {
-                        if let idStr = remote.id, let uuid = UUID(uuidString: idStr) { return uuid }
-                        return UUID()
-                    }()
+                let sharedItems: [SharedWishItem] = remoteItems.compactMap { remote in
+                    guard let idStr = remote.id, !idStr.isEmpty,
+                          let remoteUUID = UUID(uuidString: idStr) else { return nil }
                     return SharedWishItem(
                         id: remoteUUID,
                         name: remote.name ?? "未知心愿",
@@ -923,7 +954,7 @@ struct HomeView: View {
 
 // 我的物品视图
 struct ItemsView: View {
-    @ObservedObject var store: ItemStore
+    var store: ItemStore
     @ObservedObject var groupStore: GroupStore
     @Binding var showingAddGroup: Bool
     @EnvironmentObject var authManager: AuthManager
@@ -935,6 +966,9 @@ struct ItemsView: View {
     @State private var showArchived: Bool = false
     @State private var showingAccountSync = false
     @State private var selectedType: ItemType? = nil
+    @State private var groupToDelete: ItemGroup? = nil
+    @State private var showDeleteGroupAlert = false
+    @State private var editingGroup: ItemGroup? = nil
     @AppStorage("itemSortMode") private var itemSortMode: ItemSortMode = .addedDate
     
     private var currentItems: [Item] {
@@ -1024,7 +1058,14 @@ struct ItemsView: View {
                 selectedGroupId: $selectedGroupId,
                 showArchived: $showArchived,
                 archivedCount: archivedCount,
-                onAddGroup: { showingAddGroup = true }
+                onAddGroup: { showingAddGroup = true },
+                onDeleteGroup: { group in
+                    groupToDelete = group
+                    showDeleteGroupAlert = true
+                },
+                onEditGroup: { group in
+                    editingGroup = group
+                }
             )
             .listRowSeparator(.hidden)
             .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
@@ -1035,13 +1076,14 @@ struct ItemsView: View {
                 itemCount: currentItemCount,
                 title: currentTitle,
                 soldTotalPrice: showArchived ? currentItems.compactMap({ $0.soldPrice }).reduce(0, +) : nil,
-                usageCost: showArchived ? (currentTotalPrice - currentItems.compactMap({ $0.soldPrice }).reduce(0, +)) : nil
+                usageCost: showArchived ? (currentTotalPrice - currentItems.compactMap({ $0.soldPrice }).reduce(0, +)) : nil,
+                dailyCostTotal: currentItems.reduce(0) { $0 + $1.dailyCost }
             )
             .listRowSeparator(.hidden)
             .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
             
             // 物品类型筛选
-            TypeFilterView(selectedType: $selectedType, store: store, showArchived: showArchived)
+            TypeFilterView(selectedType: $selectedType, store: store, selectedGroupId: selectedGroupId, showArchived: showArchived)
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 4, trailing: 0))
             
@@ -1104,7 +1146,7 @@ struct ItemsView: View {
             EditSoldInfoSheet(item: item, store: store)
         }
         .sheet(item: $showingItemDetail) { item in
-            ItemDetailView(store: store, item: item, group: groupStore.group(for: item.groupId))
+            ItemDetailView(store: store, item: item, group: groupStore.group(for: item.groupId), groupStore: groupStore)
         }
         .sheet(isPresented: $showingAccountSync, onDismiss: {
             // Sheet 关闭后，如果已登录则不需要再次显示
@@ -1124,6 +1166,41 @@ struct ItemsView: View {
             // 切换售出/非售出模式时清除类型筛选
             selectedType = nil
         }
+        .onChange(of: selectedGroupId) { _, _ in
+            // 切换分组时清除类型筛选
+            selectedType = nil
+        }
+        .sheet(item: $editingGroup) { group in
+            AddGroupView(groupStore: groupStore, editingGroup: group, onDeleteGroup: { group in
+                let itemsInGroup = store.itemsForGroup(group.id, listType: .items)
+                store.moveItems(toGroup: nil, items: itemsInGroup.map { $0.id })
+                groupStore.delete(group)
+                if selectedGroupId == group.id {
+                    selectedGroupId = nil
+                }
+            })
+        }
+        .customBlueConfirmAlert(
+            isPresented: $showDeleteGroupAlert,
+            message: "删除分组后，该分组下的物品将变为无分组状态。确定要删除吗？",
+            confirmText: "删除",
+            cancelText: "取消",
+            confirmColor: .red,
+            cancelColor: .green,
+            backgroundColor: .yellow,
+            width: 260,
+            onConfirm: {
+                if let group = groupToDelete {
+                    let itemsInGroup = store.itemsForGroup(group.id, listType: .items)
+                    store.moveItems(toGroup: nil, items: itemsInGroup.map { $0.id })
+                    groupStore.delete(group)
+                    if selectedGroupId == group.id {
+                        selectedGroupId = nil
+                    }
+                }
+                groupToDelete = nil
+            }
+        )
     }
     
     private func deleteItems(at offsets: IndexSet) {
@@ -1137,7 +1214,8 @@ struct ItemsView: View {
 // 物品类型筛选视图
 struct TypeFilterView: View {
     @Binding var selectedType: ItemType?
-    @ObservedObject var store: ItemStore
+    var store: ItemStore
+    var selectedGroupId: UUID? = nil
     var showArchived: Bool = false
     
     private static let typeColors: [ItemType: Color] = [
@@ -1151,13 +1229,15 @@ struct TypeFilterView: View {
         .other: .gray
     ]
     
-    /// 根据当前模式（售出/未售出）获取实际存在的类型
+    /// 根据当前模式（售出/未售出）和分组获取实际存在的类型
     private var activeTypes: [ItemType] {
         let myItems: [Item]
         if showArchived {
             myItems = store.items.filter { $0.listType == .items && $0.isArchived }
         } else {
-            myItems = store.items.filter { $0.listType == .items && !$0.isArchived }
+            var filtered = store.itemsForGroup(selectedGroupId, listType: .items)
+            filtered = filtered.filter { !$0.isArchived }
+            myItems = filtered
         }
         let typeSet = Set(myItems.compactMap { ItemType(rawValue: $0.type) })
         return ItemType.allCases.filter { typeSet.contains($0) }
@@ -1168,7 +1248,7 @@ struct TypeFilterView: View {
         if showArchived {
             return store.items.filter { $0.listType == .items && $0.isArchived }.count
         } else {
-            return store.items.filter { $0.listType == .items && !$0.isArchived }.count
+            return store.itemsForGroup(selectedGroupId, listType: .items).filter { !$0.isArchived }.count
         }
     }
     
@@ -1213,7 +1293,7 @@ struct TypeFilterView: View {
                             if showArchived {
                                 return store.items.filter { $0.listType == .items && $0.isArchived && $0.type == type.rawValue }.count
                             } else {
-                                return store.items.filter { $0.listType == .items && !$0.isArchived && $0.type == type.rawValue }.count
+                                return store.itemsForGroup(selectedGroupId, listType: .items).filter { !$0.isArchived && $0.type == type.rawValue }.count
                             }
                         }()
                         
@@ -1262,9 +1342,10 @@ struct GroupSelectorView: View {
     @Binding var showArchived: Bool
     let archivedCount: Int
     let onAddGroup: () -> Void
+    var onDeleteGroup: ((ItemGroup) -> Void)? = nil
+    var onEditGroup: ((ItemGroup) -> Void)? = nil
     
-    @State private var editingGroupId: UUID? = nil
-    @State private var groupToDelete: ItemGroup? = nil
+    @State private var justLongPressed = false
     
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -1274,7 +1355,6 @@ struct GroupSelectorView: View {
                     withAnimation(.spring(duration: 0.3)) {
                         selectedGroupId = nil
                         showArchived = false
-                        editingGroupId = nil
                     }
                 } label: {
                     GroupChip(
@@ -1289,51 +1369,35 @@ struct GroupSelectorView: View {
                 
                 // 各个分组
                 ForEach(groupStore.groups) { group in
-                    ZStack {
-                        Button {
-                            withAnimation(.spring(duration: 0.3)) {
-                                selectedGroupId = group.id
-                                showArchived = false
-                                editingGroupId = nil
-                            }
-                        } label: {
-                            GroupChip(
-                                name: group.name,
-                                icon: group.icon,
-                                color: group.color.swiftUIColor,
-                                isSelected: selectedGroupId == group.id && !showArchived,
-                                isEditing: editingGroupId == group.id
-                            )
+                    Button {
+                        if justLongPressed {
+                            justLongPressed = false
+                            return
                         }
-                        .buttonStyle(PlainButtonStyle())
-                        .simultaneousGesture(
-                            LongPressGesture()
-                                .onEnded { _ in
-                                    withAnimation(.spring(duration: 0.3)) {
-                                        editingGroupId = group.id
-                                    }
-                                }
+                        withAnimation(.spring(duration: 0.3)) {
+                            selectedGroupId = group.id
+                            showArchived = false
+                        }
+                    } label: {
+                        GroupChip(
+                            name: group.name,
+                            icon: group.icon,
+                            color: group.color.swiftUIColor,
+                            isSelected: selectedGroupId == group.id && !showArchived,
+                            isEditing: false
                         )
-                        
-                        // 删除按钮
-                        if editingGroupId == group.id {
-                            VStack {
-                                HStack {
-                                    Spacer()
-                                    Button {
-                                        groupToDelete = group
-                                    } label: {
-                                        Image(systemName: "xmark.circle.fill")
-                                            .font(.system(size: 18))
-                                            .foregroundStyle(.red)
-                                            .background(Circle().fill(.white))
-                                    }
-                                    .offset(x: 6, y: -6)
-                                }
-                                Spacer()
-                            }
-                        }
                     }
+                    .buttonStyle(PlainButtonStyle())
+                    .simultaneousGesture(
+                        LongPressGesture(minimumDuration: 0.5)
+                            .onEnded { _ in
+                                justLongPressed = true
+                                onEditGroup?(group)
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                    justLongPressed = false
+                                }
+                            }
+                    )
                 }
                 
                 // 售出物品标签
@@ -1342,7 +1406,6 @@ struct GroupSelectorView: View {
                         withAnimation(.spring(duration: 0.3)) {
                             showArchived = true
                             selectedGroupId = nil
-                            editingGroupId = nil
                         }
                     } label: {
                         GroupChip(
@@ -1378,32 +1441,6 @@ struct GroupSelectorView: View {
             .padding(.horizontal, 4)
             .padding(.vertical, 6)
         }
-        .customConfirmAlert(
-            isPresented: Binding(
-                get: { groupToDelete != nil },
-                set: { if !$0 { groupToDelete = nil; editingGroupId = nil } }
-            ),
-            title: "删除分组",
-            message: "删除分组后，该分组下的物品将变为无分组状态。确定要删除吗？",
-            confirmText: "删除",
-            isDestructive: true,
-            onConfirm: {
-                if let group = groupToDelete {
-                    let itemsInGroup = itemStore.itemsForGroup(group.id, listType: .items)
-                    itemStore.moveItems(toGroup: nil, items: itemsInGroup.map { $0.id })
-                    groupStore.delete(group)
-                    if selectedGroupId == group.id {
-                        selectedGroupId = nil
-                    }
-                    editingGroupId = nil
-                    groupToDelete = nil
-                }
-            },
-            onCancel: {
-                groupToDelete = nil
-                editingGroupId = nil
-            }
-        )
     }
 }
 
@@ -1446,6 +1483,7 @@ struct TotalPriceCard: View {
     let title: String
     var soldTotalPrice: Double? = nil  // 售出总价
     var usageCost: Double? = nil       // 使用成本（原始 - 售出）
+    var dailyCostTotal: Double = 0     // 日均持有成本合计
     
     var body: some View {
         VStack(spacing: 12) {
@@ -1469,6 +1507,23 @@ struct TotalPriceCard: View {
                         .font(.title2)
                         .fontWeight(.semibold)
                         .foregroundStyle(.blue)
+                }
+            }
+            
+            // 日均持有成本
+            if dailyCostTotal > 0 {
+                HStack(spacing: 4) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    Text("日均持有成本")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("¥\(String(format: "%.2f", dailyCostTotal))/天")
+                        .font(.system(.subheadline, design: .rounded))
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.orange)
                 }
             }
             
@@ -1784,7 +1839,7 @@ struct CustomTabBar: View {
 struct EditSoldInfoSheet: View {
     @Environment(\.dismiss) private var dismiss
     let item: Item
-    @ObservedObject var store: ItemStore
+    var store: ItemStore
     
     @State private var priceText: String = ""
     @State private var soldDate: Date = Date()

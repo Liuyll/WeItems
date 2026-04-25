@@ -426,7 +426,7 @@ struct ProfileView: View {
                                     .foregroundStyle(.green)
                             }
                             Spacer()
-                            Text("1.0.0")
+                            Text("\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.2")\(AppEnvironment.versionSuffix)")
                                 .font(.system(.body, design: .rounded))
                                 .foregroundStyle(.secondary)
                         }
@@ -686,11 +686,9 @@ struct ProfileView: View {
                     let ownerName = sharedRecord.effectiveOwnerName
                     let remoteItems = sharedRecord.wishinfo?.items ?? []
                     
-                    let sharedItems: [SharedWishItem] = remoteItems.map { remote in
-                        let remoteUUID: UUID = {
-                            if let idStr = remote.id, let uuid = UUID(uuidString: idStr) { return uuid }
-                            return UUID()
-                        }()
+                    let sharedItems: [SharedWishItem] = remoteItems.compactMap { remote in
+                        guard let idStr = remote.id, !idStr.isEmpty,
+                              let remoteUUID = UUID(uuidString: idStr) else { return nil }
                         var remoteImageData: Data? = nil
                         if let base64Str = remote.imageBase64, !base64Str.isEmpty {
                             remoteImageData = Data(base64Encoded: base64Str)
@@ -817,7 +815,7 @@ struct ProfileView: View {
                 )
             }
             
-            // 下载远端物品/心愿的图片
+            // 收集需要下载图片的远端物品
             var allRemoteItems: [Item] = []
             if let result = itemsSyncResult {
                 allRemoteItems.append(contentsOf: result.remoteOnlyItems)
@@ -826,21 +824,14 @@ struct ProfileView: View {
                 allRemoteItems.append(contentsOf: result.remoteOnlyItems)
             }
             
-            // 收集需要下载图片的远端物品（有 imageUrl 的）
-            var imageUrlsToDownload: [String: String] = [:]  // [item.id.uuidString: imageUrl]
+            var imageUrlsToDownload: [String: String] = [:]
             for item in allRemoteItems {
                 if let remoteUrl = item.imageUrl, !remoteUrl.isEmpty {
                     imageUrlsToDownload[item.id.uuidString] = remoteUrl
                 }
             }
             
-            // 批量下载图片
-            var downloadedImages: [String: Data] = [:]
-            if !imageUrlsToDownload.isEmpty {
-                print("[同步] 开始下载 \(imageUrlsToDownload.count) 张远端图片...")
-                downloadedImages = await client.downloadRemoteImages(imageUrls: imageUrlsToDownload)
-            }
-            
+            // 先添加数据（不等图片下载），让列表立即展示
             await MainActor.run {
                 isSyncing = false
                 itemStore.suppressUnsyncFlag = true
@@ -856,15 +847,9 @@ struct ProfileView: View {
                             itemStore.delete(item)
                         }
                     }
-                    // 远端独有或远端更新的物品，添加到本地
                     for var remoteItem in result.remoteOnlyItems {
-                        // itemId 为空则忽略该物品
                         guard !remoteItem.itemId.isEmpty else { continue }
                         if !itemStore.items.contains(where: { $0.itemId == remoteItem.itemId }) {
-                            // 如果下载到了图片，设置到 imageData
-                            if let imageData = downloadedImages[remoteItem.id.uuidString] {
-                                remoteItem.imageData = imageData
-                            }
                             remoteItem.isSynced = true
                             itemStore.add(remoteItem)
                         }
@@ -880,14 +865,9 @@ struct ProfileView: View {
                             itemStore.delete(item)
                         }
                     }
-                    // 远端独有或远端更新的心愿，添加到本地
                     for var remoteItem in result.remoteOnlyItems {
                         guard !remoteItem.itemId.isEmpty else { continue }
                         if !itemStore.items.contains(where: { $0.itemId == remoteItem.itemId }) {
-                            // 如果下载到了图片，设置到 imageData
-                            if let imageData = downloadedImages[remoteItem.id.uuidString] {
-                                remoteItem.imageData = imageData
-                            }
                             remoteItem.isSynced = true
                             itemStore.add(remoteItem)
                         }
@@ -967,6 +947,26 @@ struct ProfileView: View {
                 itemStore.suppressUnsyncFlag = false
                 financeStore.suppressUnsyncFlag = false
                 showToastMessage(message)
+            }
+            
+            // 后台异步下载远端图片（不阻塞 UI）
+            if !imageUrlsToDownload.isEmpty {
+                Task {
+                    print("[手动同步] 后台下载 \(imageUrlsToDownload.count) 张远端图片...")
+                    let downloadedImages = await client.downloadRemoteImages(imageUrls: imageUrlsToDownload)
+                    await MainActor.run {
+                        for (itemIdStr, imageData) in downloadedImages {
+                            guard let uuid = UUID(uuidString: itemIdStr) else { continue }
+                            if let index = itemStore.items.firstIndex(where: { $0.id == uuid }) {
+                                itemStore.items[index].imageData = imageData
+                                _ = itemStore.saveImage(imageData, for: uuid)
+                            }
+                        }
+                        if !downloadedImages.isEmpty {
+                            print("[手动同步] 后台图片下载完成: \(downloadedImages.count) 张")
+                        }
+                    }
+                }
             }
         }
     

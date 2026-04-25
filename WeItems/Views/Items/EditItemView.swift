@@ -8,8 +8,8 @@ import PhotosUI
 
 struct EditItemView: View {
     @Environment(\.dismiss) private var dismiss
-    @ObservedObject var store: ItemStore
-    @ObservedObject var groupStore: GroupStore
+    var store: ItemStore
+    var groupStore: GroupStore
     
     @State var item: Item
     @State private var selectedType: ItemType
@@ -319,7 +319,7 @@ struct EditItemView: View {
                 cancelText: "取消",
                 confirmColor: .blue,
                 cancelColor: .green,
-                backgroundColor: .red,
+                backgroundColor: .yellow,
                 width: 260,
                 onConfirm: {
                     store.delete(item)

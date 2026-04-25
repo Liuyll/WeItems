@@ -8,7 +8,7 @@ import PhotosUI
 
 // MARK: - 共享清单列表页
 struct SharedWishlistListView: View {
-    @ObservedObject var sharedStore: SharedWishlistStore
+    var sharedStore: SharedWishlistStore
     @ObservedObject var itemStore: ItemStore
     @ObservedObject var wishlistGroupStore: WishlistGroupStore
     @State private var showingCreate = false
@@ -401,9 +401,17 @@ struct ImportFriendSheet: View {
                     .fontWeight(.bold)
                     .foregroundStyle(.white.opacity(0.8))
                 
-                TextField("输入清单 ID", text: $groupId)
-                    .font(.system(.body, design: .rounded))
-                    .fontWeight(.bold)
+                ZStack(alignment: .leading) {
+                    if groupId.isEmpty {
+                        Text("输入清单 ID")
+                            .font(.system(.body, design: .rounded))
+                            .foregroundStyle(Color.gray.opacity(0.6))
+                    }
+                    TextField("输入清单 ID", text: $groupId)
+                        .font(.system(.body, design: .rounded))
+                        .fontWeight(.bold)
+                        .foregroundStyle(.black)
+                }
                     .padding(14)
                     .background(
                         RoundedRectangle(cornerRadius: 12)
@@ -413,29 +421,35 @@ struct ImportFriendSheet: View {
                     .autocorrectionDisabled()
                     .submitLabel(.done)
                     .padding(.horizontal, 8)
-                
-                Button {
-                    dismiss()
-                    onImport()
-                } label: {
-                    Text("导入")
-                        .font(.system(.body, design: .rounded))
-                        .fontWeight(.bold)
-                        .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12)
-                                .fill(groupId.trimmingCharacters(in: .whitespaces).isEmpty ? Color(white: 0.45) : Color.blue)
-                        )
-                }
-                .buttonStyle(.plain)
-                .disabled(groupId.trimmingCharacters(in: .whitespaces).isEmpty)
-                .padding(.horizontal, 8)
+
+                importButton
             }
             .padding(24)
         }
         .presentationBackground(Color.pink)
+    }
+
+    private var importButton: some View {
+        let isEmpty = groupId.trimmingCharacters(in: .whitespaces).isEmpty
+
+        return Button {
+            if isEmpty { return }
+            dismiss()
+            onImport()
+        } label: {
+            Text("导入")
+                .font(.system(.body, design: .rounded))
+                .fontWeight(.bold)
+                .foregroundStyle(isEmpty ? Color.white.opacity(0.5) : .white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(isEmpty ? Color.gray : Color.blue)
+                )
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
     }
 }
 
@@ -502,10 +516,11 @@ struct SharedWishlistRow: View {
 // MARK: - 清单详情页
 struct SharedWishlistDetailView: View {
     let list: SharedWishlist
-    @ObservedObject var sharedStore: SharedWishlistStore
+    var sharedStore: SharedWishlistStore
     @ObservedObject var itemStore: ItemStore
     @ObservedObject var wishlistGroupStore: WishlistGroupStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @State private var isSyncing = false
     @State private var editingItem: SharedWishItem? = nil
     @State private var viewingItem: SharedWishItem? = nil
@@ -949,7 +964,7 @@ struct SharedWishlistDetailView: View {
             cancelText: "取消",
             confirmColor: .blue,
             cancelColor: .green,
-            backgroundColor: .red,
+            backgroundColor: .yellow,
             width: 260,
             onConfirm: {
                 performDelete()
@@ -961,6 +976,14 @@ struct SharedWishlistDetailView: View {
             buttonText: "知道了",
             backgroundColor: .yellow
         )
+        .onDisappear {
+            autoSyncIfNeeded()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .background || newPhase == .inactive {
+                autoSyncIfNeeded()
+            }
+        }
         .onAppear {
             let l = currentList
             
@@ -1220,6 +1243,20 @@ struct SharedWishlistDetailView: View {
         }
     }
     
+    /// 有变更时自动同步（返回其他页面或切到后台时触发）
+    private func autoSyncIfNeeded() {
+        // 已被删除的清单不同步
+        guard !isRemoteDeleted else { return }
+        // 正在同步中不重复触发
+        guard !isSyncing else { return }
+        // 检查是否有变更：isSynced == false 且有实际修改
+        guard shouldShowUnsynced else { return }
+        // 必须有 wishGroupId
+        guard currentList.wishGroupId != nil else { return }
+        
+        print("[共享心愿] 检测到未同步变更，自动同步...")
+        syncToCloud()
+    }
     
     
     private func syncToCloud() {
@@ -1430,7 +1467,13 @@ struct SharedWishlistDetailView: View {
                             return (item.id.uuidString, data)
                         }
                     )
-                    let remoteItems: [SharedWishItem] = remoteWishItems.map { remote in
+                    let remoteItems: [SharedWishItem] = remoteWishItems.compactMap { remote in
+                        // 过滤掉无 id 的远端心愿（旧数据清理）
+                        guard let remoteIdStr = remote.id, !remoteIdStr.isEmpty,
+                              let remoteUUID = UUID(uuidString: remoteIdStr) else {
+                            print("[共享心愿] 跳过无 id 的远端心愿: \(remote.name ?? "未知")")
+                            return nil
+                        }
                         var remoteImageUrl: String? = nil
                         var remoteImageData: Data? = nil
                         if let url = remote.imageUrl, !url.isEmpty {
@@ -1439,16 +1482,9 @@ struct SharedWishlistDetailView: View {
                             remoteImageData = Data(base64Encoded: base64Str)
                         }
                         // 保留本地 imageData（远端没有图片数据时）
-                        if remoteImageData == nil, let remoteId = remote.id,
-                           let localData = localImageDataMap[remoteId] {
+                        if remoteImageData == nil, let localData = localImageDataMap[remoteIdStr] {
                             remoteImageData = localData
                         }
-                        let remoteUUID: UUID = {
-                            if let idStr = remote.id, let uuid = UUID(uuidString: idStr) {
-                                return uuid
-                            }
-                            return UUID()
-                        }()
                         let remoteSourceItemId: UUID? = {
                             if let sid = remote.sourceItemId, !sid.isEmpty {
                                 return UUID(uuidString: sid)
@@ -1588,7 +1624,7 @@ struct SharedWishlistDetailView: View {
 // MARK: - 创建共享清单
 struct CreateSharedWishlistView: View {
     @Environment(\.dismiss) private var dismiss
-    @ObservedObject var sharedStore: SharedWishlistStore
+    var sharedStore: SharedWishlistStore
     @ObservedObject var itemStore: ItemStore
     @ObservedObject var wishlistGroupStore: WishlistGroupStore
     
@@ -1795,7 +1831,7 @@ struct CreateSharedWishlistView: View {
 // MARK: - 编辑共享清单
 struct EditSharedWishlistView: View {
     @Environment(\.dismiss) private var dismiss
-    @ObservedObject var sharedStore: SharedWishlistStore
+    var sharedStore: SharedWishlistStore
     @ObservedObject var itemStore: ItemStore
     @ObservedObject var wishlistGroupStore: WishlistGroupStore
     
@@ -2034,7 +2070,7 @@ struct EditSharedWishlistView: View {
 // MARK: - 编辑单个共享心愿
 struct EditSharedWishItemView: View {
     @Environment(\.dismiss) private var dismiss
-    @ObservedObject var sharedStore: SharedWishlistStore
+    var sharedStore: SharedWishlistStore
     
     let listId: UUID
     let originalItem: SharedWishItem
@@ -2428,7 +2464,7 @@ struct EditSharedWishItemView: View {
             cancelText: "取消",
             confirmColor: .blue,
             cancelColor: .green,
-            backgroundColor: .red,
+            backgroundColor: .yellow,
             width: 260,
             onConfirm: {
                 sharedStore.deleteItem(listId: listId, itemId: originalItem.id)
@@ -2683,7 +2719,7 @@ struct EditSharedWishItemView: View {
 // MARK: - 共享心愿详情页
 struct SharedWishItemDetailView: View {
     @Environment(\.dismiss) private var dismiss
-    @ObservedObject var sharedStore: SharedWishlistStore
+    var sharedStore: SharedWishlistStore
     
     let listId: UUID
     let isOwner: Bool
@@ -2938,7 +2974,7 @@ struct SharedWishItemDetailView: View {
                 cancelText: "取消",
                 confirmColor: .blue,
                 cancelColor: .green,
-                backgroundColor: .red,
+                backgroundColor: .yellow,
                 width: 260,
                 onConfirm: {
                     sharedStore.deleteItem(listId: listId, itemId: currentItem.id)
@@ -3030,7 +3066,7 @@ struct SharedWishItemDetailView: View {
 // MARK: - 共享清单中添加心愿（复用心愿添加的卡通风格设计）
 struct AddSharedWishItemView: View {
     @Environment(\.dismiss) private var dismiss
-    @ObservedObject var sharedStore: SharedWishlistStore
+    var sharedStore: SharedWishlistStore
     
     let listId: UUID
     let existingCustomTypes: [String]

@@ -396,6 +396,38 @@ class CloudBaseClient {
         }
     }
     
+    // MARK: - App Info（版本检查）
+    
+    /// app_info 响应模型
+    struct FetchAppInfoResponse: Codable {
+        let code: FlexibleCode?
+        let message: String?
+        let data: FetchAppInfoData?
+        
+        struct FetchAppInfoData: Codable {
+            let records: [AppInfoRecord]?
+            let total: Int?
+        }
+        
+        struct AppInfoRecord: Codable {
+            let _id: String?
+            let version: VersionInfo?
+        }
+        
+        struct VersionInfo: Codable {
+            let latest_version: String?
+        }
+    }
+    
+    /// 获取 App 远端配置信息（版本号等）
+    func fetchAppInfo(
+        envType: String = "prod",
+        modelName: String = "app_info"
+    ) async -> FetchAppInfoResponse? {
+        let path = "/v1/model/\(envType)/\(modelName)/list"
+        return await request(method: "GET", path: path)
+    }
+    
     // MARK: - 云函数调用
     
     /// 云函数响应的通用 Decodable 包装
@@ -2424,6 +2456,13 @@ class CloudBaseClient {
         
         struct WishInfoObject: Codable {
             let items: [RemoteSharedWishItem]?
+            let deletedIds: [DeletedWishItem]?  // 墓碑：被删除的心愿 id 列表
+        }
+        
+        /// 墓碑记录：被删除的心愿
+        struct DeletedWishItem: Codable {
+            let id: String
+            let deletedAt: String  // ISO8601
         }
         
         struct RemoteSharedWishItem: Codable {
@@ -2498,12 +2537,22 @@ class CloudBaseClient {
         }
         
         let remoteWishItems = record.wishinfo?.items ?? []
-        print("[共享心愿同步] 远端共 \(remoteWishItems.count) 个心愿，本地共 \(localItems.count) 个心愿")
+        // 过滤掉无 id 的远端心愿（旧数据清理）
+        let validRemoteItems = remoteWishItems.filter { item in
+            if let id = item.id, !id.isEmpty { return true }
+            print("[共享心愿同步] 丢弃无 id 的远端心愿: \(item.name ?? "未知")")
+            return false
+        }
+        print("[共享心愿同步] 远端共 \(remoteWishItems.count) 个心愿（有效 \(validRemoteItems.count) 个），本地共 \(localItems.count) 个心愿")
+        
+        // 读取远端墓碑（被其他用户删除的心愿 id）
+        let remoteDeletedIds = Set((record.wishinfo?.deletedIds ?? []).map(\.id))
+        print("[共享心愿同步] 远端墓碑: \(remoteDeletedIds.count) 个")
         
         // Step 2: Merge 逻辑（严格按 id 匹配）
         // 构建远端字典：按 id 索引
         var remoteById: [String: FetchSharedWishlistResponse.RemoteSharedWishItem] = [:]
-        for item in remoteWishItems {
+        for item in validRemoteItems {
             if let id = item.id, !id.isEmpty {
                 remoteById[id] = item
             }
@@ -2515,9 +2564,17 @@ class CloudBaseClient {
         // 2a. 遍历本地心愿，按 id 匹配远端
         for localItem in localItems {
             let localIdStr = localItem.id.uuidString
+            
+            // 检查是否被其他用户删除（远端墓碑）
+            if remoteDeletedIds.contains(localIdStr) {
+                print("[共享心愿同步] 本地心愿被远端墓碑标记，跳过: \(localItem.name) (id=\(localIdStr))")
+                continue
+            }
+            
+            // 按 id 匹配
             if let remote = remoteById[localIdStr] {
-                // 远端有、本地有：合并（以本地为准，远端补充缺失字段）
                 processedRemoteIds.insert(localIdStr)
+                // 远端有、本地有：合并（以本地为准，远端补充缺失字段）
                 var merged = localItem
                 if merged.purchaseLink == nil, let remotePL = remote.purchaseLink {
                     merged.purchaseLink = remotePL
@@ -2552,9 +2609,10 @@ class CloudBaseClient {
         
         // 2b. 遍历远端心愿，找出远端独有的（id 未被匹配到的）
         var deletedImageObjectIds: [String] = []  // 收集被删除心愿的 COS 图片路径
-        for remoteItem in remoteWishItems {
+        for remoteItem in validRemoteItems {
             let remoteIdStr = remoteItem.id ?? ""
             guard let name = remoteItem.name else { continue }
+            // 跳过已通过 id 匹配过的
             if !remoteIdStr.isEmpty && processedRemoteIds.contains(remoteIdStr) { continue }
             // Owner push 同步：只有 deletedItemNames 中明确记录的才视为主动删除
             // 如果本地没有但也没有主动删除记录，说明可能是新设备/数据未加载，保留远端数据
@@ -2656,6 +2714,34 @@ class CloudBaseClient {
             return info
         }
         
+        // 构造墓碑列表：合并远端已有 + 本地新删除，清理超过 30 天的
+        let isoFormatter = ISO8601DateFormatter()
+        let now = Date()
+        let thirtyDaysAgo = Calendar.current.date(byAdding: .day, value: -30, to: now) ?? now
+        let nowStr = isoFormatter.string(from: now)
+        
+        // 远端已有的墓碑（保留未过期的）
+        var mergedDeletedIds: [[String: Any]] = (record.wishinfo?.deletedIds ?? []).compactMap { item in
+            if let deletedAt = isoFormatter.date(from: item.deletedAt), deletedAt < thirtyDaysAgo {
+                return nil  // 过期，清理
+            }
+            return ["id": item.id, "deletedAt": item.deletedAt]
+        }
+        // 追加本地新删除的心愿（通过 deletedItemNames 传入的）
+        // 需要从远端原始数据中找到被 deletedItemNames 匹配到的心愿 id
+        let existingTombstoneIds = Set(mergedDeletedIds.compactMap { $0["id"] as? String })
+        for remoteItem in validRemoteItems {
+            guard let remoteId = remoteItem.id, !remoteId.isEmpty,
+                  let name = remoteItem.name,
+                  deletedItemNames.contains(name),
+                  !existingTombstoneIds.contains(remoteId) else { continue }
+            mergedDeletedIds.append(["id": remoteId, "deletedAt": nowStr])
+        }
+        // 也把本地 deletedItemNames 对应的本地 id 加入（本地删除的心愿可能还没同步到远端过）
+        // 这部分由 deletedImageObjectIds 收集逻辑已处理，这里只需保证墓碑完整
+        
+        print("[共享心愿同步] 墓碑列表: \(mergedDeletedIds.count) 个（清理过期后）")
+        
         var baseinfoDict: [String: Any] = [
             "name": listName,
             "emoji": listEmoji,
@@ -2671,7 +2757,7 @@ class CloudBaseClient {
                 "docId": docId,
                 "modelName": "sharewish",
                 "updateData": [
-                    "wishinfo": ["items": wishInfoArray],
+                    "wishinfo": ["items": wishInfoArray, "deletedIds": mergedDeletedIds],
                     "name": listName,
                     "emoji": listEmoji,
                     "baseinfo": baseinfoDict
@@ -3664,21 +3750,46 @@ class CloudBaseClient {
             return remoteFetched?.totalAssets ?? totalAssets
         }()
         
-        // 分组：以本地为准，但合并远端独有的分组
-        var mergedGroups = groups
-        if let remoteGroups = remoteFetched?.groups {
-            let localGroupIds = Set(groups.map { $0.id })
-            for rg in remoteGroups where !localGroupIds.contains(rg.id) {
-                mergedGroups.append(rg)
+        // 分组：与 FinanceRecord 相同的合并策略——远端先入字典，本地覆盖，取 updatedAt 更新的版本
+        let mergedGroups: [ItemGroup] = {
+            var merged: [UUID: ItemGroup] = [:]
+            if let remoteGroups = remoteFetched?.groups {
+                for g in remoteGroups { merged[g.id] = g }
             }
-        }
-        var mergedWishlistGroups = wishlistGroups
-        if let remoteWG = remoteFetched?.wishlistGroups {
-            let localWGIds = Set(wishlistGroups.map { $0.id })
-            for rg in remoteWG where !localWGIds.contains(rg.id) {
-                mergedWishlistGroups.append(rg)
+            for g in groups {
+                if let existing = merged[g.id] {
+                    // 本地和远端都有：取 updatedAt 更新的
+                    let localTimestamp = floor(g.updatedAt.timeIntervalSince1970)
+                    let remoteTimestamp = floor(existing.updatedAt.timeIntervalSince1970)
+                    if localTimestamp >= remoteTimestamp {
+                        merged[g.id] = g
+                    }
+                    // 否则保留远端版本
+                } else {
+                    merged[g.id] = g
+                }
             }
-        }
+            return Array(merged.values).sorted { $0.createdAt < $1.createdAt }
+        }()
+        
+        let mergedWishlistGroups: [ItemGroup] = {
+            var merged: [UUID: ItemGroup] = [:]
+            if let remoteWG = remoteFetched?.wishlistGroups {
+                for g in remoteWG { merged[g.id] = g }
+            }
+            for g in wishlistGroups {
+                if let existing = merged[g.id] {
+                    let localTimestamp = floor(g.updatedAt.timeIntervalSince1970)
+                    let remoteTimestamp = floor(existing.updatedAt.timeIntervalSince1970)
+                    if localTimestamp >= remoteTimestamp {
+                        merged[g.id] = g
+                    }
+                } else {
+                    merged[g.id] = g
+                }
+            }
+            return Array(merged.values).sorted { $0.createdAt < $1.createdAt }
+        }()
         
         // UserSettings：本地有自定义则用本地，否则用远端
         let mergedSettings: UserSettings? = {

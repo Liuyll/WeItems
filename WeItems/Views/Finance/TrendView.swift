@@ -136,12 +136,12 @@ struct TrendView: View {
     
     private let typeColors: [String: Color] = [
         "数码": .blue,
-        "服饰": .pink,
+        "装扮": .pink,
         "家电": .cyan,
         "大件": .purple,
-        "生活好物": .red,
+        "人生好物": .orange,
         "EDC": .brown,
-        "户外": .green,
+        "旅行": .green,
         "其他": .gray
     ]
     
@@ -427,8 +427,12 @@ struct TrendView: View {
         let data = trendPeriod == .monthly
             ? (cache.isLoaded ? cache.monthlyData : monthlyData)
             : (cache.isLoaded ? cache.yearlyData : yearlyData)
-        let hasData = data.contains(where: { $0.count > 0 })
+        let hasData = data.contains(where: { $0.total > 0 })
         let titleText = trendPeriod == .monthly ? "近 \(data.count) 个月趋势" : "近 \(data.count) 年趋势"
+        let yCap = trendChartYCap(for: data)
+        let displayData = cappedTrendData(data, cap: yCap)
+        let yTicks = trendChartYTicks(for: data, cap: yCap)
+        let realValues = Dictionary(uniqueKeysWithValues: data.map { ($0.label, $0.total) })
         
         return VStack(alignment: .leading, spacing: 16) {
             if hasData {
@@ -444,66 +448,83 @@ struct TrendView: View {
                     .frame(width: 110)
                 }
             
-                if trendPeriod == .monthly && data.count > 6 {
+                if trendPeriod == .monthly && displayData.count > 6 {
                     // 月度超过6个月时可左右滑动，默认显示最近6个月
                     ScrollViewReader { proxy in
                         ScrollView(.horizontal, showsIndicators: false) {
                             Chart {
-                                ForEach(data) { d in
+                                ForEach(displayData) { d in
                                     BarMark(
                                         x: .value("时间", d.label),
-                                        y: .value("件数", d.count),
+                                        y: .value("金额", d.total),
                                         width: 25
                                     )
                                     .foregroundStyle(.blue.opacity(0.6))
+                                    .annotation(position: .top, spacing: 2) {
+                                        if let real = realValues[d.label], real > 0 {
+                                            Text("¥\(formatAxisPrice(real))")
+                                                .font(.system(size: 8))
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
                                 }
                             }
+                            .chartYScale(domain: 0...yCap)
                             .chartYAxis {
-                                AxisMarks(position: .leading) { value in
+                                AxisMarks(position: .leading, values: yTicks) { value in
                                     AxisGridLine()
                                     AxisValueLabel {
-                                        if let v = value.as(Int.self) {
-                                            Text("\(v)件")
+                                        if let v = value.as(Double.self) {
+                                            Text("¥\(formatAxisPrice(v))")
                                                 .font(.caption2)
                                         }
                                     }
                                 }
                             }
-                            .frame(width: CGFloat(data.count) * 55, height: 200)
+                            .padding(.top, 16)
+                            .frame(width: CGFloat(displayData.count) * 55, height: 200)
                             .id("chart")
                         }
                         .onAppear {
-                            // 默认滚动到最右侧（最近的月份）
                             proxy.scrollTo("chart", anchor: .trailing)
                         }
                     }
                 } else {
                     Chart {
-                        ForEach(data) { d in
+                        ForEach(displayData) { d in
                             BarMark(
                                 x: .value("时间", d.label),
-                                y: .value("件数", d.count),
+                                y: .value("金额", d.total),
                                 width: 25
                             )
                             .foregroundStyle(.blue.opacity(0.6))
+                            .annotation(position: .top, spacing: 2) {
+                                if let real = realValues[d.label], real > 0 {
+                                    Text("¥\(formatAxisPrice(real))")
+                                        .font(.system(size: 8))
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
                         }
                     }
+                    .chartYScale(domain: 0...yCap)
                     .chartYAxis {
-                        AxisMarks(position: .leading) { value in
+                        AxisMarks(position: .leading, values: yTicks) { value in
                             AxisGridLine()
                             AxisValueLabel {
-                                if let v = value.as(Int.self) {
-                                    Text("\(v)件")
+                                if let v = value.as(Double.self) {
+                                    Text("¥\(formatAxisPrice(v))")
                                         .font(.caption2)
                                 }
                             }
                         }
                     }
+                    .padding(.top, 16)
                     .frame(height: 200)
                 }
                 
                 // 明细列表
-                let filteredData = data.reversed().filter { $0.count > 0 }
+                let filteredData = data.reversed().filter { $0.total > 0 }
                 VStack(spacing: 0) {
                     ForEach(filteredData) { d in
                         HStack {
@@ -512,18 +533,19 @@ struct TrendView: View {
                                 .fontWeight(.medium)
                                 .frame(width: 52, alignment: .leading)
                             
+                            Text("¥\(String(format: "%.0f", d.total))")
+                                .font(.caption)
+                                .fontWeight(.semibold)
+                                .foregroundStyle(.orange)
+                            
+                            Spacer()
+                            
                             Text("\(d.count) 件")
                                 .font(.caption)
                                 .foregroundStyle(.blue)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
                                 .background(Capsule().fill(Color.blue.opacity(0.1)))
-                            
-                            Spacer()
-                            
-                            Text("¥\(String(format: "%.0f", d.total))")
-                                .font(.caption)
-                                .fontWeight(.semibold)
                                 .foregroundStyle(.orange)
                         }
                         .padding(.vertical, 6)
@@ -654,6 +676,17 @@ struct TrendView: View {
                             }
                             .chartForegroundStyleScale(["回收": .green.opacity(0.7), "成本": .orange.opacity(0.5)])
                             .chartLegend(position: .bottom)
+                            .chartYAxis {
+                                AxisMarks(position: .leading) { value in
+                                    AxisGridLine()
+                                    AxisValueLabel {
+                                        if let v = value.as(Double.self) {
+                                            Text("¥\(formatAxisPrice(v))")
+                                                .font(.caption2)
+                                        }
+                                    }
+                                }
+                            }
                             .frame(width: CGFloat(data.count) * 55, height: 200)
                             .id("recoveryChart")
                         }
@@ -663,17 +696,28 @@ struct TrendView: View {
                     }
                 } else {
                     Chart {
-                        ForEach(data) { d in
-                            BarMark(x: .value("时间", d.label), y: .value("金额", d.soldAmount), width: 12)
-                                .foregroundStyle(.green.opacity(0.7))
-                                .position(by: .value("类型", "回收"))
-                            BarMark(x: .value("时间", d.label), y: .value("金额", d.originalAmount), width: 12)
-                                .foregroundStyle(.orange.opacity(0.5))
-                                .position(by: .value("类型", "成本"))
-                        }
+                                ForEach(data) { d in
+                                    BarMark(x: .value("时间", d.label), y: .value("金额", d.soldAmount), width: 12)
+                                        .foregroundStyle(.green.opacity(0.7))
+                                        .position(by: .value("类型", "回收"))
+                                    BarMark(x: .value("时间", d.label), y: .value("金额", d.originalAmount), width: 12)
+                                        .foregroundStyle(.orange.opacity(0.5))
+                                        .position(by: .value("类型", "成本"))
+                                }
                     }
                     .chartForegroundStyleScale(["回收": .green.opacity(0.7), "成本": .orange.opacity(0.5)])
                     .chartLegend(position: .bottom)
+                    .chartYAxis {
+                        AxisMarks(position: .leading) { value in
+                            AxisGridLine()
+                            AxisValueLabel {
+                                if let v = value.as(Double.self) {
+                                    Text("¥\(formatAxisPrice(v))")
+                                        .font(.caption2)
+                                }
+                            }
+                        }
+                    }
                     .frame(height: 200)
                 }
                 
@@ -745,6 +789,100 @@ struct TrendDataPoint: Identifiable {
     let label: String
     let count: Int
     let total: Double
+}
+
+/// 格式化 Y 轴价格标签（纯整数显示）
+func formatAxisPrice(_ value: Double) -> String {
+    if value >= 10_000 {
+        // 大数用万为单位，简短不被截断
+        let v = value / 10_000
+        if v == v.rounded(.down) {
+            return "\(Int(v))万"
+        }
+        return String(format: "%.1f万", v)
+    }
+    return String(format: "%.0f", value)
+}
+
+/// 计算物品趋势图 Y 轴上限（取真实最大值向上取整到美观数字）
+func trendChartYCap(for data: [TrendDataPoint]) -> Double {
+    let values = data.map(\.total).filter { $0 > 0 }
+    guard let maxVal = values.max(), maxVal > 0 else { return 1 }
+    return ceilToNice(maxVal)
+}
+
+/// 向上取整到"美观"数字（如 1500→2000, 45000→50000, 1234567→2000000）
+private func ceilToNice(_ value: Double) -> Double {
+    guard value > 0 else { return 1 }
+    let magnitude = pow(10, floor(log10(value)))
+    let normalized = value / magnitude  // 1.0 ~ 9.999...
+    let nice: Double
+    if normalized <= 1.0 { nice = 1.0 }
+    else if normalized <= 2.0 { nice = 2.0 }
+    else if normalized <= 5.0 { nice = 5.0 }
+    else { nice = 10.0 }
+    return nice * magnitude
+}
+
+/// 计算 Y 轴刻度值：0 + 根据数据分布的中间刻度 + 顶部最大值
+func trendChartYTicks(for data: [TrendDataPoint], cap: Double) -> [Double] {
+    guard cap > 0 else { return [0] }
+    
+    // 收集所有非零数据值，取整到美观数字，去重
+    let rawValues = Set(data.map(\.total).filter { $0 > 0 }.map { ceilToNice($0) })
+    // 去掉等于 cap 的（顶部已有）
+    let midValues = rawValues.filter { $0 > 0 && $0 < cap }.sorted()
+    
+    var ticks: [Double] = [0]
+    
+    // 逐个加入中间刻度
+    for v in midValues {
+        let prev = ticks.last!
+        // 相邻值量级内太近则合并
+        let minGap = max(prev * 0.5, v * 0.3)
+        if v - prev >= max(minGap, 1) {
+            ticks.append(v)
+        }
+    }
+    
+    ticks.append(cap)
+    
+    // 去掉和 0 太近的刻度（占 cap 不到 3%，会和 ¥0 标签重叠）
+    let overlapThreshold = cap * 0.03
+    ticks = ticks.filter { $0 == 0 || $0 >= overlapThreshold }
+    // 确保 cap 还在
+    if ticks.last != cap { ticks.append(cap) }
+    
+    // 最多保留 5 个刻度
+    if ticks.count > 5 {
+        let first = ticks.count > 1 && ticks[1] != cap ? ticks[1] : nil
+        let mids = ticks.filter { $0 != 0 && $0 != cap && $0 != first }
+        var result: [Double] = [0]
+        if let f = first { result.append(f) }
+        if !mids.isEmpty {
+            let step = max(1, mids.count / 2)
+            for i in stride(from: 0, to: mids.count, by: step) {
+                if result.count < 4 { result.append(mids[i]) }
+            }
+        }
+        result.append(cap)
+        return result.sorted()
+    }
+    
+    return ticks
+}
+
+/// 将趋势数据截断用于绘图，柱子最高不超过上限的 88%，为顶部注解留出空间
+func cappedTrendData(_ data: [TrendDataPoint], cap: Double) -> [TrendDataPoint] {
+    let maxBarHeight = cap * 0.88
+    let minVisible = cap * 0.05
+    return data.map { d in
+        TrendDataPoint(
+            label: d.label,
+            count: d.count,
+            total: d.total > 0 ? max(min(d.total, maxBarHeight), minVisible) : 0
+        )
+    }
 }
 
 struct SoldDataPoint: Identifiable {

@@ -134,11 +134,19 @@ struct Particle {
 struct SpiritTravelCelebrationView: View {
     @Environment(\.dismiss) private var dismiss
     let count: Int
+    var itemName: String = ""
+    var imageData: Data? = nil
+    var details: String = ""
     
     @State private var showBackground = false
     @State private var showParticles = false
     @State private var showText = false
     @State private var showButton = false
+    
+    private var itemImage: UIImage? {
+        guard let data = imageData else { return nil }
+        return UIImage(data: data)
+    }
     
     var body: some View {
         ZStack {
@@ -187,22 +195,35 @@ struct SpiritTravelCelebrationView: View {
             VStack(spacing: 30) {
                 Spacer()
                 
-                // 图标
-                ZStack {
-                    Circle()
-                        .fill(Color.white.opacity(0.15))
-                        .frame(width: 140, height: 140)
-                    
-                    Circle()
-                        .stroke(Color.white.opacity(0.3), lineWidth: 2)
-                        .frame(width: 120, height: 120)
-                    
-                    Image(systemName: "tent")
-                        .font(.system(size: 50))
-                        .foregroundStyle(.white)
+                // 图片 / 图标
+                if let uiImage = itemImage {
+                    Image(uiImage: uiImage)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(height: 160)
+                        .clipped()
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .shadow(color: .black.opacity(0.3), radius: 10, x: 0, y: 5)
+                        .padding(.horizontal, 40)
+                        .scaleEffect(showText ? 1 : 0.8)
+                        .opacity(showText ? 1 : 0)
+                } else {
+                    ZStack {
+                        Circle()
+                            .fill(Color.white.opacity(0.15))
+                            .frame(width: 140, height: 140)
+                        
+                        Circle()
+                            .stroke(Color.white.opacity(0.3), lineWidth: 2)
+                            .frame(width: 120, height: 120)
+                        
+                        Image(systemName: "tent")
+                            .font(.system(size: 50))
+                            .foregroundStyle(.white)
+                    }
+                    .scaleEffect(showText ? 1 : 0.5)
+                    .opacity(showText ? 1 : 0)
                 }
-                .scaleEffect(showText ? 1 : 0.5)
-                .opacity(showText ? 1 : 0)
                 
                 // Congratulation 文字
                 Text("Congratulation")
@@ -233,6 +254,22 @@ struct SpiritTravelCelebrationView: View {
                         .font(.system(size: 32, weight: .medium, design: .serif))
                         .foregroundStyle(.white)
                         .padding(.top, 8)
+                    
+                    if !itemName.isEmpty {
+                        Text("「\(itemName)」")
+                            .font(.system(size: 20, weight: .regular, design: .serif))
+                            .foregroundStyle(.white.opacity(0.8))
+                            .lineLimit(1)
+                    }
+                    
+                    if !details.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text(details)
+                            .font(.system(size: 14, weight: .light, design: .serif))
+                            .foregroundStyle(.white.opacity(0.6))
+                            .lineLimit(2)
+                            .multilineTextAlignment(.center)
+                            .padding(.top, 2)
+                    }
                 }
                 .opacity(showText ? 1 : 0)
                 .offset(y: showText ? 0 : 30)

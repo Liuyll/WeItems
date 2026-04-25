@@ -281,15 +281,17 @@ struct CustomBlueConfirmAlert: ViewModifier {
         ZStack {
             content
             
-            if isPresented {
-                Color.black.opacity(0.35)
-                    .ignoresSafeArea()
-                    .onTapGesture {
-                        withAnimation(.easeOut(duration: 0.2)) {
-                            isPresented = false
-                        }
+            // 遮罩始终存在，用 opacity 控制，避免移除/添加导致底层视图重新布局闪烁
+            Color.black.opacity(isPresented ? 0.35 : 0)
+                .ignoresSafeArea()
+                .allowsHitTesting(isPresented)
+                .onTapGesture {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        isPresented = false
                     }
-                
+                }
+            
+            if isPresented {
                 VStack(spacing: 20) {
                     if !message.isEmpty {
                         Text(message)
@@ -358,16 +360,17 @@ struct CustomBlueInfoAlert: ViewModifier {
         ZStack {
             content
             
-            if isPresented {
-                Color.black.opacity(0.35)
-                    .ignoresSafeArea()
-                    .onTapGesture {
-                        withAnimation(.easeOut(duration: 0.2)) {
-                            isPresented = false
-                        }
-                        onDismiss?()
+            Color.black.opacity(isPresented ? 0.35 : 0)
+                .ignoresSafeArea()
+                .allowsHitTesting(isPresented)
+                .onTapGesture {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        isPresented = false
                     }
-                
+                    onDismiss?()
+                }
+            
+            if isPresented {
                 VStack(spacing: 20) {
                     if !message.isEmpty {
                         Text(message)

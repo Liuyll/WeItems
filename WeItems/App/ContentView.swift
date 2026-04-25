@@ -8,6 +8,8 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var authManager = AuthManager.shared
     @State private var isLaunching: Bool
+    @State private var showUpdateAlert = false
+    @State private var latestVersion = ""
     
     init() {
         // 迁移旧数据到 anonymous 目录（仅首次，同步操作很快）
@@ -53,7 +55,71 @@ struct ContentView: View {
                                 await authManager.validateTokenOnLaunch()
                             }
                         }
+                        // 检查版本更新（仅 Debug / TestFlight）
+                        checkForUpdate()
                     }
+            }
+        }
+        .customBlueConfirmAlert(
+            isPresented: $showUpdateAlert,
+            message: "发现新版本 \(latestVersion)，当前版本 \(AppEnvironment.currentVersion)，请更新后使用",
+            confirmText: "更新",
+            cancelText: "退出",
+            confirmColor: .blue,
+            cancelColor: .red,
+            backgroundColor: .orange,
+            onConfirm: {
+                // 跳转 TestFlight，不关闭弹窗
+                if let url = URL(string: AppEnvironment.testFlightUpdateURL) {
+                    UIApplication.shared.open(url)
+                }
+                // 重新显示弹窗
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    showUpdateAlert = true
+                }
+            },
+            onCancel: {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    exit(0)
+                }
+            }
+        )
+    }
+    
+    /// 检查远端版本，Debug/TestFlight 如有新版则弹窗
+    private func checkForUpdate() {
+        guard AppEnvironment.needsUpdateCheck else { return }
+        
+        Task {
+            guard let accessToken = TokenStorage.shared.getAccessToken(), !accessToken.isEmpty else {
+                print("[版本检查] 未登录，跳过")
+                return
+            }
+            
+            let client = CloudBaseClient(
+                envId: "weitems-5gn6hs5772d60bb5",
+                accessToken: accessToken
+            )
+            
+            guard let resp = await client.fetchAppInfo() else {
+                print("[版本检查] 请求失败")
+                return
+            }
+            
+            guard let record = resp.data?.records?.first,
+                  let remoteVersion = record.version?.latest_version,
+                  !remoteVersion.isEmpty else {
+                print("[版本检查] 未获取到远端版本信息")
+                return
+            }
+            
+            print("[版本检查] 当前版本: \(AppEnvironment.currentVersion), 远端版本: \(remoteVersion)")
+            
+            if AppEnvironment.isNewerVersion(remoteVersion) {
+                await MainActor.run {
+                    latestVersion = remoteVersion
+                    showUpdateAlert = true
+                }
             }
         }
     }

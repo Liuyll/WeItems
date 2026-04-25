@@ -1424,20 +1424,51 @@ struct MonthlyFinanceData: Identifiable {
     }
 }
 
-/// 计算图表 Y 轴上限
+/// 计算图表 Y 轴上限（向上取整到美观数字）
 func chartYCap(for data: [MonthlyFinanceData]) -> Double {
     let allValues = data.flatMap { [$0.income, $0.debt, $0.investment] }.filter { $0 > 0 }
-    guard !allValues.isEmpty else { return 1 }
-    let sorted = allValues.sorted()
-    // 取 P75 分位数 × 1.5 作为上限，让大多数柱子完整展示
-    let p75Index = min(sorted.count - 1, Int(Double(sorted.count) * 0.75))
-    let p75 = sorted[p75Index]
-    let maxVal = sorted.last ?? 1
-    // 如果最大值不超过 P75 的 3 倍，直接用最大值
-    if maxVal <= p75 * 3 {
-        return maxVal
+    guard let maxVal = allValues.max(), maxVal > 0 else { return 1 }
+    return ceilToNiceFinance(maxVal)
+}
+
+/// 向上取整到美观数字
+private func ceilToNiceFinance(_ value: Double) -> Double {
+    guard value > 0 else { return 1 }
+    let magnitude = pow(10, floor(log10(value)))
+    let normalized = value / magnitude
+    let nice: Double
+    if normalized <= 1.0 { nice = 1.0 }
+    else if normalized <= 2.0 { nice = 2.0 }
+    else if normalized <= 5.0 { nice = 5.0 }
+    else { nice = 10.0 }
+    return nice * magnitude
+}
+
+/// 计算 Y 轴刻度值（确保顶部刻度 = yCap）
+func chartYTicks(for data: [MonthlyFinanceData], cap: Double) -> [Double] {
+    guard cap > 0 else { return [0] }
+    // 计算 4-5 个均匀刻度
+    let step = cap / 4
+    // 取整 step 到美观数字
+    let magnitude = pow(10, floor(log10(step)))
+    let normalized = step / magnitude
+    let niceStep: Double
+    if normalized <= 1.0 { niceStep = 1.0 * magnitude }
+    else if normalized <= 2.0 { niceStep = 2.0 * magnitude }
+    else if normalized <= 5.0 { niceStep = 5.0 * magnitude }
+    else { niceStep = 10.0 * magnitude }
+    
+    var ticks: [Double] = [0]
+    var current = niceStep
+    while current < cap * 0.99 {
+        ticks.append(current)
+        current += niceStep
     }
-    return p75 * 2
+    // 确保顶部刻度 = yCap
+    if ticks.last != cap {
+        ticks.append(cap)
+    }
+    return ticks
 }
 
 /// 将图表数据截断到 cap 上限，非零值保证最低 cap 的 5%
@@ -1459,7 +1490,7 @@ func cappedChartData(_ data: [MonthlyFinanceData], cap: Double) -> [MonthlyFinan
 struct DailyExpenseView: View {
     @ObservedObject var store: ItemStore
     @ObservedObject var groupStore: GroupStore
-    @ObservedObject var financeStore: FinanceStore
+    var financeStore: FinanceStore
     
     @State private var showingAddRecord = false
     @State private var showingEditGoal = false
@@ -2034,6 +2065,7 @@ struct DailyExpenseView: View {
                 if chartData.contains(where: { $0.income > 0 || $0.debt > 0 || $0.investment > 0 }) {
                     let yCap = chartYCap(for: chartData)
                     let displayData = cappedChartData(chartData, cap: yCap)
+                    let yTicks = chartYTicks(for: chartData, cap: yCap)
                     Chart {
                         ForEach(displayData) { data in
                             BarMark(x: .value("时间", data.month), y: .value("金额", data.income))
@@ -2050,6 +2082,17 @@ struct DailyExpenseView: View {
                     .chartYScale(domain: 0...yCap)
                     .chartForegroundStyleScale(["收入": .green.opacity(0.7), "负债": .red.opacity(0.7), "投资": .blue.opacity(0.7)])
                     .chartLegend(position: .bottom)
+                    .chartYAxis {
+                        AxisMarks(position: .leading, values: yTicks) { value in
+                            AxisGridLine()
+                            AxisValueLabel {
+                                if let v = value.as(Double.self) {
+                                    Text("¥\(formatAxisPrice(v))")
+                                        .font(.caption2)
+                                }
+                            }
+                        }
+                    }
                     .frame(height: 200)
                 } else {
                     emptyChartPlaceholder
@@ -2066,9 +2109,27 @@ struct DailyExpenseView: View {
                                 .interpolationMethod(.catmullRom)
                             PointMark(x: .value("时间", data.month), y: .value("资产", data.income))
                                 .foregroundStyle(.orange)
+                                .annotation(position: .top, spacing: 2) {
+                                    if data.income > 0 {
+                                        Text("¥\(formatAxisPrice(data.income))")
+                                            .font(.system(size: 8))
+                                            .foregroundStyle(.orange)
+                                    }
+                                }
                         }
                     }
                     .chartLegend(.hidden)
+                    .chartYAxis {
+                        AxisMarks(position: .leading) { value in
+                            AxisGridLine()
+                            AxisValueLabel {
+                                if let v = value.as(Double.self) {
+                                    Text("¥\(formatAxisPrice(v))")
+                                        .font(.caption2)
+                                }
+                            }
+                        }
+                    }
                     .frame(height: 200)
                 } else {
                     emptyChartPlaceholder
@@ -2736,7 +2797,7 @@ struct DailyExpenseView: View {
 
 struct AddFinanceRecordView: View {
     @Environment(\.dismiss) private var dismiss
-    @ObservedObject var financeStore: FinanceStore
+    var financeStore: FinanceStore
     
     /// 编辑模式：传入已有记录
     var editingRecord: FinanceRecord? = nil
@@ -3314,7 +3375,7 @@ struct AddFinanceRecordView: View {
 
 struct EditGoalView: View {
     @Environment(\.dismiss) private var dismiss
-    @ObservedObject var financeStore: FinanceStore
+    var financeStore: FinanceStore
     
     @State private var goalAmountText: String = ""
     @State private var monthlyExpenseText: String = ""
@@ -3416,7 +3477,7 @@ struct EditGoalView: View {
 
 struct FullTrendView: View {
     @Environment(\.dismiss) private var dismiss
-    @ObservedObject var financeStore: FinanceStore
+    var financeStore: FinanceStore
     @State private var trendMode: TrendMode = .monthly
     
     enum TrendMode: String, CaseIterable {
@@ -3556,7 +3617,7 @@ struct FullTrendView: View {
 
 struct SalaryConfigView: View {
     @Environment(\.dismiss) private var dismiss
-    @ObservedObject var financeStore: FinanceStore
+    var financeStore: FinanceStore
     @State private var showDeleteConfirm = false
     
     @State private var title = "工资收入"
@@ -3853,7 +3914,7 @@ struct SalaryConfigView: View {
 
 struct SavingsConfigView: View {
     @Environment(\.dismiss) private var dismiss
-    @ObservedObject var financeStore: FinanceStore
+    var financeStore: FinanceStore
     
     @State private var showingAddSavings = false
     @State private var editingRecord: FinanceRecord? = nil
@@ -4086,7 +4147,7 @@ struct SavingsConfigView: View {
 
 struct IncomeDetailView: View {
     @Environment(\.dismiss) private var dismiss
-    @ObservedObject var financeStore: FinanceStore
+    var financeStore: FinanceStore
     
     private var monthlyDetails: [(month: String, salary: Double, incentive: Double, bonus: Double, oneTime: Double, tax: Double, total: Double)] {
         let calendar = Calendar.current
@@ -4242,7 +4303,7 @@ struct AssetDetailView: View {
     }
     
     @Environment(\.dismiss) private var dismiss
-    @ObservedObject var financeStore: FinanceStore
+    var financeStore: FinanceStore
     @ObservedObject var store: ItemStore
     @Binding var selectedRecord: FinanceRecord?
     var filter: AssetFilter = .all

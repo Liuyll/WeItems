@@ -75,6 +75,9 @@ struct CartoonTextField: View {
     var iconColor: Color = .pink
     var showDivider: Bool = true
     var placeholderColor: Color = .primary
+    var placeholderWeight: Font.Weight = .heavy
+    var textColor: Color = .primary
+    var textWeight: Font.Weight = .semibold
     var backgroundColor: Color = Color(.secondarySystemGroupedBackground)
     var cornerRadius: CGFloat = 14
     var horizontalPadding: CGFloat = 16
@@ -89,7 +92,7 @@ struct CartoonTextField: View {
             }
             Text(placeholder)
                 .font(.system(.subheadline, design: .rounded))
-                .fontWeight(.heavy)
+                .fontWeight(placeholderWeight)
                 .foregroundStyle(placeholderColor)
             
             Spacer()
@@ -101,9 +104,9 @@ struct CartoonTextField: View {
                 .focused($isFocused)
                 .onSubmit { isFocused = false }
                 .font(.system(.body, design: .rounded))
-                .fontWeight(.semibold)
+                .fontWeight(textWeight)
                 .multilineTextAlignment(.trailing)
-                .foregroundStyle(.primary)
+                .foregroundStyle(textColor)
         }
         .padding(.horizontal, horizontalPadding)
         .padding(.vertical, verticalPadding)

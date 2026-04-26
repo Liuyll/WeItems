@@ -917,6 +917,7 @@ struct SharedWishlistDetailView: View {
                         }
                         .frame(maxWidth: .infinity, alignment: .center)
                         .padding(.vertical, 4)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
@@ -2225,22 +2226,22 @@ struct EditSharedWishItemView: View {
             VStack(spacing: 18) {
                 // 📝 心愿详情
                 VStack(alignment: .leading, spacing: 10) {
-                    CartoonSectionHeader(emoji: "📝", title: "心愿详情", color: .blue)
-                    CartoonTextField(placeholder: "心愿名字", text: $draft.name)
-                    CartoonTextField(placeholder: "价格", text: $draft.priceText, keyboardType: .decimalPad)
-                    CartoonTextField(placeholder: "购买链接", text: $draft.purchaseLink, keyboardType: .URL)
+                    CartoonSectionHeader(emoji: "📝", title: "心愿详情", color: Color(white: 0.35), fontWeight: .medium)
+                    CartoonTextField(placeholder: "心愿名字", text: $draft.name, placeholderColor: .gray, placeholderWeight: .regular, textColor: .gray, textWeight: .regular)
+                    CartoonTextField(placeholder: "价格", text: $draft.priceText, keyboardType: .decimalPad, placeholderColor: .gray, placeholderWeight: .regular, textColor: .gray, textWeight: .regular)
+                    CartoonTextField(placeholder: "购买链接", text: $draft.purchaseLink, keyboardType: .URL, placeholderColor: .gray, placeholderWeight: .regular, textColor: .gray, textWeight: .regular)
                 }
                 .cartoonCard()
                 
                 // 🏷️ 展示类型卡片
                 VStack(alignment: .leading, spacing: 14) {
-                    CartoonSectionHeader(emoji: "🏷️", title: "展示类型", color: .blue)
+                    CartoonSectionHeader(emoji: "🏷️", title: "展示类型", color: Color(white: 0.35), fontWeight: .medium)
                     
                     HStack {
                         Text("自定义类型")
                             .font(.system(.subheadline, design: .rounded))
                             .fontWeight(.semibold)
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(.black)
                         Spacer()
                         Toggle("", isOn: $draft.isCustomDisplayType)
                             .labelsHidden()
@@ -2270,9 +2271,9 @@ struct EditSharedWishItemView: View {
                                 .padding(.vertical, 8)
                                 .background(
                                     Capsule()
-                                        .stroke(Color.purple.opacity(0.4), lineWidth: 1)
+                                        .stroke(Color.blue.opacity(0.4), lineWidth: 1)
                                 )
-                                .foregroundStyle(.purple)
+                                .foregroundStyle(.blue)
                             }
                             .buttonStyle(PlainButtonStyle())
                         }
@@ -2280,7 +2281,7 @@ struct EditSharedWishItemView: View {
                         if !draft.customDisplayType.isEmpty {
                             Text("当前：\(draft.customDisplayType)")
                                 .font(.system(.caption, design: .rounded))
-                                .foregroundStyle(.purple)
+                                .foregroundStyle(.blue)
                         }
                     } else {
                         FlowLayout(spacing: 8) {
@@ -2317,7 +2318,7 @@ struct EditSharedWishItemView: View {
                 
                 // 📷 照片 + 描述
                 VStack(alignment: .leading, spacing: 14) {
-                    CartoonSectionHeader(emoji: "📷", title: "照片", color: .blue)
+                    CartoonSectionHeader(emoji: "📷", title: "照片与描述", color: Color(white: 0.35), fontWeight: .medium)
                     
                     VStack(spacing: 0) {
                         if let imageData = draft.imageData,
@@ -2431,7 +2432,7 @@ struct EditSharedWishItemView: View {
                             PhotosPicker(selection: $selectedPhoto, matching: .images) {
                                 RoundedRectangle(cornerRadius: 12)
                                     .fill(Color.blue)
-                                    .frame(height: 200)
+                                    .frame(height: 260)
                                     .overlay(
                                         Image(systemName: "photo.badge.plus")
                                             .font(.system(size: 40))
@@ -2452,10 +2453,7 @@ struct EditSharedWishItemView: View {
                             .frame(height: 0)
                     }
                     .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .padding(.bottom, 8)
                     
-                    // Say Something
-                    CartoonSectionHeader(emoji: "💬", title: "Say Something", color: .blue)
                     TextEditor(text: $draft.details)
                         .font(.system(.body, design: .rounded))
                         .fontWeight(.semibold)
@@ -2475,12 +2473,12 @@ struct EditSharedWishItemView: View {
                 }
                 .cartoonCard()
                 
-                // ✅ 已实现状态卡片
+                // 实现状态卡片
                 VStack(alignment: .leading, spacing: 14) {
-                    CartoonSectionHeader(emoji: "✅", title: "实现状态", color: Color(red: 0.3, green: 0.75, blue: 0.45))
+                    CartoonSectionHeader(emoji: "", title: "实现状态", color: .blue)
                     
                     HStack {
-                        Text("🎉 已实现")
+                        Text("已实现")
                             .font(.subheadline)
                             .foregroundStyle(.primary)
                         Spacer()
@@ -3195,23 +3193,23 @@ struct AddSharedWishItemView: View {
                 VStack(spacing: 18) {
                     // 📝 基本信息
                     VStack(alignment: .leading, spacing: 10) {
-                        CartoonSectionHeader(emoji: "📝", title: "心愿详情", color: .green)
-                        CartoonTextField(placeholder: "心愿名字", text: $draft.name)
-                        CartoonTextField(placeholder: "价格", text: $draft.priceText, keyboardType: .decimalPad)
-                        CartoonTextField(placeholder: "购买链接", text: $draft.purchaseLink, keyboardType: .URL)
+                        CartoonSectionHeader(emoji: "📝", title: "心愿详情", color: Color(white: 0.35), fontWeight: .medium)
+                        CartoonTextField(placeholder: "心愿名字", text: $draft.name, placeholderColor: .gray, placeholderWeight: .regular, textColor: .gray, textWeight: .regular)
+                        CartoonTextField(placeholder: "价格", text: $draft.priceText, keyboardType: .decimalPad, placeholderColor: .gray, placeholderWeight: .regular, textColor: .gray, textWeight: .regular)
+                        CartoonTextField(placeholder: "购买链接", text: $draft.purchaseLink, keyboardType: .URL, placeholderColor: .gray, placeholderWeight: .regular, textColor: .gray, textWeight: .regular)
                     }
                     .cartoonCard()
                     
                     // 🏷️ 展示类型
                     VStack(alignment: .leading, spacing: 14) {
-                        CartoonSectionHeader(emoji: "🏷️", title: "展示类型", color: .green)
+                        CartoonSectionHeader(emoji: "🏷️", title: "展示类型", color: Color(white: 0.35), fontWeight: .medium)
                         
                         // 自定义切换
                         HStack {
                             Text("自定义类型")
                                 .font(.system(.subheadline, design: .rounded))
                                 .fontWeight(.semibold)
-                                .foregroundStyle(.primary)
+                                .foregroundStyle(.black)
                             Spacer()
                         Toggle("", isOn: $draft.isCustomDisplayType)
                             .labelsHidden()
@@ -3238,12 +3236,12 @@ struct AddSharedWishItemView: View {
                                             .padding(.vertical, 8)
                                             .background(
                                                 Capsule()
-                                                    .fill(Color.green.opacity(draft.customDisplayType == type ? 0.2 : 0.08))
+                                                    .fill(Color.blue.opacity(draft.customDisplayType == type ? 0.15 : 0.06))
                                             )
-                                            .foregroundStyle(draft.customDisplayType == type ? .green : .green.opacity(0.7))
+                                            .foregroundStyle(.blue)
                                             .overlay(
                                                 Capsule()
-                                                    .stroke(draft.customDisplayType == type ? Color.green.opacity(0.3) : Color.clear, lineWidth: 1)
+                                                    .stroke(draft.customDisplayType == type ? Color.blue.opacity(0.3) : Color.clear, lineWidth: 1)
                                             )
                                     }
                                     .buttonStyle(PlainButtonStyle())
@@ -3265,9 +3263,9 @@ struct AddSharedWishItemView: View {
                                     .padding(.vertical, 8)
                                     .background(
                                         Capsule()
-                                            .stroke(Color.green.opacity(0.4), lineWidth: 1)
+                                            .stroke(Color.blue.opacity(0.4), lineWidth: 1)
                                     )
-                                    .foregroundStyle(.green)
+                                    .foregroundStyle(.blue)
                                 }
                                 .buttonStyle(PlainButtonStyle())
                             }
@@ -3275,7 +3273,7 @@ struct AddSharedWishItemView: View {
                             if !draft.customDisplayType.isEmpty {
                                 Text("当前：\(draft.customDisplayType)")
                                     .font(.system(.caption, design: .rounded))
-                                    .foregroundStyle(.green)
+                                    .foregroundStyle(.blue)
                             }
                         } else {
                             // 标准类型选择
@@ -3310,9 +3308,9 @@ struct AddSharedWishItemView: View {
                     }
                     .cartoonCard()
                     
-                    // 📷 照片
+                    // 📷 照片 + 描述
                     VStack(alignment: .leading, spacing: 14) {
-                        CartoonSectionHeader(emoji: "📷", title: "照片", color: .green)
+                        CartoonSectionHeader(emoji: "📷", title: "照片与描述", color: Color(white: 0.35), fontWeight: .medium)
                         
                         if let imageData = draft.imageData,
                            let uiImage = UIImage(data: imageData) {
@@ -3371,7 +3369,7 @@ struct AddSharedWishItemView: View {
                                         .foregroundStyle(.secondary)
                                 }
                                 .frame(maxWidth: .infinity)
-                                .frame(height: 100)
+                                .frame(height: 160)
                                 .background(
                                     RoundedRectangle(cornerRadius: 12)
                                         .fill(Color(.tertiarySystemGroupedBackground))
@@ -3379,19 +3377,7 @@ struct AddSharedWishItemView: View {
                             }
                             .buttonStyle(PlainButtonStyle())
                         }
-                    }
-                    .cartoonCard()
-                    .onChange(of: selectedPhoto) { _, newItem in
-                        Task {
-                            if let data = try? await newItem?.loadTransferable(type: Data.self) {
-                                await MainActor.run { draft.imageData = data }
-                            }
-                        }
-                    }
-                    
-                    // 💬 备注
-                    VStack(alignment: .leading, spacing: 10) {
-                        CartoonSectionHeader(emoji: "💬", title: "Say Something", color: .green)
+                        
                         TextEditor(text: $draft.details)
                             .font(.system(.body, design: .rounded))
                             .fontWeight(.semibold)
@@ -3410,6 +3396,13 @@ struct AddSharedWishItemView: View {
                             }
                     }
                     .cartoonCard()
+                    .onChange(of: selectedPhoto) { _, newItem in
+                        Task {
+                            if let data = try? await newItem?.loadTransferable(type: Data.self) {
+                                await MainActor.run { draft.imageData = data }
+                            }
+                        }
+                    }
                     
                     // 同步到我的心愿
                     VStack(alignment: .leading, spacing: 10) {
@@ -3418,6 +3411,7 @@ struct AddSharedWishItemView: View {
                                 Text("同步到我的心愿")
                                     .font(.system(.subheadline, design: .rounded))
                                     .fontWeight(.bold)
+                                    .foregroundStyle(.pink)
                                 Text("同时添加到心愿清单中")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)

@@ -652,18 +652,26 @@ struct HomeView: View {
                         }
                     }
                 }
-                
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button {
-                        addItemId = UUID()
-                        showingAddItem = true
-                    } label: {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.title2)
-                            .symbolRenderingMode(.monochrome)
-                            .foregroundStyle(currentMode.color)
+            }
+            .overlay(alignment: .topTrailing) {
+                Button {
+                    addItemId = UUID()
+                    showingAddItem = true
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(currentMode.color)
+                            .frame(width: 38, height: 38)
+                        Image(systemName: "plus")
+                            .font(.system(size: 21, weight: .semibold))
+                            .foregroundStyle(.white)
                     }
                 }
+                .buttonStyle(.plain)
+                .padding(.top, 7)
+                .padding(.trailing, 18)
+                .offset(y: -58)
+                .zIndex(10)
             }
             .sheet(isPresented: $showingAddItem) {
                 if currentMode == .items {

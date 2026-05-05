@@ -63,12 +63,6 @@ struct SharedWishlistListView: View {
         .sheet(isPresented: $showingProUpgrade) {
             ProUpgradeView()
         }
-        .sheet(isPresented: $showingImportAlert) {
-            ImportFriendSheet(groupId: $importGroupId) {
-                importFriendWishlist()
-            }
-            .presentationDetents([.medium])
-        }
         .customInfoAlert(
             isPresented: $showingImportError,
             title: "导入失败",
@@ -116,6 +110,9 @@ struct SharedWishlistListView: View {
                 }
             }
         )
+        .fullScreenCover(isPresented: $showingImportAlert) {
+            importFriendSheetOverlay
+        }
         .overlay {
             if isImporting {
                 ZStack {
@@ -134,6 +131,50 @@ struct SharedWishlistListView: View {
         }
     }
     
+    private var importFriendSheetOverlay: some View {
+        let screenSize = UIScreen.main.bounds.size
+        
+        return ZStack(alignment: .bottom) {
+            Color.black.opacity(0.35)
+                .frame(width: screenSize.width, height: screenSize.height)
+                .onTapGesture {
+                    hideImportSheet()
+                }
+            
+            ImportFriendSheet(
+                groupId: $importGroupId,
+                onDismiss: hideImportSheet
+            ) {
+                importFriendWishlist()
+            }
+            .frame(width: screenSize.width, height: screenSize.height * 0.55)
+            .clipShape(
+                UnevenRoundedRectangle(
+                    topLeadingRadius: 32,
+                    bottomLeadingRadius: 0,
+                    bottomTrailingRadius: 0,
+                    topTrailingRadius: 32,
+                    style: .continuous
+                )
+            )
+        }
+        .frame(width: screenSize.width, height: screenSize.height, alignment: .bottom)
+        .ignoresSafeArea()
+        .presentationBackground(.clear)
+    }
+    
+    private func showImportSheet() {
+        withAnimation(.spring(duration: 0.3)) {
+            showingImportAlert = true
+        }
+    }
+    
+    private func hideImportSheet() {
+        withAnimation(.easeOut(duration: 0.2)) {
+            showingImportAlert = false
+        }
+    }
+    
     // MARK: - VIP 用户视图（正常共享清单）
     
     private var vipContentView: some View {
@@ -142,7 +183,7 @@ struct SharedWishlistListView: View {
             Section {
                 ImportFriendWishlistBlock {
                     importGroupId = ""
-                    showingImportAlert = true
+                    showImportSheet()
                 }
             }
             .listRowInsets(EdgeInsets())
@@ -386,15 +427,16 @@ struct ImportFriendWishlistBlock: View {
     }
 }
 
-// MARK: - 导入好朋友清单 Sheet（粉色背景）
+// MARK: - 导入好朋友清单半屏（粉色背景）
 struct ImportFriendSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Binding var groupId: String
+    var onDismiss: (() -> Void)? = nil
     var onImport: () -> Void
     
     var body: some View {
         ZStack {
-            Color.pink.ignoresSafeArea()
+            Color.pink
             
             VStack(spacing: 24) {
                 Text("请输入好朋友分享的清单 ID")
@@ -427,7 +469,6 @@ struct ImportFriendSheet: View {
             }
             .padding(24)
         }
-        .presentationBackground(Color.pink)
     }
 
     private var importButton: some View {
@@ -435,7 +476,7 @@ struct ImportFriendSheet: View {
 
         return Button {
             if isEmpty { return }
-            dismiss()
+            close()
             onImport()
         } label: {
             Text("导入")
@@ -451,6 +492,14 @@ struct ImportFriendSheet: View {
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 8)
+    }
+    
+    private func close() {
+        if let onDismiss {
+            onDismiss()
+        } else {
+            dismiss()
+        }
     }
 }
 

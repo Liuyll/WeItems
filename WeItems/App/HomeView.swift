@@ -352,7 +352,8 @@ struct HomeView: View {
                         purchaseLink: remote.purchaseLink,
                         details: remote.details,
                         completedBy: remote.completedBy,
-                        addedBy: remote.addedBy
+                        addedBy: remote.addedBy,
+                        addedById: remote.addedById
                     )
                 }
                 
@@ -927,7 +928,8 @@ struct HomeView: View {
                         purchaseLink: remote.purchaseLink,
                         details: remote.details,
                         completedBy: remote.completedBy,
-                        addedBy: remote.addedBy
+                        addedBy: remote.addedBy,
+                        addedById: remote.addedById
                     )
                 }
                 
@@ -2005,17 +2007,13 @@ struct AlbumStyleItemsView: View {
             sections.append(AlbumSection(
                 typeName: type,
                 items: typeItems,
-                totalValue: totalValue
+                totalValue: totalValue,
+                isFeatured: type == ItemType.lifeGood.rawValue
             ))
         }
         
         // 按总价值降序排序
         sections.sort { $0.totalValue > $1.totalValue }
-        
-        // 标记第一个为 featured
-        if !sections.isEmpty {
-            sections[0].isFeatured = true
-        }
         
         return sections
     }
@@ -2049,6 +2047,7 @@ struct AlbumSectionView: View {
     let groupStore: GroupStore
     let onItemTap: (Item) -> Void
     let onItemLongPress: (Item) -> Void
+    @State private var showingSectionDetail = false
     
     private var typeColor: Color {
         if let itemType = ItemType(rawValue: section.typeName) {
@@ -2057,38 +2056,81 @@ struct AlbumSectionView: View {
         return .blue
     }
     
+    private var gridColumns: [GridItem] {
+        Array(repeating: GridItem(.fixed(160), spacing: 12), count: 3)
+    }
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text(section.typeName)
-                    .font(section.isFeatured ? .title2 : .title3)
-                    .fontWeight(.bold)
+                Button {
+                    showingSectionDetail = true
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(section.typeName)
+                            .font(section.isFeatured ? .title2 : .title3)
+                            .fontWeight(.bold)
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .fontWeight(.bold)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .buttonStyle(.plain)
                 Spacer()
                 Text("\(section.items.count) 件")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
+            .fullScreenCover(isPresented: $showingSectionDetail) {
+                AlbumLargeImageListView(title: section.typeName, items: section.items, typeColor: typeColor)
+            }
             
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: section.isFeatured ? 16 : 12) {
-                    ForEach(section.items) { item in
-                        AlbumItemCard(
-                            item: item,
-                            isFeatured: section.isFeatured,
-                            typeColor: typeColor
-                        )
-                        .onTapGesture {
-                            onItemTap(item)
+            if section.isFeatured {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 16) {
+                        ForEach(section.items) { item in
+                            AlbumItemCard(
+                                item: item,
+                                isFeatured: true,
+                                typeColor: typeColor
+                            )
+                            .onTapGesture {
+                                onItemTap(item)
+                            }
+                            .simultaneousGesture(
+                                LongPressGesture(minimumDuration: 0.5)
+                                    .onEnded { _ in
+                                        onItemLongPress(item)
+                                    }
+                            )
                         }
-                        .simultaneousGesture(
-                            LongPressGesture(minimumDuration: 0.5)
-                                .onEnded { _ in
-                                    onItemLongPress(item)
-                                }
-                        )
                     }
+                    .padding(.horizontal, 4)
                 }
-                .padding(.horizontal, 4)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyVGrid(columns: gridColumns, spacing: 12) {
+                        ForEach(section.items) { item in
+                            AlbumItemCard(
+                                item: item,
+                                isFeatured: false,
+                                typeColor: typeColor,
+                                isGrid: true
+                            )
+                            .onTapGesture {
+                                onItemTap(item)
+                            }
+                            .simultaneousGesture(
+                                LongPressGesture(minimumDuration: 0.5)
+                                    .onEnded { _ in
+                                        onItemLongPress(item)
+                                    }
+                            )
+                        }
+                    }
+                    .padding(.horizontal, 4)
+                }
             }
         }
     }
@@ -2099,13 +2141,18 @@ struct AlbumItemCard: View {
     let item: Item
     let isFeatured: Bool
     let typeColor: Color
+    var isGrid: Bool = false
     
-    private var cardWidth: CGFloat {
-        isFeatured ? 280 : 160
+    private var fixedCardWidth: CGFloat? {
+        isGrid ? nil : (isFeatured ? 280 : 160)
     }
     
     private var cardHeight: CGFloat {
-        isFeatured ? 360 : 200
+        isGrid ? 150 : (isFeatured ? 360 : 200)
+    }
+    
+    private var textMaxWidth: CGFloat? {
+        isGrid ? nil : ((fixedCardWidth ?? 160) - 32)
     }
     
     var body: some View {
@@ -2146,7 +2193,8 @@ struct AlbumItemCard: View {
                 )
             }
         }
-        .frame(width: cardWidth, height: cardHeight)
+        .frame(width: fixedCardWidth, height: cardHeight)
+        .frame(maxWidth: isGrid ? .infinity : nil)
         .overlay(alignment: .bottomLeading) {
             if item.image != nil {
                 Text(item.name)
@@ -2155,11 +2203,263 @@ struct AlbumItemCard: View {
                     .foregroundStyle(.white)
                     .lineLimit(2)
                     .shadow(color: .black.opacity(0.6), radius: 3, x: 0, y: 1)
-                    .frame(maxWidth: cardWidth - 32, alignment: .leading)
+                    .frame(maxWidth: textMaxWidth, alignment: .leading)
                     .padding(16)
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 16))
+    }
+}
+
+// MARK: - 相册分组大图展示
+struct AlbumLargeImageListView: View {
+    @Environment(\.dismiss) private var dismiss
+    let title: String
+    let items: [Item]
+    let typeColor: Color
+    @State private var quoteText: String
+    
+    init(title: String, items: [Item], typeColor: Color) {
+        self.title = title
+        self.items = items
+        self.typeColor = typeColor
+        _quoteText = State(initialValue: Self.quoteOptions(for: title).randomElement() ?? "每一件物品，都是生活选择的回声。")
+    }
+    
+    private var totalPrice: Double {
+        items.filter { !$0.isPriceless }.reduce(0) { $0 + $1.price }
+    }
+    
+    private static func quoteOptions(for title: String) -> [String] {
+        switch title {
+        case ItemType.digital.rawValue:
+            return [
+                "工具终会过时，但它延伸过的想象力会留下。",
+                "屏幕越小，越考验我们把世界握在手里的方式。",
+                "真正的数码好物，是让复杂悄悄退到幕后。",
+                "技术不是目的，它只是把想法变快一点。",
+                "每一次升级，都是对效率和欲望的重新谈判。"
+            ]
+        case ItemType.fashion.rawValue:
+            return [
+                "装扮不是取悦世界，而是让自我有形。",
+                "衣物贴近身体，也悄悄贴近当天的心情。",
+                "风格不是标签，是你和世界保持距离的方式。",
+                "好看的东西不只装饰外表，也安放自信。",
+                "穿在身上的选择，最终都会长成气质。"
+            ]
+        case ItemType.appliance.rawValue:
+            return [
+                "日常的秩序，藏在那些安静运转的器物里。",
+                "家电最好的存在感，是让生活少一点费力。",
+                "机器替我们重复，人才有余地去感受。",
+                "家的温度，常由看不见的便利慢慢累积。",
+                "稳定运转的东西，最懂生活的长久主义。"
+            ]
+        case ItemType.largeItem.rawValue:
+            return [
+                "大件承载空间，也承载我们对生活尺度的选择。",
+                "越占地方的物品，越该经得起时间追问。",
+                "空间有限，所以每一个大件都在表达取舍。",
+                "大件不是填满房间，而是定义房间的使用方式。",
+                "真正值得留下的大件，会让生活的重心更稳。"
+            ]
+        case ItemType.lifeGood.rawValue:
+            return [
+                "真正的好物，不只被拥有，也反过来塑造生活。",
+                "人生好物的价值，是多年以后仍愿意再次选择。",
+                "好物会沉默，但每天都在证明它值得。",
+                "能被长期喜欢的东西，往往也在照见长期的自己。",
+                "所谓好物，是让普通日子多一点确定的欢喜。"
+            ]
+        case ItemType.edc.rawValue:
+            return [
+                "随身之物越少，越能看清真正不可或缺的自己。",
+                "每天带在身上的东西，是生活习惯的缩影。",
+                "EDC 的意义，不在多酷，而在关键时刻刚好可用。",
+                "口袋里的秩序，常常决定一天的从容。",
+                "随身携带的，是物品，也是面对世界的小小底气。"
+            ]
+        case ItemType.outdoor.rawValue:
+            return [
+                "旅行让物品变轻，也让记忆变重。",
+                "出发时带上的东西，最终都会变成故事的一部分。",
+                "户外物品的价值，在风雨里才真正显形。",
+                "走得越远，越知道什么才值得背在身上。",
+                "旅行不是逃离日常，而是重新校准日常。"
+            ]
+        case ItemType.other.rawValue:
+            return [
+                "难以归类的东西，往往最接近真实的生活。",
+                "生活从不完全按类别摆放，人的喜欢也是。",
+                "那些被归入其他的物品，常藏着最私人的理由。",
+                "无法命名的需要，也是生活真实的一部分。",
+                "分类之外，仍有很多值得被认真保存的瞬间。"
+            ]
+        default:
+            return [
+                "每一个「\(title)」，都是你给生活留下的一个注脚。",
+                "这些物品聚在一起，构成了你对「\(title)」的理解。",
+                "选择「\(title)」的方式，也是在选择一种生活姿态。",
+                "物品会旧，但它们记录下的偏好会越来越清晰。",
+                "被留下的东西，终究说明了什么对你重要。"
+            ]
+        }
+    }
+    
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVStack(spacing: 16) {
+                    AlbumLargeImageHeader(title: title, itemCount: items.count, totalPrice: totalPrice, quote: quoteText, typeColor: typeColor)
+                        .padding(.horizontal, 16)
+                    
+                    ForEach(items) { item in
+                        AlbumLargeImageCard(item: item, typeColor: typeColor)
+                            .padding(.horizontal, 16)
+                    }
+                }
+                .padding(.top, 12)
+                .padding(.bottom, 24)
+            }
+            .background(Color(.systemGroupedBackground))
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(.primary)
+                            .frame(width: 44, height: 44)
+                            .background(Circle().fill(Color(.secondarySystemGroupedBackground)))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+}
+
+struct AlbumLargeImageHeader: View {
+    let title: String
+    let itemCount: Int
+    let totalPrice: Double
+    let quote: String
+    let typeColor: Color
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 20) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("价值")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(totalPrice > 0 ? "¥\(String(format: "%.0f", totalPrice))" : "无价之物")
+                        .font(.system(size: 30, weight: .bold, design: .rounded))
+                        .foregroundStyle(typeColor)
+                }
+                
+                Spacer()
+                
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text("个数")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("\(itemCount)")
+                        .font(.system(size: 30, weight: .bold, design: .rounded))
+                        .foregroundStyle(typeColor)
+                }
+            }
+            
+            Text(quote)
+                .font(.system(.subheadline, design: .rounded))
+                .fontWeight(.medium)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(18)
+        .background(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(Color(.secondarySystemGroupedBackground))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(typeColor.opacity(0.12), lineWidth: 1)
+        )
+    }
+}
+
+struct AlbumLargeImageCard: View {
+    let item: Item
+    let typeColor: Color
+    private let cornerRadius: CGFloat = 24
+    private let cardHeight: CGFloat = 420
+    
+    var body: some View {
+        GeometryReader { proxy in
+            let cardWidth = proxy.size.width
+            ZStack(alignment: .bottomLeading) {
+                imageContent
+                    .frame(width: cardWidth, height: cardHeight)
+                    .clipped()
+                
+                LinearGradient(
+                    colors: [.black.opacity(0.65), .black.opacity(0.18), .clear],
+                    startPoint: .bottom,
+                    endPoint: .top
+                )
+                .frame(width: cardWidth, height: cardHeight)
+                
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(item.name)
+                        .font(.title2)
+                        .fontWeight(.bold)
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                    if !item.isPriceless {
+                        Text("¥\(String(format: "%.0f", item.price))")
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.white.opacity(0.85))
+                    }
+                }
+                .frame(width: cardWidth - 40, alignment: .leading)
+                .shadow(color: .black.opacity(0.65), radius: 4, x: 0, y: 1)
+                .padding(20)
+            }
+            .frame(width: cardWidth, height: cardHeight)
+            .background(Color(.secondarySystemGroupedBackground))
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(Color.black.opacity(0.04), lineWidth: 0.5)
+            )
+        }
+        .frame(height: cardHeight)
+    }
+    
+    @ViewBuilder
+    private var imageContent: some View {
+        if let image = item.image {
+            image
+                .resizable()
+                .scaledToFill()
+        } else {
+            ZStack {
+                typeColor.opacity(0.12)
+                if let itemType = ItemType(rawValue: item.listType == .wishlist ? item.effectiveDisplayType : item.type) {
+                    itemType.iconImage(size: 48)
+                        .foregroundStyle(typeColor.opacity(0.45))
+                } else {
+                    Image(systemName: "photo")
+                        .font(.system(size: 42))
+                        .foregroundStyle(typeColor.opacity(0.45))
+                }
+            }
+        }
     }
 }
 

@@ -69,16 +69,18 @@ struct ItemDetailView: View {
                     
                     // 类型和分组
                     HStack(spacing: 12) {
+                        let tagType = item.listType == .wishlist ? (item.targetType ?? item.type) : item.type
+                        let tagColor: Color = item.listType == .wishlist ? .green : .blue
                         HStack(spacing: 4) {
-                            typeIconImage(for: item.type)
+                            typeIconImage(for: tagType)
                                 .font(.caption)
-                            Text(item.type)
+                            Text(tagType)
                                 .font(.caption)
                         }
                         .padding(.horizontal, 10)
                         .padding(.vertical, 5)
-                        .background(Color.blue.opacity(0.1))
-                        .foregroundStyle(.blue)
+                        .background(tagColor.opacity(0.1))
+                        .foregroundStyle(tagColor)
                         .clipShape(Capsule())
                         
                         if let group = group {
@@ -104,14 +106,6 @@ struct ItemDetailView: View {
                             Text(item.details)
                                 .font(.system(.body, design: .rounded))
                                 .foregroundStyle(.secondary)
-                        }
-                    } else if item.listType == .wishlist {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("心愿描述")
-                                .font(.system(.headline, design: .rounded))
-                            Text("暂无描述")
-                                .font(.system(.body, design: .rounded))
-                                .foregroundStyle(.tertiary)
                         }
                     }
                     
@@ -618,7 +612,7 @@ struct AddToSharedWishlistSheet: View {
     
     private let emojis = ["🎁", "🎂", "🎄", "💝", "🏠", "✈️", "🎮", "📱", "👗", "🎵", "📚", "🍰", "🌟", "💍", "🎯", "🎪"]
     
-    private func makeSharedItem() -> SharedWishItem {
+    private func makeSharedItem(for list: SharedWishlist) -> SharedWishItem {
         SharedWishItem(
             sourceItemId: item.id,
             name: item.name,
@@ -626,7 +620,9 @@ struct AddToSharedWishlistSheet: View {
             displayType: item.effectiveDisplayType,
             imageUrl: item.imageUrl,
             purchaseLink: item.purchaseLink.isEmpty ? nil : item.purchaseLink,
-            details: item.details.isEmpty ? nil : item.details
+            details: item.details.isEmpty ? nil : item.details,
+            addedBy: list.myNickname ?? "我",
+            addedById: TokenStorage.shared.getSub()
         )
     }
     
@@ -637,7 +633,7 @@ struct AddToSharedWishlistSheet: View {
                     Section("添加到已有清单") {
                         ForEach(sharedStore.lists) { list in
                             Button {
-                                sharedStore.addItem(listId: list.id, item: makeSharedItem())
+                                sharedStore.addItem(listId: list.id, item: makeSharedItem(for: list))
                                 addedToListId = list.id
                                 let generator = UINotificationFeedbackGenerator()
                                 generator.notificationOccurred(.success)
@@ -708,7 +704,17 @@ struct AddToSharedWishlistSheet: View {
                     let newList = SharedWishlist(
                         name: newListName.trimmingCharacters(in: .whitespaces),
                         emoji: newListEmoji,
-                        items: [makeSharedItem()]
+                        items: [SharedWishItem(
+                            sourceItemId: item.id,
+                            name: item.name,
+                            price: item.price,
+                            displayType: item.effectiveDisplayType,
+                            imageUrl: item.imageUrl,
+                            purchaseLink: item.purchaseLink.isEmpty ? nil : item.purchaseLink,
+                            details: item.details.isEmpty ? nil : item.details,
+                            addedBy: "我",
+                            addedById: TokenStorage.shared.getSub()
+                        )]
                     )
                     sharedStore.add(newList)
                     newListName = ""

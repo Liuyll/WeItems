@@ -88,6 +88,12 @@ struct WishlistView: View {
         currentItems.filter { $0.isSelected }.reduce(0) { $0 + $1.price }
     }
     
+    private func beginEditing(_ item: Item) {
+        let latestItem = store.items.first(where: { $0.id == item.id }) ?? item
+        editingWishDraft = WishlistItemDraft(item: latestItem)
+        editingItem = latestItem
+    }
+    
     private var itemCount: Int {
         currentItems.count
     }
@@ -210,8 +216,7 @@ struct WishlistView: View {
                                 showingItemDetail = item
                             },
                             onLongPress: { item in
-                                editingWishDraft = WishlistItemDraft(item: item)
-                                editingItem = item
+                                beginEditing(item)
                             }
                         )
                         .padding(.horizontal)
@@ -227,8 +232,7 @@ struct WishlistView: View {
                                         showingItemDetail = item
                                     },
                                     onLongPress: { item in
-                                        editingWishDraft = WishlistItemDraft(item: item)
-                                        editingItem = item
+                                        beginEditing(item)
                                     }
                                 )
                             }
@@ -259,9 +263,14 @@ struct WishlistView: View {
         .sheet(item: $editingItem, onDismiss: {
             editingWishDraft = nil
         }) { item in
-            if let draft = editingWishDraft {
-                EditWishlistItemView(draft: draft, originalItem: item, store: store, wishlistGroupStore: wishlistGroupStore, sharedWishlistStore: sharedWishlistStore)
-            }
+            let latestItem = store.items.first(where: { $0.id == item.id }) ?? item
+            EditWishlistItemView(
+                draft: editingWishDraft ?? WishlistItemDraft(item: latestItem),
+                originalItem: latestItem,
+                store: store,
+                wishlistGroupStore: wishlistGroupStore,
+                sharedWishlistStore: sharedWishlistStore
+            )
         }
         .sheet(item: $showingItemDetail) { item in
             ItemDetailView(store: store, item: item, group: wishlistGroupStore.group(for: item.wishlistGroupId), sharedStore: sharedWishlistStore, wishlistGroupStore: wishlistGroupStore)
@@ -612,13 +621,18 @@ struct WishlistCard: View {
                 .stroke(item.isSelected ? Color.green.opacity(0.4) : Color.pink.opacity(0.2), lineWidth: item.isSelected ? 2 : 1)
         )
         .contentShape(Rectangle())
-        .onTapGesture {
-            onTap()
-        }
-        .simultaneousGesture(
+        .gesture(
             LongPressGesture(minimumDuration: 0.5)
-                .onEnded { _ in
-                    onLongPress()
+                .exclusively(before: TapGesture())
+                .onEnded { value in
+                    switch value {
+                    case .first(true):
+                        onLongPress()
+                    case .second:
+                        onTap()
+                    default:
+                        break
+                    }
                 }
         )
     }
@@ -684,9 +698,9 @@ struct AddWishlistItemView: View {
                     // 📝 基本信息
                     VStack(alignment: .leading, spacing: 10) {
                         CartoonSectionHeader(emoji: "📝", title: "心愿详情", color: .blue)
-                        CartoonTextField(placeholder: "心愿名字", text: $name)
-                        CartoonTextField(placeholder: "价格", text: $price, keyboardType: .decimalPad)
-                        CartoonTextField(placeholder: "购买链接", text: $purchaseLink, keyboardType: .URL)
+                        CartoonTextField(placeholder: "心愿名字", text: $name, placeholderColor: .secondary, placeholderWeight: .regular, textColor: .secondary)
+                        CartoonTextField(placeholder: "价格", text: $price, keyboardType: .decimalPad, placeholderColor: .secondary, placeholderWeight: .regular, textColor: .green)
+                        CartoonTextField(placeholder: "购买链接", text: $purchaseLink, keyboardType: .URL, placeholderColor: .secondary, placeholderWeight: .regular, textColor: .blue)
                     }
                     .cartoonCard()
                     
@@ -752,11 +766,11 @@ struct AddWishlistItemView: View {
                             Text("自定义类型")
                                 .font(.system(.subheadline, design: .rounded))
                                 .fontWeight(.semibold)
-                                .foregroundStyle(.primary)
+                                .foregroundStyle(.green)
                             Spacer()
                             Toggle("", isOn: $isCustomDisplayType)
                                 .labelsHidden()
-                                .tint(.pink)
+                                .tint(.green)
                         }
                         .padding(12)
                         .background(
@@ -1138,7 +1152,7 @@ class WishlistItemDraft: ObservableObject {
         self.details = item.details
         self.selectedImageData = item.imageData
         self.compressedImageData = item.compressedImageData
-        self.selectedGroupId = item.wishlistGroupId
+        self.selectedGroupId = item.wishlistGroupId ?? (item.listType == .wishlist ? item.groupId : nil)
         
         let displayType = item.displayType ?? item.type
         let displayItemType = ItemType(rawValue: displayType)
@@ -1183,12 +1197,12 @@ struct EditWishlistItemView: View {
                     // 📝 基本信息
                     VStack(alignment: .leading, spacing: 10) {
                         CartoonSectionHeader(emoji: "📝", title: "心愿详情", color: .blue)
-                        CartoonTextField(placeholder: "心愿名字", text: $draft.name)
-                        CartoonTextField(placeholder: "价格", text: $draft.priceText, keyboardType: .decimalPad)
+                        CartoonTextField(placeholder: "心愿名字", text: $draft.name, placeholderColor: .secondary, placeholderWeight: .regular, textColor: .secondary)
+                        CartoonTextField(placeholder: "价格", text: $draft.priceText, keyboardType: .decimalPad, placeholderColor: .secondary, placeholderWeight: .regular, textColor: .green)
                             .onChange(of: draft.priceText) { _, newValue in
                                 draft.price = Double(newValue) ?? 0
                             }
-                        CartoonTextField(placeholder: "购买链接", text: $draft.purchaseLink, keyboardType: .URL)
+                        CartoonTextField(placeholder: "购买链接", text: $draft.purchaseLink, keyboardType: .URL, placeholderColor: .secondary, placeholderWeight: .regular, textColor: .blue)
                     }
                     .cartoonCard()
                     
@@ -1210,7 +1224,7 @@ struct EditWishlistItemView: View {
                                             Capsule()
                                                 .fill(draft.selectedGroupId == nil ? Color.pink.opacity(0.18) : Color(.tertiarySystemGroupedBackground))
                                         )
-                                        .foregroundStyle(draft.selectedGroupId == nil ? .pink : .primary)
+                                        .foregroundStyle(draft.selectedGroupId == nil ? .pink : .secondary)
                                         .overlay(
                                             Capsule()
                                                 .stroke(draft.selectedGroupId == nil ? Color.pink.opacity(0.3) : Color.clear, lineWidth: 1)
@@ -1235,7 +1249,7 @@ struct EditWishlistItemView: View {
                                             Capsule()
                                                 .fill(draft.selectedGroupId == group.id ? group.color.swiftUIColor.opacity(0.18) : Color(.tertiarySystemGroupedBackground))
                                         )
-                                        .foregroundStyle(draft.selectedGroupId == group.id ? group.color.swiftUIColor : .primary)
+                                        .foregroundStyle(draft.selectedGroupId == group.id ? group.color.swiftUIColor : .secondary)
                                         .overlay(
                                             Capsule()
                                                 .stroke(draft.selectedGroupId == group.id ? group.color.swiftUIColor.opacity(0.3) : Color.clear, lineWidth: 1)
@@ -1256,11 +1270,11 @@ struct EditWishlistItemView: View {
                             Text("自定义类型")
                                 .font(.system(.subheadline, design: .rounded))
                                 .fontWeight(.semibold)
-                                .foregroundStyle(.primary)
+                                .foregroundStyle(.green)
                             Spacer()
                             Toggle("", isOn: $draft.isCustomDisplayType)
                                 .labelsHidden()
-                                .tint(.pink)
+                                .tint(.green)
                         }
                         .padding(12)
                         .background(
@@ -1292,7 +1306,7 @@ struct EditWishlistItemView: View {
                                                               ? Color.purple.opacity(0.18)
                                                               : Color(.tertiarySystemGroupedBackground))
                                                 )
-                                                .foregroundStyle(draft.customDisplayType == type ? .purple : .primary)
+                                                .foregroundStyle(draft.customDisplayType == type ? .purple : .secondary)
                                                 .overlay(
                                                     Capsule()
                                                         .stroke(draft.customDisplayType == type ? Color.purple.opacity(0.3) : Color.clear, lineWidth: 1)
@@ -1349,7 +1363,7 @@ struct EditWishlistItemView: View {
                                 HStack {
                                     Text("归属类型")
                                         .font(.system(.subheadline, design: .rounded))
-                                        .foregroundStyle(.primary)
+                                        .foregroundStyle(.secondary)
                                     Spacer()
                                     HStack(spacing: 4) {
                                         draft.selectedTargetType.iconImage(size: 14)
@@ -1413,13 +1427,19 @@ struct EditWishlistItemView: View {
                         VStack(spacing: 0) {
                             if let imageData = draft.selectedImageData,
                                let uiImage = UIImage(data: imageData) {
-                                Image(uiImage: uiImage)
-                                    .resizable()
-                                    .scaledToFill()
-                                    .frame(height: 220)
-                                    .frame(maxWidth: .infinity)
-                                    .clipped()
-                                    .onTapGesture { fullScreenImage = uiImage }
+                                ZStack {
+                                    Image(uiImage: uiImage)
+                                        .resizable()
+                                        .scaledToFill()
+                                        .frame(maxWidth: .infinity)
+                                        .frame(height: 220)
+                                        .clipped()
+                                        .allowsHitTesting(false)
+                                }
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 220)
+                                .contentShape(Rectangle())
+                                .onTapGesture { fullScreenImage = uiImage }
                                 
                                 HStack(spacing: 0) {
                                     PhotosPicker(selection: $selectedPhoto, matching: .images) {
@@ -1814,6 +1834,7 @@ struct WishlistAlbumSection: View {
     let onToggle: (UUID) -> Void
     let onTap: (Item) -> Void
     let onLongPress: (Item) -> Void
+    @State private var showingSectionDetail = false
     
     private var typeColor: Color {
         if let itemType = ItemType(rawValue: section.typeName) {
@@ -1829,40 +1850,99 @@ struct WishlistAlbumSection: View {
         return "tag"
     }
     
+    private var isLifeGood: Bool {
+        section.typeName == ItemType.lifeGood.rawValue
+    }
+    
+    private var gridColumns: [GridItem] {
+        Array(repeating: GridItem(.fixed(160), spacing: 12), count: 3)
+    }
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text(section.typeName)
-                    .font(.title3)
-                    .fontWeight(.bold)
+                Button {
+                    showingSectionDetail = true
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(section.typeName)
+                            .font(.title3)
+                            .fontWeight(.bold)
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .fontWeight(.bold)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .buttonStyle(.plain)
                 Spacer()
                 Text("\(section.items.count) 个")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
+            .fullScreenCover(isPresented: $showingSectionDetail) {
+                AlbumLargeImageListView(title: section.typeName, items: section.items, typeColor: typeColor)
+            }
             
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
-                    ForEach(section.items) { item in
-                        WishlistAlbumCard(
-                            item: item,
-                            typeColor: typeColor,
-                            typeIcon: typeIcon,
-                            onToggle: { onToggle(item.id) }
-                        )
-                        .equatable()
-                        .onTapGesture {
-                            onTap(item)
+            if isLifeGood {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
+                        ForEach(section.items) { item in
+                            WishlistAlbumCard(
+                                item: item,
+                                typeColor: typeColor,
+                                typeIcon: typeIcon,
+                                onToggle: { onToggle(item.id) }
+                            )
+                            .equatable()
+                            .gesture(
+                                LongPressGesture(minimumDuration: 0.5)
+                                    .exclusively(before: TapGesture())
+                                    .onEnded { value in
+                                        switch value {
+                                        case .first(true):
+                                            onLongPress(item)
+                                        case .second:
+                                            onTap(item)
+                                        default:
+                                            break
+                                        }
+                                    }
+                            )
                         }
-                        .simultaneousGesture(
-                            LongPressGesture(minimumDuration: 0.5)
-                                .onEnded { _ in
-                                    onLongPress(item)
-                                }
-                        )
                     }
+                    .padding(.horizontal, 4)
                 }
-                .padding(.horizontal, 4)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyVGrid(columns: gridColumns, spacing: 12) {
+                        ForEach(section.items) { item in
+                            WishlistAlbumCard(
+                                item: item,
+                                typeColor: typeColor,
+                                typeIcon: typeIcon,
+                                onToggle: { onToggle(item.id) },
+                                isGrid: true
+                            )
+                            .equatable()
+                            .gesture(
+                                LongPressGesture(minimumDuration: 0.5)
+                                    .exclusively(before: TapGesture())
+                                    .onEnded { value in
+                                        switch value {
+                                        case .first(true):
+                                            onLongPress(item)
+                                        case .second:
+                                            onTap(item)
+                                        default:
+                                            break
+                                        }
+                                    }
+                            )
+                        }
+                    }
+                    .padding(.horizontal, 4)
+                }
             }
         }
     }
@@ -1870,13 +1950,26 @@ struct WishlistAlbumSection: View {
 
 struct WishlistAlbumCard: View, Equatable {
     static func == (lhs: WishlistAlbumCard, rhs: WishlistAlbumCard) -> Bool {
-        lhs.item == rhs.item && lhs.typeColor == rhs.typeColor && lhs.typeIcon == rhs.typeIcon
+        lhs.item == rhs.item && lhs.typeColor == rhs.typeColor && lhs.typeIcon == rhs.typeIcon && lhs.isGrid == rhs.isGrid
     }
     
     let item: Item
     let typeColor: Color
     let typeIcon: String
     let onToggle: () -> Void
+    var isGrid: Bool = false
+    
+    private var cardWidth: CGFloat? {
+        isGrid ? nil : 160
+    }
+    
+    private var cardHeight: CGFloat {
+        isGrid ? 150 : 200
+    }
+    
+    private var textMaxWidth: CGFloat? {
+        isGrid ? nil : 128
+    }
     
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -1915,7 +2008,8 @@ struct WishlistAlbumCard: View, Equatable {
                     )
                 }
             }
-            .frame(width: 160, height: 200)
+            .frame(width: cardWidth, height: cardHeight)
+            .frame(maxWidth: isGrid ? .infinity : nil)
             .overlay(alignment: .bottomLeading) {
                 if item.image != nil {
                     VStack(alignment: .leading, spacing: 4) {
@@ -1930,7 +2024,7 @@ struct WishlistAlbumCard: View, Equatable {
                             .foregroundStyle(.orange)
                     }
                     .shadow(color: .black.opacity(0.6), radius: 3, x: 0, y: 1)
-                    .frame(maxWidth: 160 - 32, alignment: .leading)
+                    .frame(maxWidth: textMaxWidth, alignment: .leading)
                     .padding(16)
                 }
             }

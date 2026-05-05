@@ -9,7 +9,7 @@ import PhotosUI
 
 // MARK: - 共享清单列表页
 struct SharedWishlistListView: View {
-    var sharedStore: SharedWishlistStore
+    @ObservedObject var sharedStore: SharedWishlistStore
     @ObservedObject var itemStore: ItemStore
     @ObservedObject var wishlistGroupStore: WishlistGroupStore
     @State private var showingCreate = false
@@ -519,7 +519,7 @@ struct SharedWishItemRow: View {
     let item: SharedWishItem
     let listId: UUID
     let isOwner: Bool
-    let myNickname: String
+    let currentUserId: String
     let isRemoteDeleted: Bool
     @ObservedObject var sharedStore: SharedWishlistStore
     let onTap: () -> Void
@@ -586,14 +586,15 @@ struct SharedWishItemRow: View {
             }
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-            let addedBy = item.addedBy ?? ""
-            let itemCanDelete = !addedBy.isEmpty ? (addedBy == myNickname) : isOwner
+            let addedById = item.addedById?.trimmingCharacters(in: .whitespaces) ?? ""
+            let itemCanDelete = isOwner || (!addedById.isEmpty && addedById == currentUserId)
             if itemCanDelete {
                 Button(role: .destructive) {
                     sharedStore.deleteItem(listId: listId, itemId: item.id)
                 } label: {
-                    Label("删除", systemImage: "trash")
+                    Image(systemName: "trash")
                 }
+                .accessibilityLabel("删除")
             }
         }
     }
@@ -708,7 +709,7 @@ struct SyncStatusTagRow: View {
 // MARK: - 清单详情页
 struct SharedWishlistDetailView: View {
     let list: SharedWishlist
-    var sharedStore: SharedWishlistStore
+    @ObservedObject var sharedStore: SharedWishlistStore
     @ObservedObject var itemStore: ItemStore
     @ObservedObject var wishlistGroupStore: WishlistGroupStore
     @Environment(\.dismiss) private var dismiss
@@ -751,6 +752,29 @@ struct SharedWishlistDetailView: View {
     
     private var currentList: SharedWishlist {
         sharedStore.lists.first(where: { $0.id == list.id }) ?? list
+    }
+    
+    private func backfilledAddedByIds(_ items: [SharedWishItem]) -> [SharedWishItem] {
+        let currentUserId = TokenStorage.shared.getSub() ?? ""
+        guard !currentUserId.isEmpty else { return items }
+        let myNickname = currentList.myNickname?.trimmingCharacters(in: .whitespaces) ?? ""
+        let ownerName = currentList.ownerName?.trimmingCharacters(in: .whitespaces) ?? ""
+        let fallbackName = currentList.myNickname ?? currentList.ownerName ?? "我"
+        return items.map { item in
+            var updated = item
+            let existingAddedById = updated.addedById?.trimmingCharacters(in: .whitespaces) ?? ""
+            guard existingAddedById.isEmpty else { return updated }
+            let addedBy = updated.addedBy?.trimmingCharacters(in: .whitespaces) ?? ""
+            let matchesCurrentUserName = !myNickname.isEmpty && addedBy == myNickname
+            let isOwnerLegacyItem = currentList.isOwner && (addedBy.isEmpty || (!ownerName.isEmpty && addedBy == ownerName))
+            if matchesCurrentUserName || isOwnerLegacyItem {
+                updated.addedById = currentUserId
+                if (updated.addedBy?.trimmingCharacters(in: .whitespaces) ?? "").isEmpty {
+                    updated.addedBy = fallbackName
+                }
+            }
+            return updated
+        }
     }
     
     /// 判断是否应该显示"未同步"状态
@@ -817,7 +841,7 @@ struct SharedWishlistDetailView: View {
     private var wishItemSections: some View {
         let listId = currentList.id
         let listIsOwner = currentList.isOwner
-        let listMyNickname = currentList.myNickname ?? ""
+        let currentUserId = TokenStorage.shared.getSub() ?? ""
         ForEach(groupedItems, id: \.type) { group in
             Section(group.type) {
                 ForEach(group.items) { item in
@@ -825,7 +849,7 @@ struct SharedWishlistDetailView: View {
                         item: item,
                         listId: listId,
                         isOwner: listIsOwner,
-                        myNickname: listMyNickname,
+                        currentUserId: currentUserId,
                         isRemoteDeleted: isRemoteDeleted,
                         sharedStore: sharedStore,
                         onTap: { viewingItem = item },
@@ -1049,7 +1073,7 @@ struct SharedWishlistDetailView: View {
         .onDisappear {
             autoSyncIfNeeded()
         }
-        .onChange(of: scenePhase) { newPhase in
+        .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .background || newPhase == .inactive {
                 autoSyncIfNeeded()
             }
@@ -1061,6 +1085,12 @@ struct SharedWishlistDetailView: View {
             // 同步：如果 SharedWishItem 还没有 imageUrl，但其 sourceItemId 对应的源 Item 已有 imageUrl，则同步过来
             if let li = sharedStore.lists.firstIndex(where: { $0.id == list.id }) {
                 var needsSave = false
+                let backfilledItems = backfilledAddedByIds(sharedStore.lists[li].items)
+                for j in sharedStore.lists[li].items.indices where sharedStore.lists[li].items[j].addedById != backfilledItems[j].addedById || sharedStore.lists[li].items[j].addedBy != backfilledItems[j].addedBy {
+                    sharedStore.lists[li].items[j].addedById = backfilledItems[j].addedById
+                    sharedStore.lists[li].items[j].addedBy = backfilledItems[j].addedBy
+                    needsSave = true
+                }
                 for j in sharedStore.lists[li].items.indices {
                     let item = sharedStore.lists[li].items[j]
                     // 清理：imageUrl 存在时删除本地 imageData
@@ -1111,23 +1141,23 @@ struct SharedWishlistDetailView: View {
                 isCheckingRemote = false
             }
             
-            print("========== 共享清单详情 ==========")
-            print("id: \(l.id)")
-            print("name: \(l.name)")
-            print("emoji: \(l.emoji)")
-            print("owner_name: \(l.ownerName ?? "nil")")
-            print("isOwner: \(l.isOwner)")
-            print("wish_group_id: \(l.wishGroupId ?? "nil")")
-            print("isSynced: \(l.isSynced)")
-            print("createdAt: \(l.createdAt)")
-            print("updatedAt: \(l.updatedAt)")
-            print("totalPrice: \(l.totalPrice)")
-            print("items count: \(l.items.count)")
-            for (i, item) in l.items.enumerated() {
-                let imgInfo = item.imageUrl ?? "nil"
-                print("  [\(i)] name: \(item.name), id: \(item.id.uuidString), price: \(item.price), isCompleted: \(item.isCompleted), displayType: \(item.displayType ?? "nil"), imageUrl: \(imgInfo)")
-            }
-            print("==================================")
+            // print("========== 共享清单详情 ==========")
+            // print("id: \(l.id)")
+            // print("name: \(l.name)")
+            // print("emoji: \(l.emoji)")
+            // print("owner_name: \(l.ownerName ?? "nil")")
+            // print("isOwner: \(l.isOwner)")
+            // print("wish_group_id: \(l.wishGroupId ?? "nil")")
+            // print("isSynced: \(l.isSynced)")
+            // print("createdAt: \(l.createdAt)")
+            // print("updatedAt: \(l.updatedAt)")
+            // print("totalPrice: \(l.totalPrice)")
+            // print("items count: \(l.items.count)")
+            // for (i, item) in l.items.enumerated() {
+            //     let imgInfo = item.imageUrl ?? "nil"
+            //     print("  [\(i)] name: \(item.name), id: \(item.id.uuidString), price: \(item.price), isCompleted: \(item.isCompleted), displayType: \(item.displayType ?? "nil"), imageUrl: \(imgInfo)")
+            // }
+            // print("==================================")
             loadMembers()
         }
         .sheet(isPresented: $showingAddWish, onDismiss: { addWishDraft = nil }) {
@@ -1145,13 +1175,11 @@ struct SharedWishlistDetailView: View {
             )
         }
         .sheet(item: $editingItem) { item in
-            let myNickname = currentList.myNickname
+            let currentUserId = TokenStorage.shared.getSub() ?? ""
             let itemCanEdit: Bool = {
                 if currentList.isOwner { return true }
-                if let addedBy = item.addedBy, !addedBy.isEmpty {
-                    return addedBy == myNickname
-                }
-                return false
+                let addedById = item.addedById?.trimmingCharacters(in: .whitespaces) ?? ""
+                return !addedById.isEmpty && addedById == currentUserId
             }()
             let draft = SharedWishItemDraft(item: item)
             EditSharedWishItemView(
@@ -1303,6 +1331,7 @@ struct SharedWishlistDetailView: View {
                 || itemA.details != itemB.details
                 || itemA.completedBy != itemB.completedBy
                 || itemA.addedBy != itemB.addedBy
+                || itemA.addedById != itemB.addedById
                 || itemA.imageUrl != itemB.imageUrl
                 || itemA.imageData != itemB.imageData {
                 return false
@@ -1368,7 +1397,7 @@ struct SharedWishlistDetailView: View {
         isSyncing = true
         let listId = currentList.id
         let existingWishGroupId = currentList.wishGroupId
-        var items = currentList.items
+        var items = backfilledAddedByIds(currentList.items)
         let name = currentList.name
         let emoji = currentList.emoji
         let ownerName = currentList.ownerName ?? currentList.myNickname
@@ -1585,7 +1614,7 @@ struct SharedWishlistDetailView: View {
                             return (item.id.uuidString, data)
                         }
                     )
-                    let remoteItems: [SharedWishItem] = remoteWishItems.compactMap { remote in
+                    let remoteItems: [SharedWishItem] = backfilledAddedByIds(remoteWishItems.compactMap { remote in
                         // 过滤掉无 id 的远端心愿（旧数据清理）
                         guard let remoteIdStr = remote.id, !remoteIdStr.isEmpty,
                               let remoteUUID = UUID(uuidString: remoteIdStr) else {
@@ -1621,9 +1650,10 @@ struct SharedWishlistDetailView: View {
                             purchaseLink: remote.purchaseLink,
                             details: remote.details,
                             completedBy: remote.completedBy,
-                            addedBy: remote.addedBy
+                            addedBy: remote.addedBy,
+                            addedById: remote.addedById
                         )
-                    }
+                    })
                     
                     syncSucceeded = true
                     print("[共享心愿] syncFromRemote 拉取远端成功: \(remoteItems.count) 个心愿")
@@ -1914,8 +1944,9 @@ struct CreateSharedWishlistView: View {
     
     private func save() {
         let selectedItems = wishlistItems.filter { selectedItemIds.contains($0.id) }
+        let currentUserId = TokenStorage.shared.getSub()
         let sharedItems = selectedItems
-            .map { SharedWishItem(sourceItemId: $0.id, name: $0.name, price: $0.price, displayType: $0.effectiveDisplayType, imageUrl: $0.imageUrl, imageData: $0.imageData, purchaseLink: $0.purchaseLink.isEmpty ? nil : $0.purchaseLink, details: $0.details.isEmpty ? nil : $0.details) }
+            .map { SharedWishItem(sourceItemId: $0.id, name: $0.name, price: $0.price, displayType: $0.effectiveDisplayType, imageUrl: $0.imageUrl, imageData: $0.imageData, purchaseLink: $0.purchaseLink.isEmpty ? nil : $0.purchaseLink, details: $0.details.isEmpty ? nil : $0.details, addedBy: ownerName, addedById: currentUserId) }
         
         // 生成 16 位随机数 ID
         let wishGroupId = CloudBaseClient.generateWishGroupId()
@@ -2142,10 +2173,11 @@ struct EditSharedWishlistView: View {
     }
     
     private func save() {
-        let existingMap = Dictionary(uniqueKeysWithValues: originalList.items.compactMap { item -> (UUID, Bool)? in
+        let existingMap = Dictionary(uniqueKeysWithValues: originalList.items.compactMap { item -> (UUID, SharedWishItem)? in
             guard let sid = item.sourceItemId else { return nil }
-            return (sid, item.isCompleted)
+            return (sid, item)
         })
+        let currentUserId = TokenStorage.shared.getSub()
         
         // syncGroup 开启时，直接用分组下所有心愿；否则用手动选择的
         let itemsToLink: [Item]
@@ -2161,12 +2193,15 @@ struct EditSharedWishlistView: View {
                     sourceItemId: item.id,
                     name: item.name,
                     price: item.price,
-                    isCompleted: existingMap[item.id] ?? false,
+                    isCompleted: existingMap[item.id]?.isCompleted ?? false,
                     displayType: item.effectiveDisplayType,
                     imageUrl: item.imageUrl,
                     imageData: item.imageData,
                     purchaseLink: item.purchaseLink.isEmpty ? nil : item.purchaseLink,
-                    details: item.details.isEmpty ? nil : item.details
+                    details: item.details.isEmpty ? nil : item.details,
+                    completedBy: existingMap[item.id]?.completedBy,
+                    addedBy: existingMap[item.id]?.addedBy ?? originalList.myNickname ?? originalList.ownerName ?? "我",
+                    addedById: existingMap[item.id]?.addedById ?? currentUserId
                 )
             }
         
@@ -2841,14 +2876,12 @@ struct SharedWishItemDetailView: View {
         return item
     }
     
-    /// 当前用户是否可以编辑此心愿（添加者可编辑，旧数据无 addedBy 时 owner 可编辑）
+    /// 当前用户是否可以编辑此心愿（创建者或添加者可编辑）
     private var canEdit: Bool {
-        let myNickname = sharedStore.lists.first(where: { $0.id == listId })?.myNickname
-        if let addedBy = currentItem.addedBy, !addedBy.isEmpty {
-            return addedBy == myNickname
-        }
-        // 旧数据没有 addedBy，owner 可编辑
-        return isOwner
+        if isOwner { return true }
+        let currentUserId = TokenStorage.shared.getSub() ?? ""
+        let addedById = currentItem.addedById?.trimmingCharacters(in: .whitespaces) ?? ""
+        return !addedById.isEmpty && addedById == currentUserId
     }
     
     var body: some View {
@@ -3478,7 +3511,8 @@ struct AddSharedWishItemView: View {
             imageData: draft.imageData,
             purchaseLink: trimmedLink.isEmpty ? nil : trimmedLink,
             details: trimmedDetails.isEmpty ? nil : trimmedDetails,
-            addedBy: sharedStore.lists.first(where: { $0.id == listId })?.myNickname ?? "我"
+            addedBy: sharedStore.lists.first(where: { $0.id == listId })?.myNickname ?? "我",
+            addedById: TokenStorage.shared.getSub()
         )
         
         sharedStore.addItem(listId: listId, item: newItem)

@@ -219,6 +219,7 @@ class ItemStore: ObservableObject {
     func toggleArchiveItem(itemId: UUID) {
         if let index = items.firstIndex(where: { $0.id == itemId }) {
             items[index].isArchived.toggle()
+            items[index].updatedAt = Date()
             if !items[index].isArchived {
                 // 取消售出时清除售出信息
                 items[index].soldPrice = nil
@@ -235,6 +236,7 @@ class ItemStore: ObservableObject {
             items[index].soldPrice = soldPrice
             items[index].soldDate = soldDate
             items[index].recycleMethod = recycleMethod
+            items[index].updatedAt = Date()
             saveItems()
         }
     }
@@ -242,6 +244,7 @@ class ItemStore: ObservableObject {
     func archiveItem(_ item: Item) {
         if let index = items.firstIndex(where: { $0.itemId == item.itemId }) {
             items[index].isArchived = true
+            items[index].updatedAt = Date()
             saveItems()
         }
     }
@@ -249,6 +252,7 @@ class ItemStore: ObservableObject {
     func unarchiveItem(_ item: Item) {
         if let index = items.firstIndex(where: { $0.itemId == item.itemId }) {
             items[index].isArchived = false
+            items[index].updatedAt = Date()
             saveItems()
         }
     }

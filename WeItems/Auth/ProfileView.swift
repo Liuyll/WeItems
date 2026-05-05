@@ -705,7 +705,8 @@ struct ProfileView: View {
                             purchaseLink: remote.purchaseLink,
                             details: remote.details,
                             completedBy: remote.completedBy,
-                            addedBy: remote.addedBy
+                            addedBy: remote.addedBy,
+                            addedById: remote.addedById
                         )
                     }
                     

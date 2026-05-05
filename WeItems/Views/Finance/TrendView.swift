@@ -163,91 +163,88 @@ struct TrendView: View {
     
     // MARK: - 回收数据
     
-    /// 最早售出物品的日期
+    private var allMyItems: [Item] {
+        store.items.filter { $0.listType == .items }
+    }
+    
+    private var recoveredItems: [Item] {
+        allMyItems.filter { $0.isArchived }
+    }
+    
+    private var hasAnyItemsForTrend: Bool {
+        !allMyItems.isEmpty
+    }
+    
+    private func recoveryDate(for item: Item) -> Date {
+        item.soldDate ?? item.updatedAt
+    }
+    
+    private func recoveryAmount(for item: Item) -> Double {
+        item.soldPrice ?? 0
+    }
+    
+    /// 最早售出物品的日期；兼容旧数据：只有售出分组但缺少 soldDate 时，用 updatedAt 兜底
     private var earliestSoldDate: Date? {
-        store.items.filter { $0.isArchived && $0.soldDate != nil }.compactMap(\.soldDate).min()
+        recoveredItems.map { recoveryDate(for: $0) }.min()
     }
     
     private var monthlySoldData: [SoldDataPoint] {
-        let calendar = Calendar.current
-        let now = Date()
-        let soldItems = store.items.filter { $0.isArchived && $0.soldDate != nil && $0.soldPrice != nil }
-        
-        let monthCount: Int
-        if let earliest = earliestSoldDate {
-            let components = calendar.dateComponents([.month], from: earliest, to: now)
-            monthCount = min((components.month ?? 0) + 1, 12)
-        } else {
-            monthCount = 1
-        }
+        let soldItems = recoveredItems
+        guard !soldItems.isEmpty else { return [] }
         
         let keyFmt = DateFormatter()
         keyFmt.dateFormat = "yyyy-MM"
+        let dispFmt = DateFormatter()
+        dispFmt.dateFormat = "yyyy年M月"
         
-        var grouped: [String: (count: Int, soldAmount: Double, originalAmount: Double)] = [:]
+        var grouped: [String: (date: Date, count: Int, soldAmount: Double, originalAmount: Double)] = [:]
         for item in soldItems {
-            guard let soldDate = item.soldDate else { continue }
-            let key = keyFmt.string(from: soldDate)
-            var e = grouped[key] ?? (0, 0, 0)
+            let date = recoveryDate(for: item)
+            let key = keyFmt.string(from: date)
+            var e = grouped[key] ?? (date, 0, 0, 0)
             e.count += 1
-            e.soldAmount += item.soldPrice ?? 0
+            e.soldAmount += recoveryAmount(for: item)
             e.originalAmount += item.price
             grouped[key] = e
         }
         
-        var result: [SoldDataPoint] = []
-        let dispFmt = DateFormatter()
-        dispFmt.dateFormat = "M月"
-        for i in (0..<monthCount).reversed() {
-            guard let date = calendar.date(byAdding: .month, value: -i, to: now) else { continue }
-            let key = keyFmt.string(from: date)
-            let e = grouped[key]
-            result.append(SoldDataPoint(
-                label: dispFmt.string(from: date),
-                count: e?.count ?? 0,
-                soldAmount: e?.soldAmount ?? 0,
-                originalAmount: e?.originalAmount ?? 0
-            ))
-        }
-        return result
+        return grouped.values
+            .sorted { $0.date < $1.date }
+            .suffix(12)
+            .map { e in
+                SoldDataPoint(
+                    label: dispFmt.string(from: e.date),
+                    count: e.count,
+                    soldAmount: e.soldAmount,
+                    originalAmount: e.originalAmount
+                )
+            }
     }
     
     private var yearlySoldData: [SoldDataPoint] {
         let calendar = Calendar.current
-        let currentYear = calendar.component(.year, from: Date())
-        let soldItems = store.items.filter { $0.isArchived && $0.soldDate != nil && $0.soldPrice != nil }
-        
-        let yearCount: Int
-        if let earliest = earliestSoldDate {
-            let earliestYear = calendar.component(.year, from: earliest)
-            yearCount = min(currentYear - earliestYear + 1, 5)
-        } else {
-            yearCount = 1
-        }
+        let soldItems = recoveredItems
+        guard !soldItems.isEmpty else { return [] }
         
         var grouped: [Int: (count: Int, soldAmount: Double, originalAmount: Double)] = [:]
         for item in soldItems {
-            guard let soldDate = item.soldDate else { continue }
-            let year = calendar.component(.year, from: soldDate)
+            let year = calendar.component(.year, from: recoveryDate(for: item))
             var e = grouped[year] ?? (0, 0, 0)
             e.count += 1
-            e.soldAmount += item.soldPrice ?? 0
+            e.soldAmount += recoveryAmount(for: item)
             e.originalAmount += item.price
             grouped[year] = e
         }
         
-        var result: [SoldDataPoint] = []
-        for i in (0..<yearCount).reversed() {
-            let year = currentYear - i
+        return grouped.keys.sorted().suffix(5).map { year in
             let e = grouped[year]
-            result.append(SoldDataPoint(
+            return SoldDataPoint(
                 label: "\(year)年",
                 count: e?.count ?? 0,
                 soldAmount: e?.soldAmount ?? 0,
                 originalAmount: e?.originalAmount ?? 0
-            ))
+            )
         }
-        return result
     }
     
     @State private var isReady = false
@@ -257,7 +254,7 @@ struct TrendView: View {
     var body: some View {
         ScrollView {
             if isReady {
-                if totalItems == 0 {
+                if !hasAnyItemsForTrend {
                     // 无物品时展示提示
                     VStack(spacing: 20) {
                         Spacer(minLength: 100)
@@ -307,6 +304,7 @@ struct TrendView: View {
         .onAppear {
             if cache.isLoaded {
                 isReady = true
+                cache.preload(store: store)
             } else {
                 cache.preload(store: store)
             }
@@ -316,6 +314,12 @@ struct TrendView: View {
                 withAnimation(.easeIn(duration: 0.2)) {
                     isReady = true
                 }
+            }
+        }
+        .onChange(of: store.items) { _, _ in
+            cache.preload(store: store)
+            if !isReady {
+                isReady = true
             }
         }
         .onDisappear {
@@ -588,22 +592,12 @@ struct TrendView: View {
     
     // MARK: - 回收趋势卡片
     private var recoveryTrendCard: some View {
-        let data = recoveryPeriod == .monthly
-            ? (cache.isLoaded ? cache.monthlySoldData : monthlySoldData)
-            : (cache.isLoaded ? cache.yearlySoldData : yearlySoldData)
-        let totalSoldAmount: Double
-        let totalOriginal: Double
-        let totalProfit: Double
-        if cache.isLoaded {
-            totalSoldAmount = cache.totalSoldAmount
-            totalOriginal = cache.totalSoldOriginal
-            totalProfit = cache.totalSoldProfit
-        } else {
-            let soldItems = store.items.filter { $0.isArchived && $0.soldPrice != nil }
-            totalSoldAmount = soldItems.compactMap(\.soldPrice).reduce(0, +)
-            totalOriginal = soldItems.reduce(0) { $0 + $1.price }
-            totalProfit = totalSoldAmount - totalOriginal
-        }
+        // 回收数据必须使用实时 store 数据，避免启动时预加载的趋势缓存未包含刚标记售出的物品
+        let data = recoveryPeriod == .monthly ? monthlySoldData : yearlySoldData
+        let soldItems = recoveredItems
+        let totalSoldAmount = soldItems.reduce(0) { $0 + recoveryAmount(for: $1) }
+        let totalOriginal = soldItems.reduce(0) { $0 + $1.price }
+        let totalProfit = totalSoldAmount - totalOriginal
         let hasData = data.contains(where: { $0.count > 0 })
         let titleText = recoveryPeriod == .monthly ? "近 \(data.count) 个月回收趋势" : "近 \(data.count) 年回收趋势"
         
@@ -947,7 +941,8 @@ class TrendDataCache: ObservableObject {
         
         Task.detached(priority: .utility) {
             let items = itemsSnapshot
-            let myItems = items.filter { $0.listType == .items }
+            let allMyItems = items.filter { $0.listType == .items }
+            let myItems = allMyItems.filter { !$0.isArchived }
             let calendar = Calendar.current
             let now = Date()
             
@@ -1013,48 +1008,32 @@ class TrendDataCache: ObservableObject {
                 yearly.append(TrendDataPoint(label: "\(year)年", count: e?.count ?? 0, total: e?.total ?? 0))
             }
             
-            // 售出数据
-            let soldItems = items.filter { $0.isArchived && $0.soldDate != nil && $0.soldPrice != nil }
-            let earliestSold = soldItems.compactMap(\.soldDate).min()
+            // 售出数据；兼容旧数据：只要在售出分组中就参与回收趋势，缺少 soldDate 时用 updatedAt
+            let soldItems = allMyItems.filter { $0.isArchived }
             
-            let soldMonthCount: Int
-            if let earliest = earliestSold {
-                let components = calendar.dateComponents([.month], from: earliest, to: now)
-                soldMonthCount = min((components.month ?? 0) + 1, 12)
-            } else {
-                soldMonthCount = 1
-            }
-            
-            var soldMonthGrouped: [String: (count: Int, soldAmount: Double, originalAmount: Double)] = [:]
+            var soldMonthGrouped: [String: (date: Date, count: Int, soldAmount: Double, originalAmount: Double)] = [:]
             for item in soldItems {
-                guard let soldDate = item.soldDate else { continue }
+                let soldDate = item.soldDate ?? item.updatedAt
                 let key = keyFmt.string(from: soldDate)
-                var e = soldMonthGrouped[key] ?? (0, 0, 0)
+                var e = soldMonthGrouped[key] ?? (soldDate, 0, 0, 0)
                 e.count += 1
                 e.soldAmount += item.soldPrice ?? 0
                 e.originalAmount += item.price
                 soldMonthGrouped[key] = e
             }
             
-            var monthlySold: [SoldDataPoint] = []
-            for i in (0..<soldMonthCount).reversed() {
-                guard let date = calendar.date(byAdding: .month, value: -i, to: now) else { continue }
-                let key = keyFmt.string(from: date)
-                let e = soldMonthGrouped[key]
-                monthlySold.append(SoldDataPoint(label: dispFmt.string(from: date), count: e?.count ?? 0, soldAmount: e?.soldAmount ?? 0, originalAmount: e?.originalAmount ?? 0))
-            }
-            
-            let soldYearCount: Int
-            if let earliest = earliestSold {
-                let earliestYear = calendar.component(.year, from: earliest)
-                soldYearCount = min(currentYear - earliestYear + 1, 5)
-            } else {
-                soldYearCount = 1
-            }
+            let soldDispFmt = DateFormatter()
+            soldDispFmt.dateFormat = "yyyy年M月"
+            let monthlySold = soldMonthGrouped.values
+                .sorted { $0.date < $1.date }
+                .suffix(12)
+                .map { e in
+                    SoldDataPoint(label: soldDispFmt.string(from: e.date), count: e.count, soldAmount: e.soldAmount, originalAmount: e.originalAmount)
+                }
             
             var soldYearGrouped: [Int: (count: Int, soldAmount: Double, originalAmount: Double)] = [:]
             for item in soldItems {
-                guard let soldDate = item.soldDate else { continue }
+                let soldDate = item.soldDate ?? item.updatedAt
                 let year = calendar.component(.year, from: soldDate)
                 var e = soldYearGrouped[year] ?? (0, 0, 0)
                 e.count += 1
@@ -1063,11 +1042,9 @@ class TrendDataCache: ObservableObject {
                 soldYearGrouped[year] = e
             }
             
-            var yearlySold: [SoldDataPoint] = []
-            for i in (0..<soldYearCount).reversed() {
-                let year = currentYear - i
+            let yearlySold = soldYearGrouped.keys.sorted().suffix(5).map { year in
                 let e = soldYearGrouped[year]
-                yearlySold.append(SoldDataPoint(label: "\(year)年", count: e?.count ?? 0, soldAmount: e?.soldAmount ?? 0, originalAmount: e?.originalAmount ?? 0))
+                return SoldDataPoint(label: "\(year)年", count: e?.count ?? 0, soldAmount: e?.soldAmount ?? 0, originalAmount: e?.originalAmount ?? 0)
             }
             
             // 类型统计
@@ -1094,7 +1071,7 @@ class TrendDataCache: ObservableObject {
             
             // 回收汇总
             let soldAll = soldItems
-            let soldAmount = soldAll.compactMap(\.soldPrice).reduce(0, +)
+            let soldAmount = soldAll.reduce(0) { $0 + ($1.soldPrice ?? 0) }
             let soldOriginal = soldAll.reduce(0) { $0 + $1.price }
             let soldProfit = soldAmount - soldOriginal
             

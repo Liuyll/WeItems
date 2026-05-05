@@ -20,15 +20,16 @@ struct SharedWishItem: Identifiable, Codable {
     var purchaseLink: String? // 购买链接
     var details: String?      // 备注/详情
     var completedBy: String?  // 谁实现了这个愿望
-    var addedBy: String?       // 谁添加了这个心愿
+    var addedBy: String?      // 谁添加了这个心愿（展示名）
+    var addedById: String?    // 谁添加了这个心愿（用户 ID，用于权限判断）
     
     // imageData 不参与 Codable 编解码
     enum CodingKeys: String, CodingKey {
         case id, sourceItemId, name, price, isCompleted, displayType
-        case imageUrl, purchaseLink, details, completedBy, addedBy
+        case imageUrl, purchaseLink, details, completedBy, addedBy, addedById
     }
     
-    init(id: UUID = UUID(), sourceItemId: UUID? = nil, name: String, price: Double, isCompleted: Bool = false, displayType: String? = nil, imageUrl: String? = nil, imageData: Data? = nil, purchaseLink: String? = nil, details: String? = nil, completedBy: String? = nil, addedBy: String? = nil) {
+    init(id: UUID = UUID(), sourceItemId: UUID? = nil, name: String, price: Double, isCompleted: Bool = false, displayType: String? = nil, imageUrl: String? = nil, imageData: Data? = nil, purchaseLink: String? = nil, details: String? = nil, completedBy: String? = nil, addedBy: String? = nil, addedById: String? = nil) {
         self.id = id
         self.sourceItemId = sourceItemId
         self.name = name
@@ -41,6 +42,7 @@ struct SharedWishItem: Identifiable, Codable {
         self.details = details
         self.completedBy = completedBy
         self.addedBy = addedBy
+        self.addedById = addedById
     }
     
     // 兼容旧数据（旧数据可能有 imageData 字段）
@@ -216,6 +218,7 @@ class SharedWishlistStore: ObservableObject {
     func toggleItemCompleted(listId: UUID, itemId: UUID) {
         if let li = lists.firstIndex(where: { $0.id == listId }),
            let ii = lists[li].items.firstIndex(where: { $0.id == itemId }) {
+            objectWillChange.send()
             lists[li].items[ii].isCompleted.toggle()
             if lists[li].items[ii].isCompleted {
                 // 优先用 myNickname（自己在清单中的昵称），没有则显示"我"
@@ -299,6 +302,7 @@ class SharedWishlistStore: ObservableObject {
             print("[SharedSync]   当前共享清单: \(lists.map { "「\($0.name)」linkedGroupId=\($0.linkedGroupId?.uuidString ?? "nil") isOwner=\($0.isOwner)" })")
             return
         }
+        let addedByName = lists[li].myNickname ?? lists[li].ownerName ?? "我"
         let sharedItem = SharedWishItem(
             sourceItemId: item.id,
             name: item.name,
@@ -307,7 +311,9 @@ class SharedWishlistStore: ObservableObject {
             imageUrl: item.imageUrl,
             imageData: item.imageData,
             purchaseLink: item.purchaseLink.isEmpty ? nil : item.purchaseLink,
-            details: item.details.isEmpty ? nil : item.details
+            details: item.details.isEmpty ? nil : item.details,
+            addedBy: addedByName,
+            addedById: TokenStorage.shared.getSub()
         )
         lists[li].items.append(sharedItem)
         lists[li].updatedAt = Date()
@@ -352,6 +358,7 @@ class SharedWishlistStore: ObservableObject {
                let newLi = lists.firstIndex(where: { $0.linkedGroupId == newGid && $0.isOwner }) {
                 // 避免重复添加
                 if !lists[newLi].items.contains(where: { $0.sourceItemId == item.id }) {
+                    let addedByName = lists[newLi].myNickname ?? lists[newLi].ownerName ?? "我"
                     let sharedItem = SharedWishItem(
                         sourceItemId: item.id,
                         name: item.name,
@@ -360,7 +367,9 @@ class SharedWishlistStore: ObservableObject {
                         imageUrl: item.imageUrl,
                         imageData: item.imageData,
                         purchaseLink: item.purchaseLink.isEmpty ? nil : item.purchaseLink,
-                        details: item.details.isEmpty ? nil : item.details
+                        details: item.details.isEmpty ? nil : item.details,
+                        addedBy: addedByName,
+                        addedById: TokenStorage.shared.getSub()
                     )
                     lists[newLi].items.append(sharedItem)
                     lists[newLi].updatedAt = Date()
@@ -389,12 +398,17 @@ class SharedWishlistStore: ObservableObject {
             lists[li].items[ii].imageData = item.imageData
             lists[li].items[ii].purchaseLink = item.purchaseLink.isEmpty ? nil : item.purchaseLink
             lists[li].items[ii].details = item.details.isEmpty ? nil : item.details
+            if (lists[li].items[ii].addedById?.trimmingCharacters(in: .whitespaces) ?? "").isEmpty {
+                lists[li].items[ii].addedBy = lists[li].items[ii].addedBy ?? lists[li].myNickname ?? lists[li].ownerName ?? "我"
+                lists[li].items[ii].addedById = TokenStorage.shared.getSub()
+            }
             lists[li].updatedAt = Date()
             lists[li].isSynced = false
             save()
             print("[SharedSync] 心愿「\(item.name)」已同步更新到共享清单「\(lists[li].name)」")
         } else {
             // 共享清单中没有该心愿，自动新增
+            let addedByName = lists[li].myNickname ?? lists[li].ownerName ?? "我"
             let sharedItem = SharedWishItem(
                 sourceItemId: item.id,
                 name: item.name,
@@ -403,7 +417,9 @@ class SharedWishlistStore: ObservableObject {
                 imageUrl: item.imageUrl,
                 imageData: item.imageData,
                 purchaseLink: item.purchaseLink.isEmpty ? nil : item.purchaseLink,
-                details: item.details.isEmpty ? nil : item.details
+                details: item.details.isEmpty ? nil : item.details,
+                addedBy: addedByName,
+                addedById: TokenStorage.shared.getSub()
             )
             lists[li].items.append(sharedItem)
             lists[li].updatedAt = Date()

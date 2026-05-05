@@ -1676,6 +1676,7 @@ class CloudBaseClient {
         modelName: String = "sharewish"
     ) async -> CreateResponse? {
         let isoFormatter = ISO8601DateFormatter()
+        let ownerNumberId = TokenStorage.shared.getSub() ?? ""
         
         // 将选中的心愿序列化为 JSON 格式的数组，再转为 JSON 字符串
         let wishInfoArray: [[String: Any]] = selectedItems.map { item in
@@ -1704,6 +1705,10 @@ class CloudBaseClient {
             if let wishlistGroupId = item.wishlistGroupId {
                 info["wishlistGroupId"] = wishlistGroupId.uuidString
             }
+            info["addedBy"] = ownerName
+            if !ownerNumberId.isEmpty {
+                info["addedById"] = ownerNumberId
+            }
             if let imageUrl = item.imageUrl, !imageUrl.isEmpty {
                 info["imageUrl"] = imageUrl
             }
@@ -1714,7 +1719,6 @@ class CloudBaseClient {
         let wishInfoObject: [String: Any] = ["items": wishInfoArray]
         
         let path = "/v1/model/\(envType)/\(modelName)/create"
-        let ownerNumberId = TokenStorage.shared.getSub() ?? ""
         let numbersObject: [String: Any] = [
             "number_list": [
                 ["number_name": ownerName, "number_id": ownerNumberId]
@@ -1792,6 +1796,9 @@ class CloudBaseClient {
             }
             if let addedBy = item.addedBy {
                 info["addedBy"] = addedBy
+            }
+            if let addedById = item.addedById, !addedById.isEmpty {
+                info["addedById"] = addedById
             }
             if let imageUrl = item.imageUrl, !imageUrl.isEmpty {
                 info["imageUrl"] = imageUrl
@@ -1907,6 +1914,9 @@ class CloudBaseClient {
             }
             if let addedBy = item.addedBy {
                 info["addedBy"] = addedBy
+            }
+            if let addedById = item.addedById, !addedById.isEmpty {
+                info["addedById"] = addedById
             }
             if let imageUrl = item.imageUrl, !imageUrl.isEmpty {
                 info["imageUrl"] = imageUrl
@@ -2504,6 +2514,7 @@ class CloudBaseClient {
             let details: String?
             let completedBy: String?
             let addedBy: String?
+            let addedById: String?
             let imageBase64: String?  // 旧数据兼容
             let imageUrl: String?     // 新数据
         }
@@ -2615,6 +2626,9 @@ class CloudBaseClient {
                 }
                 if merged.completedBy == nil, let remoteCompletedBy = remote.completedBy {
                     merged.completedBy = remoteCompletedBy
+                }
+                if merged.addedById == nil, let remoteAddedById = remote.addedById {
+                    merged.addedById = remoteAddedById
                 }
                 if merged.imageUrl == nil {
                     if let remoteImageUrl = remote.imageUrl, !remoteImageUrl.isEmpty {
@@ -2736,6 +2750,9 @@ class CloudBaseClient {
             if let addedBy = item.addedBy {
                 info["addedBy"] = addedBy
             }
+            if let addedById = item.addedById, !addedById.isEmpty {
+                info["addedById"] = addedById
+            }
             if let imageUrl = item.imageUrl, !imageUrl.isEmpty {
                 info["imageUrl"] = imageUrl
             }
@@ -2779,17 +2796,26 @@ class CloudBaseClient {
             baseinfoDict["linked_group_id"] = lgId
         }
         
+        // 保留远端 numbers 字段，避免被覆盖
+        var updateData: [String: Any] = [
+            "wishinfo": ["items": wishInfoArray, "deletedIds": mergedDeletedIds],
+            "name": listName,
+            "emoji": listEmoji,
+            "baseinfo": baseinfoDict
+        ]
+        if let numbers = record.numbers {
+            let numberListArray: [[String: String]] = numbers.number_list?.map { item in
+                ["number_name": item.number_name ?? "", "number_id": item.number_id ?? ""]
+            } ?? []
+            updateData["numbers"] = ["number_list": numberListArray]
+        }
+        
         let pushResponse = await callFunction(
             functionName: "update_sharewish",
             data: [
                 "docId": docId,
                 "modelName": "sharewish",
-                "updateData": [
-                    "wishinfo": ["items": wishInfoArray, "deletedIds": mergedDeletedIds],
-                    "name": listName,
-                    "emoji": listEmoji,
-                    "baseinfo": baseinfoDict
-                ]
+                "updateData": updateData
             ]
         )
         
